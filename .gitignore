@@ -1,0 +1,17 @@
+.env
+applications.db
+applications.db-wal
+applications.db-shm
+cache/
+dashboard_uploads/
+dashboard_run.log
+dashboard_stop.flag
+*.pdf
+__pycache__/
+*.pyc
+.venv/
+venv/
+token.json
+client_secret_*.json
+_diag_ai.py
+_check_db.py

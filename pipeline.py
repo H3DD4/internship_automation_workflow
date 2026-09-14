@@ -1,0 +1,226 @@
+"""
+Pipeline orchestration — preparation only (research + writing).
+
+The pipeline prepares emails and marks them as `ready` for dashboard review.
+Sending is handled separately by the dashboard's send job system.
+
+RESUME RULES (by email, stable application id in DB):
+  - sent / bounced / queued / sending  → skip entirely
+  - subject+body already in DB or cache → mark ready, skip AI rewrite
+  - researched in DB + research cache   → writer only, no re-scrape
+  - failed / pending / writing          → continue from where it left off
+"""
+
+import json
+import threading
+import os
+from concurrent.futures import ThreadPoolExecutor
+
+import db
+import cache_store
+from utils import build_greeting
+from agents.research_agent import get_company_context
+from agents.writer_agent import generate_email
+
+
+def _load_draft(email: str, app: dict | None) -> dict | None:
+    """Draft from disk cache first, then from the DB row."""
+    draft = cache_store.load_draft(email)
+    if draft:
+        return draft
+    return db.draft_from_application(app)
+
+
+def _load_research(email: str, app: dict | None) -> dict | None:
+    """Research from disk cache first, then rebuild from DB columns."""
+    context = cache_store.load_research(email)
+    if context:
+        return context
+    if app:
+        context = db.research_context_from_application(app)
+        if context:
+            cache_store.save_research(email, context)
+        return context
+    return None
+
+
+def needs_preparation(app: dict | None) -> bool:
+    """True if this email still needs research and/or writing."""
+    if not app:
+        return True
+    if app["status"] in ("sent", "bounced"):
+        return False
+    if app["status"] in db.SEND_IN_FLIGHT_STATUSES:
+        return False
+    if _load_draft(app["email"], app):
+        return False
+    return True
+
+
+class Pipeline:
+    def __init__(self, client, cfg, model: str, dry_run: bool,
+                 research_workers: int = 3, writer_workers: int = 2):
+        self.client = client
+        self.cfg = cfg
+        self.model = model
+        self.dry_run = dry_run
+
+        self.research_pool = ThreadPoolExecutor(max_workers=research_workers,
+                                                 thread_name_prefix="research")
+        self.writer_pool = ThreadPoolExecutor(max_workers=writer_workers,
+                                               thread_name_prefix="writer")
+
+        self._shutdown = threading.Event()
+
+        self._lock = threading.Lock()
+        self.total_companies = 0
+        self.terminal_count = 0
+        self.results = {"ready": 0, "failed": 0, "skipped": 0}
+
+    def _record(self, outcome: str):
+        with self._lock:
+            self.results[outcome] = self.results.get(outcome, 0) + 1
+            self.terminal_count += 1
+
+    def _mark_ready_from_draft(self, app_id: int, email: str, company_name: str,
+                                draft: dict, *, reused: bool):
+        db.update_application(app_id, status="ready",
+                               subject=draft["subject"], body=draft["body"],
+                               error_message=None)
+        cache_store.save_draft(email, draft)
+        tag = "reused existing draft" if reused else "draft ready"
+        print(f"  [ready] {company_name} (id={app_id}) — {tag}.")
+        self._record("ready")
+
+    def _research_task(self, row):
+        company_name, email, website, contact_name = row
+        try:
+            existing = db.get_application_by_email(email)
+            app_id = db.get_or_create_application(company_name, email, website, contact_name)
+
+            if existing and existing["status"] in ("sent", "bounced"):
+                print(f"  [skip] {company_name} <{email}> (id={app_id}) — already {existing['status']}.")
+                self._record("skipped")
+                return
+
+            if existing and existing["status"] in db.SEND_IN_FLIGHT_STATUSES:
+                print(f"  [skip] {company_name} <{email}> (id={app_id}) — send in progress ({existing['status']}).")
+                self._record("skipped")
+                return
+
+            draft = _load_draft(email, existing)
+            if draft:
+                self._mark_ready_from_draft(app_id, email, company_name, draft, reused=True)
+                return
+
+            context = _load_research(email, existing)
+            if context is not None:
+                print(f"  [research] {company_name} (id={app_id}) ... (cached, skipping re-scrape)")
+            else:
+                print(f"  [research] {company_name} (id={app_id}) ...")
+                db.update_application(app_id, status="researching")
+                db.log_event(app_id, "research",
+                             f"Scraping and analyzing {website or '(no website given)'}")
+
+                context = get_company_context(
+                    self.client, self.model, company_name, website, self.cfg["extra_mentions"]
+                )
+                cache_store.save_research(email, context)
+
+                db.update_application(
+                    app_id,
+                    status="researched",
+                    industry=context.get("industry"),
+                    mission_or_focus=context.get("mission_or_focus"),
+                    tone_of_voice=context.get("tone_of_voice"),
+                    talking_points=json.dumps(context.get("talking_points", [])),
+                    matched_extra_mentions=json.dumps(context.get("matched_extra_mentions", [])),
+                    match_reasons=json.dumps(context.get("match_reasons", {})),
+                )
+                db.log_event(
+                    app_id, "research",
+                    f"Matched extra mentions: {context.get('matched_extra_mentions') or 'none'}",
+                    detail=context,
+                )
+
+            self.writer_pool.submit(self._writer_task, app_id, company_name, email, website,
+                                     contact_name, context)
+
+        except Exception as e:
+            print(f"  [error] research stage crashed for {company_name}: {e}")
+            try:
+                app_id = db.get_or_create_application(company_name, email, website, contact_name)
+                db.update_application(app_id, status="failed", error_message=f"Research error: {e}")
+                db.log_event(app_id, "research", "Research stage crashed", detail={"error": str(e)})
+            except Exception:
+                pass
+            self._record("failed")
+
+    def _writer_task(self, app_id, company_name, email, website, contact_name, context):
+        try:
+            existing = db.get_application_by_id(app_id)
+            draft = _load_draft(email, existing)
+            if draft:
+                print(f"  [write] {company_name} (id={app_id}) ... (existing draft, skipping re-write)")
+                self._mark_ready_from_draft(app_id, email, company_name, draft, reused=True)
+                return
+
+            print(f"  [write] generating email for {company_name} (id={app_id}) ...")
+            db.update_application(app_id, status="writing")
+            greeting = build_greeting(contact_name, company_name)
+
+            email_content = generate_email(
+                self.client, self.model, self.cfg["core_identity"], self.cfg["applicant_name"],
+                context, company_name, self.cfg["extra_mentions"], self.cfg["target_role"], greeting,
+            )
+            cache_store.save_draft(email, email_content)
+
+            db.update_application(app_id, status="ready",
+                                   subject=email_content["subject"],
+                                   body=email_content["body"],
+                                   error_message=None)
+            db.log_event(app_id, "write",
+                         f"Draft ready: \"{email_content['subject']}\"",
+                         detail=email_content)
+
+            print(f"  [ready] {company_name} (id={app_id}) — email ready for review.")
+            self._record("ready")
+
+        except Exception as e:
+            print(f"  [error] writer stage failed for {company_name} (id={app_id}): {e}")
+            try:
+                db.update_application(app_id, status="failed", error_message=f"Writer agent error: {e}")
+                db.log_event(app_id, "write", "Writer agent failed", detail={"error": str(e)})
+            except Exception:
+                pass
+            self._record("failed")
+
+    def run(self, companies_rows):
+        """
+        companies_rows: list of (company_name, email, website, contact_name) tuples.
+        Returns the results dict. Safe to Ctrl+C.
+        """
+        self.total_companies = len(companies_rows)
+        if self.total_companies == 0:
+            print("Nothing to prepare — all selected companies are already done or in-flight.")
+            return self.results
+
+        for row in companies_rows:
+            stop_file = os.getenv("PIPELINE_STOP_FILE")
+            if stop_file and os.path.exists(stop_file):
+                self._shutdown.set()
+                break
+            self.research_pool.submit(self._research_task, row)
+
+        try:
+            self.research_pool.shutdown(wait=True,
+                                         cancel_futures=self._shutdown.is_set())
+            self.writer_pool.shutdown(wait=True,
+                                       cancel_futures=self._shutdown.is_set())
+        except KeyboardInterrupt:
+            print("\nInterrupted — shutting down (completed work is saved)...")
+            self._shutdown.set()
+            self.research_pool.shutdown(wait=False, cancel_futures=True)
+            self.writer_pool.shutdown(wait=False, cancel_futures=True)
+
+        return self.results

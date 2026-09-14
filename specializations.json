@@ -1,0 +1,24 @@
+{
+  "core_identity": {
+    "description": "Your fixed positioning. This is ALWAYS included in every email, worded the same way in substance regardless of company. It does not get rewritten per company — only lightly reworded for tone/grammar flow.",
+    "angle_prompt": "Write the email using these facts, in roughly this order, cleaned up into clear professional English (fix grammar, break into short paragraphs — do not just paste this verbatim):\n\n1. OPENING: I'm a final-year software engineering student at the Higher National School of Engineers in Tunis, specialized in cybersecurity and agentic AI engineering. I'm looking for an end-of-study internship starting February 2027. Express genuine interest in joining {company_name} as an intern, with openness to a longer-term role afterward.\n\n2. FLAGSHIP PROOF (most important part, give it real space): My GitHub has 20+ projects, but the one that best proves my expertise is RedBox — an autonomous AI agent that finds vulnerabilities in live, deployed websites and applications, and solves CTF challenges. Make clear it's not just a proof-of-concept: it has solved 70+ CTF tasks and found 3 confirmed vulnerabilities in production software.\n\n3. PASSION & SKILLS: My love for cybersecurity comes from wanting to understand and break down 'black box' systems, which is what pulled me toward technology in the first place. I've played many CTFs and won several national and international competitions. I have deep experience in reverse engineering, offensive security, log analysis, digital forensics, and SIEM tools.\n\n4. PROFESSIONAL EXPERIENCE: I've worked at three respected companies: Forvis Mazars (Cybersecurity Group of Excellence), Talan, and TDS Global by Nomios.\n\n5. AI CONNECTION: My passion for cybersecurity is what led me to learn AI — specifically to automate my own security methodologies — combined with a solid foundation in software development and system design.\n\n6. CLOSING: Mention the CV is attached for more detail. Close with genuine enthusiasm about joining {company_name} specifically, wanting to take on new challenges and grow there, and looking forward to their reply.\n\nTONE: Confident and genuinely enthusiastic, not arrogant. Keep it authentic to a student who has real hands-on results, not just coursework."
+  },
+  "extra_mentions": [
+    {
+      "id": "cloud",
+      "match_description": "Company website mentions AWS/GCP/Azure, Kubernetes, Docker, DevOps, CI/CD, cloud infrastructure, or deployment/scaling of services.",
+      "sentence": "I also have hands-on experience with Docker and cloud deployment, from shipping and operating projects like RedBox in production."
+    },
+    {
+      "id": "software_dev",
+      "match_description": "Company describes itself mainly as a general software/product company with no explicit AI, cybersecurity, or cloud-infra focus (e.g. 'we build web/mobile products', generic SaaS, digital agency).",
+      "sentence": "Beyond security and AI, I also have a solid foundation in software development and system design, built through coursework and my three professional experiences."
+    },
+    {
+      "id": "data",
+      "match_description": "Company website mentions data pipelines, analytics, business intelligence, data science, or data engineering.",
+      "sentence": "My background in log analysis and digital forensics/SIEM work has also given me solid experience investigating and structuring large, messy datasets."
+    }
+  ],
+  "notes": "core_identity is always used and is treated as near-final text — the writer agent only lightly formats it, it does not rewrite it. extra_mentions are optional add-ons: the research agent matches 0+ of these per company, and the writer agent inserts the matched item's ready-made 'sentence' close to verbatim (at most 2 total) — it never rewrites the sentence or restructures the email around it."
+}
