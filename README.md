@@ -1,9 +1,9 @@
 # Internship Application Automation
 
-Two-agent pipeline that researches each company, writes a personalized
-application email around a fixed core pitch (your RedBox / cybersecurity /
-agentic-AI story), sends it with your CV attached via Gmail, and tracks
-everything in a local dashboard.
+Researches each company, writes a personalized application email around your
+fixed core pitch, and lets you **review every draft before anything is sent**.
+Sending happens from a local dashboard, paced and capped to protect your Gmail
+account's reputation.
 
 ## How it works
 
@@ -11,235 +11,191 @@ everything in a local dashboard.
 companies.xlsx / .csv
         │
         ▼
- ┌─────────────────┐     ┌──────────────────┐     ┌─────────┐
- │  Research Agent  │ ──▶ │   Writer Agent   │ ──▶ │  Mailer │ ──▶ Gmail
- │  (scrapes site,  │     │ (core pitch +    │     │ (SMTP + │
- │  matches 0+      │     │  0-2 short extra │     │  CV     │
- │  extra mentions) │     │  mentions woven  │     │  attach)│
- └─────────────────┘     │  in naturally)   │     └─────────┘
-                          └──────────────────┘
-        │                         │                    │
-        └─────────────────────────┴────────────────────┘
-                                   ▼
-                         applications.db (SQLite)
-                                   ▼
-                    Dashboard (python dashboard/app.py)
+ ┌──────────────────┐     ┌──────────────────┐
+ │  Research agent  │ ──▶ │   Writer agent   │   python main.py
+ │  (scrapes site,  │     │ (core pitch +    │   (never sends)
+ │  matches 0-2     │     │  matched extra   │
+ │  extra mentions) │     │  sentences)      │
+ └──────────────────┘     └──────────────────┘
+        │                          │
+        └──────────┬───────────────┘
+                   ▼
+            applications.db  ──▶  Dashboard: review, edit, send
+                   ▲                         │
+                   └─────────────────────────┘
+                     sender worker (paced, daily cap, CV attached)
 ```
 
-Your **core identity** (RedBox project, CTF wins, professional experience,
-the AI-from-security-passion story) is fixed in `specializations.json` and
-appears in every email, unchanged. The research agent only decides whether
-0, 1, or 2 short **extra mentions** (cloud / software dev / data — or
-whatever you configure) genuinely fit a given company, and the writer agent
-weaves those in as a sentence or two — it never restructures or shrinks the
-core pitch.
+Two separate programs, on purpose:
 
-## Pipeline architecture (why it's fast)
+- **`python main.py`** — preparation only. Researches and drafts. It never
+  sends, so you can run it on a big list and walk away.
+- **`python dashboard/app.py`** — review and send. You read the drafts, edit
+  anything you want, pick which ones go out, and the background sender sends
+  them with a randomized delay between each and a daily cap.
 
-The three stages above don't run one-at-a-time per company anymore — they
-run as an **overlapping pipeline**, decoupled by small queues:
+Your **core identity** (RedBox, CTF wins, professional experience, the
+AI-from-security story) lives in `specializations.json` and appears in every
+email. The research agent only decides whether 0, 1, or 2 short **extra
+mentions** (cloud / software dev / data — configurable) genuinely fit a given
+company, and the writer weaves those in near-verbatim. It never restructures
+or shrinks the core pitch.
 
-```
-                 ┌───────────────────────┐     ┌───────────────────────┐
-companies ──────▶│ research pool (N       │────▶│ writer pool (M         │───▶ ready_queue ───▶ sender
-                 │ threads): scrape site  │     │ threads): draft email  │    (max 3 in-flight)  (main thread,
-                 │ + AI research call      │     │ via AI writer call     │                        paced sends)
-                 └───────────────────────┘     └───────────────────────┘
-                         always working, never blocked on the send pacing delay
-```
+## Setup
 
-**Why this matters:** the old version did scrape → research call → write
-call → send → *sleep 45–120s* → repeat, all strictly in order — most of the
-runtime was spent doing nothing but sleeping for the anti-spam delay, with
-every company's scrape/AI latency piled on top of that, serially. Now, the
-research and writer pools keep preparing the *next* companies in the
-background while the sender is asleep out that mandatory delay. By the time
-the delay ends, the next email is usually already fully drafted and waiting
-— the sender rarely has to wait on scraping or AI at all, only on the
-pacing itself (which is the one wait that actually needs to happen).
-
-**Resumable by default:** every finished research result and drafted email
-is saved the instant it's ready, both to `applications.db` and to a small
-per-company JSON file under `cache/`. If you stop the script, hit the daily
-send cap, or it crashes, re-running it reuses that work instantly instead
-of re-scraping / re-calling the AI — this is the biggest speed-up on any
-second run, and it also means research/writing keeps prepping tomorrow's
-batch in the background even after today's send cap is hit.
-
-**Safe by design:**
-- Bounded queues (`READY_QUEUE_SIZE`) keep memory flat regardless of list
-  size — nothing accumulates unbounded in memory.
-- Every stage is wrapped so one bad company (dead website, malformed AI
-  response, bad email address) can never crash the run or get silently
-  dropped — it's marked `failed`/`retry_later` and the pipeline continues.
-- Transient errors (network blips, rate limits, timeouts) are retried with
-  backoff before falling back, instead of immediately degrading.
-- SQLite runs in WAL mode with a busy-timeout so the concurrent worker
-  threads never collide on the database.
-- Every company ends in exactly one outcome; the run summary's counts are
-  cross-checked against the input list so nothing is ever silently lost.
-
-**Tuning** (in `.env`, see `.env.example`): `RESEARCH_WORKERS` (default 3),
-`WRITER_WORKERS` (default 2), `READY_QUEUE_SIZE` (default 3). The defaults
-are a safe, conservative balance — raise `RESEARCH_WORKERS` if you have a
-long company list and want research to finish well ahead of sending; there's
-rarely a reason to raise `READY_QUEUE_SIZE` since drafting far ahead of the
-pacing delay has no benefit.
-
-## Setup (one-time)
-
-1. **Install Python 3.10+** if you don't have it already.
+1. **Install Python 3.10+.**
 
 2. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Configure your `.env` file:**
+3. **Start the dashboard and fill in the setup form:**
    ```bash
-   cp .env.example .env
+   python dashboard/app.py
    ```
-   Then open `.env` and fill in:
-   - `ANTHROPIC_API_KEY` — from [console.anthropic.com](https://console.anthropic.com)
-   - `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` — see instructions inside `.env.example`
-     (you need a Gmail **App Password**, not your normal password)
-   - `YOUR_NAME`, `YOUR_TARGET_ROLE`
-   - `CV_FILE_PATH` — path to your CV PDF (place it in this folder and just
-     name it, e.g. `CV_FILE_PATH=./my_cv.pdf`)
+   Open <http://127.0.0.1:5050> and complete "Workspace setup": your AI key,
+   your name and target role, your companies file, your CV, and your Gmail
+   connection. It writes everything to a local `.env` (you can also copy
+   `.env.example` to `.env` and edit it by hand).
 
-4. **Add your companies.** Edit `companies_template.csv` (or rename it
-   `companies.xlsx` and use Excel) with your real list. Required columns:
-   `company_name`, `email`, `website` (website is optional but strongly
-   recommended — without it, the research agent has nothing to read and
-   falls back to a generic email).
+   You only need the AI key, your profile, and the companies file to start
+   **preparing** drafts. Gmail and the CV are needed only when you send.
 
-5. **(Optional) Customize your pitch further.** `specializations.json`
-   already contains your core pitch and three extra-mention categories
-   (cloud, software_dev, data). Edit the wording anytime, or add more
-   categories following the same structure.
+4. **Connect Gmail**, either way:
+   - **Sign in with Google (recommended).** Put your OAuth client file
+     (`client_secret_*.json` or `credentials.json`) in the project folder, then
+     click "Sign in with Google". No app password needed, and bounce checking
+     works through the same connection.
+   - **App password.** Needs 2-Step Verification on your Google account; create
+     one at <https://myaccount.google.com/apppasswords>.
 
-That's it — steps 1-4 are the only setup required. Everything else runs
-automatically.
+### Companies file
+
+Any `.csv` or `.xlsx` with at least an `email` column. Also understood:
+`company_name`, `website`, `name`/`contact_name`, and contact-export sheets
+with an `attributes` JSON column like `{"Company": "Rtone"}`.
+
+Missing a company name or website? Both are guessed from the email domain.
+Addresses are lowercased and de-duplicated, so one mailbox never gets two
+applications.
 
 ## Running it
 
-**Test first with a dry run** (generates emails but sends nothing):
-```bash
-python main.py --dry-run --limit 3
-```
-Check the dashboard (see below) to review the drafted emails before sending
-anything for real.
+**Prepare drafts** (no email leaves your account):
 
-**Send for real:**
 ```bash
-python main.py
+python main.py --limit 10      # first 10 companies that still need work
+python main.py                 # everything still pending
 ```
 
 Useful flags:
-- `--companies path/to/file.xlsx` — use a different companies file (default: `companies.xlsx`)
-- `--limit N` — only process the first N companies (good for testing)
-- `--dry-run` — research + write, but don't send
+- `--companies path/to/file.xlsx` — use a specific file
+- `--limit N` — only prepare N companies this run
+- `--all` — include rows already prepared
 - `--research-workers N` / `--writer-workers N` — override the `.env` defaults
-  for this run (see "Pipeline architecture" above)
 
-The script is safe to stop (Ctrl+C) and re-run at any time: already-`sent`
-companies are automatically skipped, and any company already researched or
-drafted is loaded from the on-disk cache instead of redone (tracked in
-`applications.db` + `cache/`), so you never double-send and never redo
-work. If the daily send cap is hit, sending stops but research/writing keep
-running in the background to prep for tomorrow, and the next run picks up
-exactly where it left off.
+You can also press **Start preparation** in the dashboard, which runs the same
+thing in the background and streams the log into the Activity log panel.
 
-## The dashboard
+**Review and send** in the dashboard:
+1. The funnel at the top shows where every company is: to prepare, ready to
+   review, sending, sent, problems. Click one to filter the table.
+2. Open a company to read the email exactly as the recipient will see it —
+   headers, body, CV attachment — and edit it if you want.
+3. Tick the rows you're happy with and press **Send selected**. You get a
+   confirmation listing exactly who is about to be emailed.
 
-```bash
-python dashboard/app.py
-```
-Then open **http://127.0.0.1:5050**. Shows:
-- Live counts: sent, failed, bounced, pending, etc.
-- Every company's status, matched extra mentions, and subject line
-- Click into any company for the full timeline: what the research agent
-  found, why it matched (or didn't match) an extra mention, the generated
-  email, and the final outcome/error if any.
+Safe to stop and re-run at any time: sent companies are skipped, and finished
+research/drafts are reused from `applications.db` and `cache/` instead of
+being redone.
 
-Just reload the page to see updates while `main.py` is running.
+### Per-company actions
 
-## Checking for bounces ("this email no longer exists")
+- **Skip** — leave a company out of preparation and sending, reversibly.
+- **Regenerate** — rewrite the draft using the research already on file (no
+  re-scraping, no new research call).
 
-Gmail usually accepts a send even if the mailbox is dead — the "no such
-user" rejection often comes back **later** as an automated bounce email in
-your own inbox, not as an instant error. Run this after sending (an hour or
-two later, or once a day):
+## Checking for bounces
+
+Gmail usually accepts a send even if the mailbox is dead; the rejection arrives
+later as a bounce email in your own inbox. Press **Check bounces now** in the
+dashboard, or run:
 
 ```bash
 python bounce_checker.py
 ```
 
-It scans your inbox for delivery-failure notifications, matches the failed
-address back to the right company, and updates its status to `bounced` in
-the dashboard. This is best-effort (bounce message formats vary slightly
-by provider) but catches the common cases.
-
-*Note: some failures ARE caught instantly at send time* (e.g. clearly
-malformed addresses) — those show up immediately as `failed` with an error
-message, no bounce-checking needed.
+It scans for delivery-failure notifications, matches the failed address back to
+the right company, and marks it `bounced`. Only companies you actually sent to
+can be marked this way.
 
 ## Avoiding spam flags
 
-Sending many similar emails from a personal Gmail account can get flagged.
-Built-in protections:
-- **Personalized content per email** (via the writer agent) — identical
-  bulk content is one of the biggest spam triggers, and this pipeline
-  never sends the same body twice.
-- **Randomized delay** between sends (`MIN_DELAY_SECONDS` / `MAX_DELAY_SECONDS`
-  in `.env`) instead of firing them all at once.
-- **Daily send cap** (`MAX_EMAILS_PER_DAY`) so you don't blast hundreds in one go.
-- **Proper email formatting** — real headers, plain text, a genuine PDF
-  attachment (no tracking pixels, link shorteners, or other bulk-mailer tells).
+Built in:
+- **Personalized content per email** — no two bodies are identical.
+- **Randomized delay** between sends (`MIN_DELAY_SECONDS` / `MAX_DELAY_SECONDS`).
+- **Daily cap** (`MAX_EMAILS_PER_DAY`), counted in UTC.
+- **Proper formatting** — real headers, plain text, a genuine PDF attachment,
+  no tracking pixels or link shorteners.
 
-What you should also do manually (can't be fully automated):
-- **Warm up your account.** Start with `MAX_EMAILS_PER_DAY=10-15` for your
-  first few days of sending, then increase gradually. A brand-new burst of
-  100+ emails on day one from a normal Gmail account is the single most
-  common way to get flagged or rate-limited.
-- **Reply to any responses promptly.** Engagement (opens, replies) tells
-  Gmail your account is legitimate.
-- **Double-check your company list.** A high bounce rate (invalid
-  addresses) hurts your sender reputation more than volume does — a
-  quick manual scan of `companies.xlsx` for obviously wrong emails before
-  a big run is worth the two minutes.
+Worth doing yourself:
+- **Warm up.** Start at 10–15 a day for the first few days, then raise it.
+- **Reply promptly.** Engagement tells Gmail the account is legitimate.
+- **Check your list.** A high bounce rate hurts your reputation more than
+  volume does.
 
 ## Project structure
 
 ```
 .
-├── main.py                  # orchestrator — run this to send applications
-├── db.py                    # SQLite storage (applications + event log)
-├── mailer.py                # Gmail SMTP sending + CV attachment + error handling
-├── bounce_checker.py        # run separately to detect bounced emails
-├── specializations.json     # your core pitch + extra-mention config (EDIT THIS)
-├── companies_template.csv   # example input — rename/replace with your real list
-├── .env.example             # copy to .env and fill in
-├── requirements.txt
+├── main.py                  # preparation (research + write). Never sends.
+├── pipeline.py              # concurrent research/writer pools, resume rules
 ├── agents/
-│   ├── research_agent.py    # scrapes company site, matches extra mentions
-│   └── writer_agent.py      # generates the final email
-└── dashboard/
-    ├── app.py                # Flask dashboard (python dashboard/app.py)
-    ├── templates/
-    └── static/style.css
+│   ├── research_agent.py    # scrapes the site, matches extra mentions
+│   └── writer_agent.py      # assembles the email
+├── ai_client.py             # OpenAI-compatible client, retries, rate limit
+├── db.py                    # SQLite storage, send jobs, recovery sweeps
+├── cache_store.py           # per-company on-disk cache (resumability)
+├── sender_worker.py         # background sender: pacing, daily cap
+├── mail_service.py          # send wrapper returning structured results
+├── mailer.py                # Gmail API / SMTP + error classification
+├── google_auth_helper.py    # OAuth token storage and Gmail API
+├── bounce_checker.py        # marks bounced applications
+├── specializations.json     # your core pitch + extra mentions (EDIT THIS)
+├── dashboard/
+│   ├── app.py               # Flask dashboard (python dashboard/app.py)
+│   ├── templates/
+│   └── static/
+└── tests/                   # pytest suite
 ```
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+Each test runs against its own temporary database, cache, and `.env` — the
+suite never touches your real data or credentials, and never makes a network
+call.
 
 ## Troubleshooting
 
-- **"missing required .env values"** — you haven't filled in `.env` yet
-  (copy from `.env.example`).
-- **"Gmail authentication failed"** — you're using your normal Gmail
-  password instead of an App Password, or 2-Step Verification isn't
-  enabled on your Google account (required for App Passwords).
-- **Emails going out with a generic/empty company context** — the
-  `website` column is missing or the site blocked scraping; the pipeline
-  still sends (using your core pitch alone) rather than failing, so check
-  the dashboard's research panel per company if emails look too generic.
-- **CV attachment missing/wrong file** — check `CV_FILE_PATH` in `.env`
-  points to the right file.
+- **"missing required .env values"** — finish the dashboard setup form, or copy
+  `.env.example` to `.env` and fill it in.
+- **Gmail rejects the login** — you're using your normal password instead of an
+  App Password, or 2-Step Verification is off. Or just connect with Google
+  instead.
+- **"Sign in with Google" doesn't appear** — the OAuth client file isn't in the
+  project folder. Use an app password, or download the file from Google Cloud
+  Console.
+- **Emails look generic** — the company's website was missing or blocked
+  scraping, so the research agent had nothing to read. The company's detail page
+  shows exactly what was found.
+- **A row is stuck "Retry later" after a restart** — the process was killed
+  mid-send and we can't tell whether that message went out. Check your Gmail
+  Sent folder before re-sending it.
+- **Everything says "Ready" but nothing sends** — check the daily cap on the
+  Sent card; the sender pauses once it's reached and resumes the next day.
