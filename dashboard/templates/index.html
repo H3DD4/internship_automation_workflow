@@ -69,7 +69,6 @@
       <p class="section-copy">{{ table_total }} in database{% if pending_prep %} · {{ pending_prep }} still need preparation{% endif %}. Each row has a stable ID — re-runs skip finished emails.</p>
     </div>
   </div>
-  {% if applications %}
   <form class="table-controls" method="get" action="{{ url_for('index') }}">
     <input type="text" name="q" class="search-box" value="{{ filter_q }}"
            placeholder="Search by company or email…" autocomplete="off">
@@ -88,8 +87,10 @@
       <option value="sending"{% if filter_status == 'sending' %} selected{% endif %}>Sending</option>
     </select>
     <button class="button button--ghost button--sm" type="submit">Filter</button>
+    {% if filter_q or filter_status %}<a class="button button--ghost button--sm" href="{{ url_for('index') }}">Clear filters</a>{% endif %}
     <span class="visible-count">Page {{ table_page }}/{{ table_pages }} · {{ table_total }} total</span>
   </form>
+  {% if applications %}
   <table class="app-table" id="app-table">
     <thead>
       <tr>
@@ -109,7 +110,7 @@
       <tr data-search="{{ (a.company_name ~ ' ' ~ a.email) | lower }}"
           data-status="{{ a.status }}" data-app-id="{{ a.id }}">
         <td>
-          {% if a.status in ('ready', 'failed', 'retry_wait', 'retry_later') and a.subject %}
+          {% if a.status in ('ready', 'failed', 'retry_wait') and a.subject %}
           <input type="checkbox" class="row-select-cb" data-app-id="{{ a.id }}">
           {% endif %}
         </td>
@@ -132,7 +133,7 @@
         <td class="cell-subject">{{ a.subject or "—" }}</td>
         <td class="cell-mono cell-time">{{ a.updated_at[:16].replace("T", " ") if a.updated_at else "—" }}</td>
         <td class="row-actions">
-          {% if a.status in ('ready', 'failed', 'retry_wait', 'retry_later') and a.subject %}
+          {% if a.status in ('ready', 'failed', 'retry_wait') and a.subject %}
           <button class="button button--primary button--sm send-one-btn"
                   data-app-id="{{ a.id }}" type="button">Send</button>
           {% endif %}
@@ -155,8 +156,13 @@
   {% endif %}
   {% else %}
   <div class="empty-state">
+    {% if filter_q or filter_status %}
     <p>No companies match this filter.</p>
+    <p class="empty-hint"><a href="{{ url_for('index') }}">Clear filters</a> to see everything.</p>
+    {% else %}
+    <p>No companies yet.</p>
     <p class="empty-hint">Start the preparation engine below, or run <code>python main.py --limit 10</code>.</p>
+    {% endif %}
   </div>
   {% endif %}
 </section>
@@ -186,10 +192,24 @@
     <label class="batch-limit-label">Batch size
       <input type="number" name="batch_limit" class="batch-limit-input" min="1" placeholder="All pending" title="Leave empty to prepare every row that still needs work">
     </label>
-    <button class="button button--primary" type="submit" {% if not setup.ready or run_state.running %}disabled{% endif %}>{{ "Preparing…" if run_state.running else "Start preparation" }}</button>
+    <button class="button button--primary" type="submit" {% if not setup.prep_ready or run_state.running %}disabled{% endif %}>{{ "Preparing…" if run_state.running else "Start preparation" }}</button>
+    {% if not setup.prep_ready %}<span class="field-hint">Add an AI key, your profile, and a companies file below to enable this.</span>{% elif not setup.send_ready %}<span class="field-hint">You can prepare drafts now — connect Gmail and add a CV below before sending.</span>{% endif %}
     {% if run_state.running %}<button class="button button--danger" formaction="{{ url_for('stop_pipeline') }}" formmethod="post" type="submit">Stop safely</button>{% endif %}
   </form>
   <p class="field-hint" style="margin-top:8px;">Or run manually: <code>python main.py --limit 10</code></p>
+</section>
+
+<section class="run-section">
+  <div>
+    <span class="eyebrow">Background</span>
+    <h2>Bounce check</h2>
+    <p class="section-copy">Gmail often accepts a send even for a dead mailbox — the rejection can arrive later as a bounce email. Scan your inbox now for any and mark those companies "Bounced".</p>
+  </div>
+  <div class="run-form">
+    <button class="button button--primary" type="button" id="check-bounces-btn" {% if not setup.send_ready %}disabled{% endif %}>Check bounces now</button>
+    <span class="field-hint" id="check-bounces-result" aria-live="polite"></span>
+  </div>
+  <p class="field-hint" style="margin-top:8px;">Or run manually: <code>python bounce_checker.py</code></p>
 </section>
 
 <details class="setup-collapse">
@@ -201,8 +221,8 @@
       <h2>Everything the pipeline needs</h2>
       <p class="section-copy">Keep your credentials, company list, and CV together in this private local workspace.</p>
     </div>
-    <div class="setup-status{% if setup.ready %} setup-status--ready{% endif %}">
-      <span class="dot"></span>{{ "Ready to run" if setup.ready else "Setup incomplete" }}
+    <div class="setup-status{% if setup.send_ready %} setup-status--ready{% elif setup.prep_ready %} setup-status--partial{% endif %}">
+      <span class="dot"></span>{{ "Ready to send" if setup.send_ready else ("Ready to prepare" if setup.prep_ready else "Setup incomplete") }}
     </div>
   </div>
   <form class="setup-form" action="{{ url_for('setup') }}" method="post" enctype="multipart/form-data">
@@ -241,7 +261,9 @@
             <div class="google-connected-label">Connected via Google OAuth · emails sent using Gmail API</div>
           </div>
         </div>
-        <a href="{{ url_for('oauth_disconnect') }}" class="button button--ghost button--sm" id="google-disconnect-btn">Disconnect</a>
+        <form action="{{ url_for('oauth_disconnect') }}" method="post" style="margin:0;">
+          <button type="submit" class="button button--ghost button--sm" id="google-disconnect-btn">Disconnect</button>
+        </form>
       </div>
       {% else %}
       {# ── DISCONNECTED STATE ── #}
@@ -415,6 +437,13 @@
   }
 
   let timer = null;
+  function hasRowsSelected() {
+    return document.querySelector(".row-select-cb:checked") !== null;
+  }
+  function sendInProgress() {
+    const toast = document.getElementById("send-toast");
+    return !!(toast && toast.style.display && toast.style.display !== "none");
+  }
   function scheduleRefresh() {
     if (timer) clearTimeout(timer);
     if (!toggle.checked) return;
@@ -422,8 +451,14 @@
       const active = document.activeElement;
       const typingInFilter = active && active.closest(".table-controls");
       const typingInSetup = setupForm && setupForm.contains(active);
-      // Don't yank the page away mid-typing, and never discard unsaved setup input.
-      if (typingInFilter || typingInSetup || setupDirty) { scheduleRefresh(); return; }
+      // Don't yank the page away mid-typing, discard unsaved setup input,
+      // clear a checked selection, or interrupt a send that's polling
+      // (a reload here would abandon the in-flight poll and toast).
+      if (typingInFilter || typingInSetup || setupDirty
+          || hasRowsSelected() || sendInProgress()) {
+        scheduleRefresh();
+        return;
+      }
       window.location.reload();
     }, REFRESH_MS);
   }
@@ -435,6 +470,29 @@
     if (setupForm && setupForm.contains(e.target)) {
       if (timer) clearTimeout(timer);
       scheduleRefresh();
+    }
+  });
+})();
+
+// --- Bounce check ---
+(function () {
+  const btn = document.getElementById("check-bounces-btn");
+  const result = document.getElementById("check-bounces-result");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Checking…";
+    result.textContent = "";
+    try {
+      const resp = await fetch("/api/check-bounces", { method: "POST" });
+      const data = await resp.json();
+      result.textContent = (data.ok ? "" : "✗ ") + data.message;
+      if (data.ok && data.updated) setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      result.textContent = "✗ Network error: " + err.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Check bounces now";
     }
   });
 })();

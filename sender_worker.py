@@ -12,9 +12,14 @@ import os
 import random
 import threading
 import time
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 import db
 import mail_service
+
+ENV_PATH = Path(__file__).parent / ".env"
 
 
 class SenderWorker:
@@ -24,6 +29,11 @@ class SenderWorker:
         self._thread = None
         self._stop_event = threading.Event()
         self._poll_interval = 2  # seconds between job polls
+
+    def _load_settings(self):
+        """Re-read pacing/cap from .env on every job so a value changed in the
+        dashboard's setup form takes effect without restarting the process."""
+        load_dotenv(ENV_PATH, override=True)
         self._min_delay = int(os.getenv("MIN_DELAY_SECONDS", "45"))
         self._max_delay = int(os.getenv("MAX_DELAY_SECONDS", "120"))
         self._max_per_day = int(os.getenv("MAX_EMAILS_PER_DAY", "20"))
@@ -32,6 +42,7 @@ class SenderWorker:
         if self._thread is not None and self._thread.is_alive():
             return  # already running
         self._stop_event.clear()
+        db.recover_interrupted_sends()
         self._thread = threading.Thread(target=self._run_loop, daemon=True,
                                          name="sender-worker")
         self._thread.start()
@@ -60,6 +71,7 @@ class SenderWorker:
 
     def _process_job(self, job_id: int):
         """Process all queued items in a single send job."""
+        self._load_settings()
         db.update_send_job(job_id, status="running", started_at=db.now())
 
         while not self._stop_event.is_set():
@@ -68,7 +80,9 @@ class SenderWorker:
             if sent_today >= self._max_per_day:
                 print(f"  [sender-worker] daily cap ({self._max_per_day}) reached, "
                       f"pausing job {job_id}")
-                # Mark remaining items as skipped (they stay queued for next day)
+                self._revert_remaining(
+                    job_id, "Daily send cap reached — will resume automatically tomorrow."
+                )
                 break
 
             # Get next queued item
@@ -120,8 +134,7 @@ class SenderWorker:
                              "Auth failed — job halted.",
                              detail={"error": result.message})
                 print(f"  [sender-worker] ✗ auth failed — halting job {job_id}")
-                # Revert remaining queued items back to ready
-                self._revert_remaining(job_id)
+                self._revert_remaining(job_id, f"Send halted: {result.message}")
                 break
 
             elif result.retryable:
@@ -166,17 +179,21 @@ class SenderWorker:
         # Mark job completed
         db.update_send_job(job_id, status="completed", completed_at=db.now())
 
-    def _revert_remaining(self, job_id: int):
-        """On auth failure: revert all still-queued items back to 'ready'."""
+    def _revert_remaining(self, job_id: int, reason: str):
+        """Revert all still-queued items in this job back to 'ready' so they
+        aren't stuck (used on daily-cap pause and on account-wide auth failure —
+        neither is specific to those particular companies)."""
         conn = db.get_connection()
         items = conn.execute(
             "SELECT application_id FROM send_job_items "
             "WHERE job_id = ? AND status = 'queued'", (job_id,)
         ).fetchall()
+        now = db.now()
         for item in items:
             conn.execute(
-                "UPDATE applications SET status = 'ready', updated_at = ? "
-                "WHERE id = ?", (db.now(), item["application_id"])
+                "UPDATE applications SET status = 'ready', error_message = ?, "
+                "updated_at = ? WHERE id = ?",
+                (reason, now, item["application_id"])
             )
         conn.execute(
             "UPDATE send_job_items SET status = 'skipped' "

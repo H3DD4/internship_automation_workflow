@@ -94,6 +94,11 @@ def test_db_schema_and_migrations(tmp_db: Path):
     conn.commit()
     conn.close()
 
+    # init_db()'s migrations only run once per DB_PATH per process (so the
+    # dashboard calling it on every request doesn't re-run them each time) —
+    # simulate a fresh process picking up this pre-existing DB file, which is
+    # the real scenario the migration exists for.
+    db._initialized_path = None
     db.init_db()
     row = db.get_application_by_email("old@example.com")
     assert row["status"] == "ready", f"expected ready, got {row['status']}"
@@ -108,8 +113,9 @@ def test_send_job_lifecycle(tmp_db: Path):
     app_id = db.get_or_create_application("Acme", "acme@test.com", "https://acme.com")
     db.update_application(app_id, status="ready", subject="Hi", body="Body text")
 
-    job_id = db.create_send_job([app_id])
+    job_id, queued_ids = db.create_send_job([app_id])
     assert job_id > 0
+    assert queued_ids == [app_id]
 
     app = db.get_application_by_id(app_id)
     assert app["status"] == "queued"
@@ -166,16 +172,20 @@ def test_sender_worker_processes_job(tmp_db: Path):
 
     app_id = db.get_or_create_application("SendCo", "send@test.com", "")
     db.update_application(app_id, status="ready", subject="S", body="B")
-    job_id = db.create_send_job([app_id])
+    job_id, _ = db.create_send_job([app_id])
 
     worker = sender_worker.SenderWorker()
-    worker._min_delay = 0
-    worker._max_delay = 0
-    worker._max_per_day = 100
 
+    # _process_job() now (re-)reads pacing/cap from the environment at the
+    # start of every job (so a value changed via the dashboard takes effect
+    # without a restart) rather than once at __init__ — so overriding them
+    # for this test means setting the env vars it reads, not the instance
+    # attributes directly (those get overwritten by _load_settings()).
+    env_overrides = {"MIN_DELAY_SECONDS": "0", "MAX_DELAY_SECONDS": "0", "MAX_EMAILS_PER_DAY": "100"}
     with patch.object(mail_service, "send", return_value=mail_service.SendResult(
         success=True, message="sent", provider="smtp"
-    )), patch("builtins.print"):
+    )), patch("builtins.print"), patch.dict(os.environ, env_overrides, clear=False), \
+         patch("sender_worker.load_dotenv"):
         worker._process_job(job_id)
 
     app = db.get_application_by_id(app_id)
@@ -253,7 +263,7 @@ def test_pipeline_writer_marks_ready(tmp_db: Path):
         "applicant_name": "Me",
         "target_role": "Intern",
     }
-    pipeline = Pipeline(FakeClient(), cfg, "model", dry_run=False,
+    pipeline = Pipeline(FakeClient(), cfg, "model",
                         research_workers=1, writer_workers=1)
 
     with patch("builtins.print"):
@@ -281,11 +291,17 @@ def test_dashboard_api_routes(tmp_db: Path):
     flask_app.config["TESTING"] = True
     client = flask_app.test_client()
 
+    # POSTs must carry a same-origin Origin header, or the dashboard's CSRF
+    # guard (added to block a cross-site page from silently exfiltrating the
+    # AI key via a forged /setup, or queuing sends via a forged /api/send-job)
+    # rejects them with 403.
+    same_origin = {"Origin": "http://localhost"}
+
     # Edit protection on sent
     db.update_application(app_id, status="sent")
     resp = client.post("/api/update-draft", json={
         "app_id": app_id, "subject": "X", "body": "Y"
-    })
+    }, headers=same_origin)
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["ok"] is False
@@ -293,7 +309,7 @@ def test_dashboard_api_routes(tmp_db: Path):
 
     db.update_application(app_id, status="ready", subject="Sub", body="Body")
 
-    resp = client.post("/api/send-job", json={"app_ids": [app_id]})
+    resp = client.post("/api/send-job", json={"app_ids": [app_id]}, headers=same_origin)
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["ok"] is True

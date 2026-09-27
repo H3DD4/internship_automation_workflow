@@ -46,23 +46,29 @@ def send(app: dict) -> SendResult:
             error_code="no_cv", message="CV_FILE_PATH not set in .env."
         )
 
-    # Detect which provider will be used
+    # Resolve OAuth credentials exactly once per send (get_credentials() can
+    # trigger a network token refresh when expired) and pass the result down
+    # to send_email() instead of letting each layer re-resolve it.
     provider = "smtp"
+    oauth_credentials = None
     try:
-        from google_auth_helper import token_exists, get_credentials
-        if token_exists() and get_credentials() is not None:
+        from google_auth_helper import get_credentials
+        oauth_credentials = get_credentials()
+        if oauth_credentials is not None:
             provider = "gmail_api"
     except ImportError:
         pass
 
     try:
-        send_email(
+        message_id = send_email(
             gmail_address, gmail_password,
-            app["email"], app["subject"], app["body"], cv_path
+            app["email"], app["subject"], app["body"], cv_path,
+            oauth_credentials=oauth_credentials,
         )
         return SendResult(
             success=True,
             message=f"Sent to {app['email']}",
+            message_id=message_id or "",
             provider=provider
         )
     except AuthenticationError as e:

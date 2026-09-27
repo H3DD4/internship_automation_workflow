@@ -61,7 +61,7 @@
         <textarea id="body" name="body" rows="14" required>{{ application.body or '' }}</textarea>
         <button class="button button--primary" type="submit">Save email draft</button>
       </form>
-      {% if application.status in ('ready', 'failed', 'retry_wait', 'retry_later') and application.subject %}
+      {% if application.status in ('ready', 'failed', 'retry_wait') and application.subject %}
       <button class="button button--primary send-detail-btn" id="send-detail-btn"
               data-app-id="{{ application.id }}" type="button"
               style="margin-top: 12px;">

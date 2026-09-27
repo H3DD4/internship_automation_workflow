@@ -13,5 +13,6 @@ __pycache__/
 venv/
 token.json
 client_secret_*.json
+credentials.json
 _diag_ai.py
 _check_db.py

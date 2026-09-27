@@ -77,6 +77,8 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.01em
 .setup-status, .run-label { display: flex; align-items: center; gap: 8px; color: #8A93A3; font: 12px "JetBrains Mono", monospace; white-space: nowrap; }
 .setup-status--ready { color: #4ADE80; }
 .setup-status--ready .dot { background: #4ADE80; }
+.setup-status--partial { color: #FBBF24; }
+.setup-status--partial .dot { background: #FBBF24; }
 .flash-stack { display: grid; gap: 8px; margin: -16px 0 24px; }
 .flash { padding: 11px 14px; border-radius: 7px; font-size: 13px; border: 1px solid; }
 .flash--success { color: #4ADE80; background: rgba(74,222,128,.08); border-color: rgba(74,222,128,.25); }

@@ -7,12 +7,52 @@ Includes:
 """
 
 import json
+import re
 import time
 import random
 import threading
 from types import SimpleNamespace
 
 import requests
+
+
+def extract_json_object(text: str) -> str | None:
+    """Return the last balanced {...} JSON object found in `text`, or None.
+
+    Reasoning models sometimes wrap the JSON in prose/markdown, or only emit
+    it inside a "thinking" field — this scans for balanced braces (tracking
+    string/escape state so braces inside string values don't confuse it)
+    instead of relying on a schema-specific regex.
+    """
+    if not text:
+        return None
+
+    best = None
+    depth = 0
+    start = None
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    best = text[start:i + 1]
+    return best
 
 
 def _extract_message_text(message: dict) -> str:
@@ -27,9 +67,9 @@ def _extract_message_text(message: dict) -> str:
     reasoning = (message.get("reasoning_content") or "").strip()
     if reasoning:
         # Reasoning models sometimes put the final JSON only in reasoning_content.
-        for block in reversed(re.findall(r"\{[^{}]*\"subject\"[^{}]*\"body\"[^{}]*\}", reasoning, re.DOTALL)):
-            if block.strip():
-                return block.strip()
+        block = extract_json_object(reasoning)
+        if block:
+            return block
         if not content and len(reasoning) > 50:
             return reasoning
 
@@ -82,7 +122,7 @@ class _Messages:
         self.client = client
 
     def create(self, model: str, max_tokens: int, system: str, messages: list,
-               max_attempts: int = 5):
+               max_attempts: int = 3):
         payload = {
             "model": model,
             "max_tokens": max_tokens,
@@ -180,3 +220,17 @@ class _Messages:
         print(f"    [ai-retry] attempt {attempt} failed ({reason}) — "
               f"retrying in {delay:.1f}s")
         time.sleep(delay)
+
+
+def build_model_fallback_list(primary: str,
+                               fallbacks: tuple = ("qwen3.8-flash", "mimo-v2.5", "glm-5.3-flash")) -> list[str]:
+    """Ordered, de-duplicated [primary, *fallbacks] — shared by both agents so a
+    model that returns empty/malformed output (common with reasoning models
+    under narrow prompts) falls through to another rather than failing the
+    whole company. Transport-level errors are already retried inside
+    CompatibleAIClient; this list is for content-shaped failures only."""
+    models = []
+    for m in (primary, *fallbacks):
+        if m and m not in models:
+            models.append(m)
+    return models

@@ -17,27 +17,12 @@ import requests
 from bs4 import BeautifulSoup
 
 from retry import with_retry
+from ai_client import extract_json_object, build_model_fallback_list
 
 # Transient network errors worth retrying a fetch for. Explicitly excludes
 # HTTP-status errors like 404 (raise_for_status -> HTTPError) since retrying
 # a page that genuinely doesn't exist just wastes time.
 _FETCH_RETRY_ON = (requests.ConnectionError, requests.Timeout)
-
-try:
-    import anthropic
-    # Transient Claude API errors worth retrying. Falls back to a generic
-    # Exception tuple if the installed SDK version doesn't expose one of
-    # these names, so this never breaks on an SDK upgrade/downgrade.
-    _API_RETRY_ON = tuple(
-        cls for cls in (
-            getattr(anthropic, "APIConnectionError", None),
-            getattr(anthropic, "APITimeoutError", None),
-            getattr(anthropic, "RateLimitError", None),
-            getattr(anthropic, "InternalServerError", None),
-        ) if cls is not None
-    ) or (Exception,)
-except ImportError:  # pragma: no cover - anthropic is a hard requirement, just a safety net
-    _API_RETRY_ON = (Exception,)
 
 RESEARCH_SYSTEM_PROMPT_TEMPLATE = """You are a research assistant that reads raw, messy
 website text and extracts a concise, structured summary of a company for use
@@ -153,38 +138,47 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
         f"Raw website text (truncated):\n\n{site_text}"
     )
 
-    try:
-        response = with_retry(
-            lambda: client.messages.create(
-                model=model,
-                max_tokens=500,
+    # Transport-level errors (network, 429, 5xx) are already retried inside
+    # CompatibleAIClient.messages.create. Here we only fall through to another
+    # model when a call succeeds at the HTTP level but returns unusable
+    # content (empty/malformed JSON) — common with reasoning models under a
+    # narrow max_tokens budget.
+    last_err = None
+    for attempt_model in build_model_fallback_list(model):
+        try:
+            response = client.messages.create(
+                model=attempt_model,
+                max_tokens=2000,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
-            ),
-            attempts=3, base_delay=1.5, retry_on=_API_RETRY_ON,
-            what=f"Claude research call for {company_name}",
-        )
-        raw = response.content[0].text.strip()
-        raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
-        data = json.loads(raw)
+            )
+            raw = response.content[0].text.strip()
+            block = extract_json_object(raw) or raw
+            data = json.loads(block)
 
-        # make sure all expected keys exist
-        for key in fallback:
-            data.setdefault(key, fallback[key])
+            # make sure all expected keys exist
+            for key in fallback:
+                data.setdefault(key, fallback[key])
 
-        # guard against the model inventing ids that aren't in our config
-        known_ids = {m["id"] for m in extra_mentions}
-        matches = data.get("matched_extra_mentions", [])
-        if not isinstance(matches, list):
-            matches = [matches]
-        valid_matches = [m for m in matches if m in known_ids]
+            # guard against the model inventing ids that aren't in our config
+            known_ids = {m["id"] for m in extra_mentions}
+            matches = data.get("matched_extra_mentions", [])
+            if not isinstance(matches, list):
+                matches = [matches]
+            valid_matches = [m for m in matches if m in known_ids]
 
-        data["matched_extra_mentions"] = valid_matches
-        data["match_reasons"] = {
-            k: v for k, v in data.get("match_reasons", {}).items() if k in valid_matches
-        }
+            data["matched_extra_mentions"] = valid_matches
+            data["match_reasons"] = {
+                k: v for k, v in data.get("match_reasons", {}).items() if k in valid_matches
+            }
 
-        return data
-    except Exception as e:
-        print(f"    [research] AI parsing failed for {company_name}: {e}")
-        return fallback
+            if attempt_model != model:
+                print(f"    [research] used fallback model {attempt_model} for {company_name}")
+            return data
+        except Exception as e:
+            last_err = e
+            print(f"    [research] model {attempt_model} failed for {company_name}: {e}")
+            continue
+
+    print(f"    [research] AI parsing failed for {company_name}: {last_err}")
+    return fallback

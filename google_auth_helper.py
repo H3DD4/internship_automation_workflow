@@ -44,8 +44,6 @@ def _find_client_secret() -> Optional[Path]:
             return candidate
     return None
 
-CLIENT_SECRET_PATH = _find_client_secret()
-
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.readonly",   # for bounce checking
@@ -123,8 +121,14 @@ def revoke_token() -> None:
 # Gmail API helpers
 # ---------------------------------------------------------------------------
 
-def _build_gmail_service():
-    creds = get_credentials()
+def _build_gmail_service(credentials=None):
+    """`credentials` lets a caller that already resolved (and possibly
+    refreshed) the token via get_credentials() pass it straight through,
+    instead of this function calling get_credentials() again — each call
+    can trigger a network refresh when the token is expired, so resolving
+    it once per send instead of independently at every layer avoids doing
+    that refresh redundantly (up to 3x per send previously)."""
+    creds = credentials if credentials is not None else get_credentials()
     if not creds:
         raise RuntimeError("No valid OAuth token — user must re-authorise.")
     from googleapiclient.discovery import build
@@ -150,9 +154,13 @@ def send_email_via_gmail_api(
     body: str,
     cv_file_path: str,
     reply_to: Optional[str] = None,
-) -> None:
+    credentials=None,
+) -> str:
     """
-    Send one email via Gmail API (OAuth).  Raises RuntimeError on failure.
+    Send one email via Gmail API (OAuth). Returns the Gmail-assigned message
+    id. Raises googleapiclient.errors.HttpError / google.auth.exceptions.
+    RefreshError (or another exception) on failure — mailer.py classifies
+    these into Permanent/Transient/Authentication errors.
     The From address is the authorised account — no credentials needed beyond token.json.
     """
     from_email = get_authorized_email() or "me"
@@ -180,8 +188,9 @@ def send_email_via_gmail_api(
     )
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    service = _build_gmail_service()
-    service.users().messages().send(userId="me", body={"raw": raw}).execute()
+    service = _build_gmail_service(credentials)
+    result = service.users().messages().send(userId="me", body={"raw": raw}).execute()
+    return result.get("id", "")
 
 
 def oauth_is_configured() -> bool:

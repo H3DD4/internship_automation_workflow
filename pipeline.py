@@ -14,6 +14,7 @@ RESUME RULES (by email, stable application id in DB):
 import json
 import threading
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import db
@@ -58,12 +59,11 @@ def needs_preparation(app: dict | None) -> bool:
 
 
 class Pipeline:
-    def __init__(self, client, cfg, model: str, dry_run: bool,
+    def __init__(self, client, cfg, model: str,
                  research_workers: int = 3, writer_workers: int = 2):
         self.client = client
         self.cfg = cfg
         self.model = model
-        self.dry_run = dry_run
 
         self.research_pool = ThreadPoolExecutor(max_workers=research_workers,
                                                  thread_name_prefix="research")
@@ -71,6 +71,7 @@ class Pipeline:
                                                thread_name_prefix="writer")
 
         self._shutdown = threading.Event()
+        self._stop_file = os.getenv("PIPELINE_STOP_FILE")
 
         self._lock = threading.Lock()
         self.total_companies = 0
@@ -81,6 +82,22 @@ class Pipeline:
         with self._lock:
             self.results[outcome] = self.results.get(outcome, 0) + 1
             self.terminal_count += 1
+
+    def _should_stop(self) -> bool:
+        return self._shutdown.is_set()
+
+    def _watch_stop_file(self):
+        """Polls for the stop file and sets _shutdown as soon as it appears —
+        the submit loop in run() finishes almost instantly (it only enqueues
+        futures), so checking the stop file there alone would never catch a
+        Stop click made after all rows are queued. Tasks themselves check
+        _should_stop() at their own entry point, so setting the flag here is
+        what actually makes "Stop safely" take effect on not-yet-started work."""
+        while not self._shutdown.is_set():
+            if self._stop_file and os.path.exists(self._stop_file):
+                self._shutdown.set()
+                break
+            time.sleep(1)
 
     def _mark_ready_from_draft(self, app_id: int, email: str, company_name: str,
                                 draft: dict, *, reused: bool):
@@ -94,6 +111,9 @@ class Pipeline:
 
     def _research_task(self, row):
         company_name, email, website, contact_name = row
+        if self._should_stop():
+            self._record("skipped")
+            return
         try:
             existing = db.get_application_by_email(email)
             app_id = db.get_or_create_application(company_name, email, website, contact_name)
@@ -157,6 +177,9 @@ class Pipeline:
             self._record("failed")
 
     def _writer_task(self, app_id, company_name, email, website, contact_name, context):
+        if self._should_stop():
+            self._record("skipped")
+            return
         try:
             existing = db.get_application_by_id(app_id)
             draft = _load_draft(email, existing)
@@ -200,15 +223,23 @@ class Pipeline:
         companies_rows: list of (company_name, email, website, contact_name) tuples.
         Returns the results dict. Safe to Ctrl+C.
         """
+        recovered = db.recover_stale_preparation_rows()
+        if recovered:
+            print(f"Recovered {recovered} row(s) left mid-stage by a previous crashed/interrupted run.")
+
         self.total_companies = len(companies_rows)
         if self.total_companies == 0:
             print("Nothing to prepare — all selected companies are already done or in-flight.")
             return self.results
 
+        stop_watcher = None
+        if self._stop_file:
+            stop_watcher = threading.Thread(target=self._watch_stop_file, daemon=True,
+                                             name="stop-watcher")
+            stop_watcher.start()
+
         for row in companies_rows:
-            stop_file = os.getenv("PIPELINE_STOP_FILE")
-            if stop_file and os.path.exists(stop_file):
-                self._shutdown.set()
+            if self._should_stop():
                 break
             self.research_pool.submit(self._research_task, row)
 
@@ -222,5 +253,7 @@ class Pipeline:
             self._shutdown.set()
             self.research_pool.shutdown(wait=False, cancel_futures=True)
             self.writer_pool.shutdown(wait=False, cancel_futures=True)
+        finally:
+            self._shutdown.set()  # let the stop-watcher thread exit promptly
 
         return self.results

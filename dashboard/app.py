@@ -27,16 +27,20 @@ import imaplib
 import socket
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
-from dotenv import dotenv_values, load_dotenv
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, session, url_for
+from dotenv import load_dotenv
 import db
 import sender_worker
 
-app = Flask(__name__)
-app.secret_key = os.getenv("DASHBOARD_SECRET", "local-dashboard-secret")
+# Allows OAuth's local HTTP redirect (127.0.0.1:5050) to satisfy oauthlib's
+# strict HTTPS check. Safe only because this dashboard is hardcoded to bind
+# to the loopback address (see app.run(host="127.0.0.1", ...) at the bottom
+# of this file) — set once here rather than per-request.
+os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 ROOT_DIR = Path(__file__).parent.parent
 UPLOAD_DIR = ROOT_DIR / "dashboard_uploads"
@@ -45,6 +49,58 @@ MAIN_PATH = ROOT_DIR / "main.py"
 RUN_LOG_PATH = ROOT_DIR / "dashboard_run.log"
 STOP_FILE = ROOT_DIR / "dashboard_stop.flag"
 run_process = None
+
+
+def _format_env_line(key: str, value) -> str:
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'{key}="{escaped}"'
+
+
+def _save_env(values):
+    """Update keys in .env in place, preserving comments, blank lines, and the
+    existing ordering; keys not already present are appended at the end.
+
+    Rewriting the whole file from just its parsed key=value pairs (the
+    previous behavior) silently deleted every comment — and .env.example,
+    which users copy to .env, is mostly comments explaining each setting,
+    so the first dashboard save wiped all of that guidance.
+    """
+    lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
+    remaining = {key: value for key, value in values.items() if value is not None}
+
+    updated = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in remaining:
+                updated.append(_format_env_line(key, remaining.pop(key)))
+                continue
+        updated.append(line)
+
+    for key, value in remaining.items():
+        updated.append(_format_env_line(key, value))
+
+    ENV_PATH.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
+
+def _get_or_create_dashboard_secret() -> str:
+    """A hardcoded Flask secret_key lets anyone forge a valid session cookie
+    for this app (used for the OAuth CSRF-state/PKCE-verifier and flash
+    messages) — generate a random one on first run and persist it in .env
+    so it stays stable across restarts instead of rotating (which would
+    invalidate any session mid-OAuth-flow) or staying a known constant."""
+    load_dotenv(ENV_PATH, override=True)
+    existing = (os.getenv("DASHBOARD_SECRET", "") or "").strip()
+    if existing:
+        return existing
+    generated = secrets.token_hex(32)
+    _save_env({"DASHBOARD_SECRET": generated})
+    return generated
+
+
+app = Flask(__name__)
+app.secret_key = _get_or_create_dashboard_secret()
 
 STATUS_LABELS = {
     "pending": "Pending",
@@ -57,13 +113,14 @@ STATUS_LABELS = {
     "sent": "Sent",
     "failed": "Failed",
     "retry_wait": "Retry later",
-    "retry_later": "Retry later",
     "bounced": "Bounced",
 }
 
 # Statuses that mean "a background worker is actively on this one right now" —
-# used for the small live-activity indicator in the top bar.
-IN_PROGRESS_STATUSES = {"researching", "researched", "writing", "sending", "queued"}
+# used for the small live-activity indicator in the top bar. "researched" is
+# NOT included: it means research finished and it's waiting to be picked up
+# by a writer worker, not that anything is actively running on it.
+IN_PROGRESS_STATUSES = {"researching", "writing", "sending", "queued"}
 
 
 def _run_state():
@@ -148,8 +205,17 @@ def _setup_state():
                       and not _is_placeholder(gmail_password))
     has_gmail = has_gmail_oauth or has_gmail_smtp
 
+    # Preparation (research + write) only needs an AI key, a profile, and a
+    # companies file — Gmail and the CV are send-time-only concerns. Gating
+    # "Start preparation" on Gmail/CV (as "ready" alone used to) blocked
+    # drafting emails for anyone who hadn't connected Gmail yet.
+    prep_ready = has_api_key and has_profile and has_companies
+    send_ready = prep_ready and has_gmail and has_cv
+
     return {
-        "ready": has_api_key and has_gmail and has_profile and has_cv and has_companies,
+        "ready": send_ready,
+        "prep_ready": prep_ready,
+        "send_ready": send_ready,
         "has_api_key": has_api_key,
         "has_gmail": has_gmail,
         "has_gmail_oauth": has_gmail_oauth,
@@ -209,14 +275,37 @@ def _validate_companies_file(path: Path) -> tuple[bool, str, int]:
     return True, "", usable
 
 
-def _save_env(values):
-    existing = dict(dotenv_values(ENV_PATH)) if ENV_PATH.exists() else {}
-    existing.update(values)
-    with ENV_PATH.open("w", encoding="utf-8") as env_file:
-        for key, value in existing.items():
-            if value is not None:
-                escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-                env_file.write(f'{key}="{escaped}"\n')
+def _request_origin_ok() -> bool:
+    """Best-effort CSRF guard for state-changing requests.
+
+    A browser always attaches an Origin header to a cross-site POST/fetch
+    (this can't be suppressed by an attacker page), so comparing it against
+    this dashboard's own origin blocks a foreign page's auto-submitted form
+    or fetch() from reaching /setup, /run, /api/send-job, etc. Without this,
+    any website you merely visit could silently rewrite AI_BASE_URL to
+    exfiltrate your AI key and every prompt, or queue real sends.
+    """
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        return origin.rstrip("/") == request.host_url.rstrip("/")
+    referer = request.headers.get("Referer")
+    if referer:
+        return urlparse(referer).netloc == request.host
+    # A real browser submission always sends at least one of these; a
+    # state-changing request with neither is treated as untrusted.
+    return False
+
+
+@app.before_request
+def _csrf_guard():
+    if request.method in ("GET", "HEAD", "OPTIONS") or request.endpoint == "static":
+        return None
+    if not _request_origin_ok():
+        message = "Request blocked: it didn't come from this dashboard (origin check failed)."
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "message": message}), 403
+        abort(403, description=message)
+    return None
 
 
 @app.route("/")
@@ -243,7 +332,7 @@ def index():
         except (TypeError, json.JSONDecodeError):
             a["matched_extra_mentions_list"] = []
         # Short inline error/retry reason for the list view, so a failed or
-        # retry_later row is understandable at a glance without a click-through.
+        # retry_wait row is understandable at a glance without a click-through.
         msg = a.get("error_message") or ""
         a["error_short"] = (msg[:80] + "…") if len(msg) > 80 else msg
 
@@ -300,14 +389,21 @@ def setup():
     uploads.mkdir(exist_ok=True)
     load_dotenv(ENV_PATH, override=True)
     from werkzeug.utils import secure_filename
+
+    # Only what PREPARATION needs is required here. Gmail (address+app
+    # password OR OAuth, checked separately) and the CV are send-time-only
+    # concerns — requiring them up front used to block saving a workspace,
+    # and therefore starting preparation, before Gmail was connected at all.
     field_names = {
         "AI_API_KEY": "ai_api_key",
         "AI_BASE_URL": "ai_base_url",
         "AI_MODEL": "ai_model",
-        "GMAIL_ADDRESS": "gmail_address",
-        "GMAIL_APP_PASSWORD": "gmail_app_password",
         "YOUR_NAME": "your_name",
         "YOUR_TARGET_ROLE": "target_role",
+    }
+    optional_field_names = {
+        "GMAIL_ADDRESS": "gmail_address",
+        "GMAIL_APP_PASSWORD": "gmail_app_password",
     }
     # Keep previously-saved values when a field is left blank (e.g. passwords
     # shown as "Saved locally" placeholders must not be wiped on re-save).
@@ -315,13 +411,17 @@ def setup():
         key: request.form.get(form_name, "").strip() or os.getenv(key, "")
         for key, form_name in field_names.items()
     }
+    optional_fields = {
+        key: request.form.get(form_name, "").strip() or os.getenv(key, "")
+        for key, form_name in optional_field_names.items()
+    }
     # Back-compat: an older .env may only have ANTHROPIC_API_KEY.
     if not required_fields["AI_API_KEY"]:
         required_fields["AI_API_KEY"] = os.getenv("ANTHROPIC_API_KEY", "")
     required_fields["AI_KEY_PORTAL"] = "https://chat.b.ai/key"
-    if not all(required_fields.values()):
+    if not all(v for k, v in required_fields.items() if k != "AI_KEY_PORTAL"):
         missing = [k for k, v in required_fields.items() if not v and k != "AI_KEY_PORTAL"]
-        flash(f"Add every credential and profile field before saving. Missing: {', '.join(missing)}.", "error")
+        flash(f"Add every field before saving. Missing: {', '.join(missing)}.", "error")
         return redirect(url_for("index"))
 
     companies = request.files.get("companies_file")
@@ -341,9 +441,6 @@ def setup():
     if not companies and (existing_companies is None or not existing_companies.is_file()):
         flash("Upload a CSV or Excel companies file.", "error")
         return redirect(url_for("index"))
-    if not cv and (existing_cv is None or not existing_cv.is_file()):
-        flash("Upload your CV so it can be attached to applications.", "error")
-        return redirect(url_for("index"))
 
     companies_path = existing_companies
     cv_path = existing_cv
@@ -361,15 +458,19 @@ def setup():
     if not ok:
         flash(f"Companies file problem: {message}", "error")
         return redirect(url_for("index"))
-    if not cv_path or not cv_path.is_file() or cv_path.stat().st_size == 0:
+    if cv and (not cv_path.is_file() or cv_path.stat().st_size == 0):
         flash("CV file is empty or unreadable — please re-upload it.", "error")
         return redirect(url_for("index"))
-    _save_env({**required_fields,
-               "CV_FILE_PATH": str(cv_path),
-               "COMPANIES_FILE_PATH": str(companies_path)})
+
+    env_updates = {**required_fields, **optional_fields, "COMPANIES_FILE_PATH": str(companies_path)}
+    if cv_path:
+        env_updates["CV_FILE_PATH"] = str(cv_path)
+    _save_env(env_updates)
     load_dotenv(ENV_PATH, override=True)
+
+    cv_note = f"CV attached as {cv_path.name}" if cv_path else "no CV yet — add one before sending"
     flash(f"Workspace saved — {companies_rows} usable email(s) in {companies_path.name}, "
-          f"CV attached as {cv_path.name}. You can start with a dry run below.", "success")
+          f"{cv_note}. You can start preparation below.", "success")
     return redirect(url_for("index"))
 
 
@@ -452,16 +553,23 @@ def api_validate_gmail():
 # Google OAuth 2.0 routes
 # ---------------------------------------------------------------------------
 
-def _get_oauth_flow(redirect_uri: str = None):
-    """Build a google_auth_oauthlib Flow from the client secret file."""
-    from google_auth_helper import CLIENT_SECRET_PATH, SCOPES
+def _get_oauth_flow(redirect_uri: str = None, code_verifier: str = None):
+    """Build a google_auth_oauthlib Flow from the client secret file.
+
+    Re-resolves the client-secret path on every call (rather than trusting a
+    module-import-time constant) so dropping the file in after the dashboard
+    process has already started is picked up without a restart.
+    """
+    from google_auth_helper import _find_client_secret, SCOPES
     from google_auth_oauthlib.flow import Flow
-    if not CLIENT_SECRET_PATH:
+    client_secret_path = _find_client_secret()
+    if not client_secret_path:
         return None
     flow = Flow.from_client_secrets_file(
-        str(CLIENT_SECRET_PATH),
+        str(client_secret_path),
         scopes=SCOPES,
         redirect_uri=redirect_uri or url_for("oauth_callback", _external=True),
+        code_verifier=code_verifier,
     )
     return flow
 
@@ -479,6 +587,11 @@ def oauth_start():
         return redirect(url_for("index"))
     state = secrets.token_urlsafe(16)
     session["oauth_state"] = state
+    # The Flow auto-generated a PKCE code_verifier when it was constructed
+    # above — it must be reused (not re-generated) by the callback's Flow
+    # when exchanging the code, or Google rejects the exchange because the
+    # verifier no longer matches the code_challenge sent here.
+    session["oauth_code_verifier"] = flow.code_verifier
     auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
@@ -499,15 +612,14 @@ def oauth_callback():
 
     # State check (CSRF protection)
     state = request.args.get("state", "")
+    code_verifier = session.pop("oauth_code_verifier", None)
     if state != session.pop("oauth_state", None):
         flash("OAuth state mismatch — please try connecting again.", "error")
         return redirect(url_for("index"))
 
     try:
-        flow = _get_oauth_flow()
-        # oauthlib strict HTTPS check — allow HTTP for localhost only
-        os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-        flow.fetch_token(authorization_response=request.url.replace("http://", "http://"))
+        flow = _get_oauth_flow(code_verifier=code_verifier)
+        flow.fetch_token(authorization_response=request.url)
         creds = flow.credentials
         _save_credentials(creds)
         # Fetch the actual email address and persist it in token.json
@@ -525,7 +637,7 @@ def oauth_callback():
     return redirect(url_for("index"))
 
 
-@app.route("/oauth/disconnect")
+@app.post("/oauth/disconnect")
 def oauth_disconnect():
     """Delete token.json — user must re-authorise to use OAuth again."""
     from google_auth_helper import revoke_token
@@ -601,8 +713,9 @@ def run_pipeline():
         return redirect(url_for("index"))
     setup_state = _setup_state()
     companies_path = os.getenv("COMPANIES_FILE_PATH")
-    if not setup_state["ready"] or not companies_path:
-        flash("Finish the setup form before starting the pipeline.", "error")
+    if not setup_state["prep_ready"] or not companies_path:
+        flash("Add your AI key, profile, and companies file before starting preparation "
+              "(Gmail and CV are only needed later, when you send).", "error")
         return redirect(url_for("index"))
 
     STOP_FILE.unlink(missing_ok=True)
@@ -629,6 +742,24 @@ def stop_pipeline():
     return redirect(url_for("index"))
 
 
+@app.post("/api/check-bounces")
+def api_check_bounces():
+    """Scan the inbox for bounce notifications now, instead of waiting for
+    the next scheduled/manual `python bounce_checker.py` run."""
+    load_dotenv(ENV_PATH, override=True)
+    import bounce_checker
+    try:
+        updated = bounce_checker.check_bounces()
+    except Exception as exc:
+        return jsonify({"ok": False, "message": f"Bounce check failed: {exc}"}), 500
+    return jsonify({
+        "ok": True,
+        "updated": updated,
+        "message": (f"{updated} email(s) marked as bounced." if updated
+                     else "No new bounce notifications found."),
+    })
+
+
 @app.post("/company/<int:app_id>/edit")
 def edit_email(app_id):
     application = db.get_application_by_id(app_id)
@@ -638,7 +769,7 @@ def edit_email(app_id):
         flash("Subject and body are required.", "error")
         return redirect(url_for("company_detail", app_id=app_id))
 
-    EDITABLE_STATUSES = {"ready", "failed", "retry_wait", "retry_later"}
+    EDITABLE_STATUSES = {"ready", "failed", "retry_wait"}
     if application["status"] not in EDITABLE_STATUSES:
         flash(f"Cannot edit — email is currently '{application['status']}'.", "error")
         return redirect(url_for("company_detail", app_id=app_id))
@@ -655,8 +786,7 @@ def edit_email(app_id):
 @app.route("/company/<int:app_id>")
 def company_detail(app_id):
     db.init_db()
-    applications = db.get_all_applications()
-    application = next((a for a in applications if a["id"] == app_id), None)
+    application = db.get_application_by_id(app_id)
     if not application:
         return "Not found", 404
 
@@ -697,41 +827,42 @@ def company_detail(app_id):
 
 @app.post("/api/send-job")
 def api_create_send_job():
-    """Create a send job from selected application IDs. Returns immediately."""
+    """Create a send job from selected application IDs. Returns immediately.
+
+    The actual eligibility check (sendable status + has a draft) happens
+    atomically inside db.create_send_job — that single UPDATE...WHERE is what
+    prevents two overlapping requests (a double-click, or this row's own
+    "Send" button plus "Send selected" in the same instant) from both
+    queueing the same application into two jobs.
+    """
     payload = request.get_json(silent=True) or {}
-    app_ids = payload.get("app_ids", [])
+    raw_ids = payload.get("app_ids", [])
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify({"ok": False, "message": "No emails selected."}), 400
+    try:
+        app_ids = [int(aid) for aid in raw_ids]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Invalid application id."}), 400
 
-    if not app_ids:
-        return jsonify({"ok": False, "message": "No emails selected."})
+    job_id, queued_ids = db.create_send_job(app_ids)
 
-    # Validate all IDs exist and are in a sendable status
-    sendable_statuses = {"ready", "failed", "retry_wait", "retry_later"}
-    valid_ids = []
-    for aid in app_ids:
-        aid = int(aid)
-        app = db.get_application_by_id(aid)
-        if not app:
-            continue
-        if app["status"] not in sendable_statuses:
-            continue
-        if not app.get("subject") or not app.get("body"):
-            continue
-        valid_ids.append(aid)
-
-    if not valid_ids:
+    if not queued_ids:
         return jsonify({"ok": False,
-                        "message": "None of the selected emails are ready to send."})
+                        "message": "None of the selected emails are ready to send "
+                                    "(already sending, or no draft)."})
 
-    job_id = db.create_send_job(valid_ids)
-
-    # Ensure sender worker is running
     sender_worker.ensure_running()
+
+    skipped = len(app_ids) - len(queued_ids)
+    message = f"Send job created for {len(queued_ids)} email(s)."
+    if skipped:
+        message += f" ({skipped} already in progress or not ready were skipped.)"
 
     return jsonify({
         "ok": True,
         "job_id": job_id,
-        "total": len(valid_ids),
-        "message": f"Send job created for {len(valid_ids)} email(s)."
+        "total": len(queued_ids),
+        "message": message,
     })
 
 
@@ -769,9 +900,12 @@ def api_applications():
     """Paginated applications list for frontend refresh."""
     status = request.args.get("status", "").strip() or None
     search = request.args.get("search", "").strip() or None
-    page = int(request.args.get("page", 1))
-    limit = int(request.args.get("limit", 50))
-    limit = min(limit, 200)  # hard cap
+    # type=int on Werkzeug's MultiDict.get falls back to the default instead
+    # of raising when the value doesn't parse (e.g. ?page=abc) — a plain
+    # int() call here would 500 on any non-numeric query param.
+    page = max(1, request.args.get("page", 1, type=int) or 1)
+    limit = request.args.get("limit", 50, type=int) or 50
+    limit = max(1, min(limit, 200))  # hard cap
 
     rows, total = db.get_applications_paginated(
         status=status, search=search, page=page, limit=limit
@@ -798,19 +932,23 @@ def api_update_draft():
 
     if not app_id or not subject or not body:
         return jsonify({"ok": False, "message": "app_id, subject, and body required."})
+    try:
+        app_id = int(app_id)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Invalid app_id."}), 400
 
-    app = db.get_application_by_id(int(app_id))
+    app = db.get_application_by_id(app_id)
     if not app:
         return jsonify({"ok": False, "message": "Application not found."})
 
-    EDITABLE_STATUSES = {"ready", "failed", "retry_wait", "retry_later"}
+    EDITABLE_STATUSES = {"ready", "failed", "retry_wait"}
     if app["status"] not in EDITABLE_STATUSES:
         return jsonify({"ok": False,
                         "message": f"Cannot edit — status is '{app['status']}'."})
 
-    db.update_application(int(app_id), subject=subject, body=body,
+    db.update_application(app_id, subject=subject, body=body,
                           status="ready", error_message=None)
-    db.log_event(int(app_id), "write", "Email edited from dashboard.")
+    db.log_event(app_id, "write", "Email edited from dashboard.")
 
     import cache_store
     cache_store.save_draft(app["email"], {"subject": subject, "body": body})

@@ -1,39 +1,23 @@
 """
-Main orchestrator. Run with:  python main.py
+Main orchestrator — PREPARATION ONLY (research + write). Run with:  python main.py
+It never sends: review drafts and send from the dashboard (python dashboard/app.py),
+which owns pacing, the daily cap, and anti-spam measures via sender_worker.py.
+
 Optional flags:
-  --dry-run          Do research + writing, but don't actually send anything
-  --limit N          Only process the first N not-yet-handled companies (good for testing)
+  --limit N              Only prepare the first N not-yet-handled companies (good for testing)
+  --all                  Include every row from the file, not just ones still needing work
+  --companies PATH        Path to a companies file (.xlsx or .csv), default companies.xlsx
   --research-workers N   Concurrent scrape+research workers (default from .env, 3)
   --writer-workers N     Concurrent email-drafting workers (default from .env, 2)
 
 ARCHITECTURE (see pipeline.py for the full explanation):
-  Scraping + AI research + AI email drafting all run continuously in
-  background worker threads, decoupled from sending via a small queue.
-  The only strictly serial part is the send itself, which is intentionally
-  paced (anti-spam). While the pacing delay elapses, the background workers
-  keep preparing the next companies — so almost none of that delay is wasted
-  idle time waiting on scraping/AI, only on the pacing itself.
+  Scraping + AI research + AI email drafting run concurrently in background
+  worker threads (a research pool feeding a writer pool), so a long company
+  list is prepared far faster than doing each company fully in sequence.
 
   Every finished research result and drafted email is cached to disk
   (cache/ folder) and the database the instant it's ready, so re-running the
-  script (e.g. after hitting today's send cap) reuses that work instantly
-  instead of redoing it.
-
-ANTI-SPAM MEASURES BUILT IN:
-  - Random delay between sends (MIN_DELAY_SECONDS / MAX_DELAY_SECONDS in .env)
-  - Daily send cap (MAX_EMAILS_PER_DAY in .env) — script stops sending for the
-    day once hit (already-sent companies are skipped automatically via the
-    database), while background research/writing keeps prepping for tomorrow.
-  - Proper email headers + plain-text body + real PDF attachment (see mailer.py)
-  - Personalized, non-identical content per email (via the writer agent) instead
-    of one canned template blasted to everyone — identical bulk content is one
-    of the biggest spam-filter triggers.
-
-RECOMMENDATION (can't be fully automated, worth doing manually):
-  Start with a low MAX_EMAILS_PER_DAY for the first few days (e.g. 10-15) to
-  "warm up" your Gmail account's sending reputation, then increase gradually.
-  Sending hundreds on day one from a normal Gmail account is the most common
-  way to get flagged.
+  script reuses that work instantly instead of redoing it.
 """
 
 import os
@@ -58,46 +42,28 @@ DEFAULT_MODEL = "hy3"
 SETUP_URL = "http://127.0.0.1:5050"
 
 
-def _resolve_input_path(configured_value: str, extensions: tuple[str, ...], label: str) -> Path:
-    """Resolve a configured file, falling back to the dashboard upload folder."""
-    configured = Path(configured_value)
-    if not configured.is_absolute():
-        configured = Path(__file__).parent / configured
-    if configured.is_file():
-        return configured
+def _dashboard_setup_needed(companies_arg: str = None) -> bool:
+    """Return whether main.py should hand setup back to the dashboard.
 
-    upload_dir = Path(__file__).parent / "dashboard_uploads"
-    candidates = sorted(
-        (path for path in upload_dir.glob("*") if path.is_file() and path.suffix.lower() in extensions),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    ) if upload_dir.is_dir() else []
-    if candidates:
-        return candidates[0]
-
-    print(f"ERROR: no {label} found. Upload it in the dashboard at http://127.0.0.1:5050, "
-          f"or place it at '{configured}'.")
-    sys.exit(1)
-
-
-def _dashboard_setup_needed() -> bool:
-    """Return whether main.py should hand setup back to the dashboard."""
+    main.py only PREPARES emails (research + write) — it never sends, so
+    Gmail credentials and the CV (both send-time-only concerns, checked by
+    the dashboard/sender worker instead) are deliberately not required here.
+    An AI key, applicant profile, and a companies file are what preparation
+    actually needs.
+    """
     load_dotenv(override=True)
     # Accept the legacy ANTHROPIC_API_KEY as the AI key (older .env files).
     if not os.getenv("AI_API_KEY") and os.getenv("ANTHROPIC_API_KEY"):
         os.environ["AI_API_KEY"] = os.getenv("ANTHROPIC_API_KEY")
-    required = ("AI_API_KEY", "GMAIL_ADDRESS", "GMAIL_APP_PASSWORD",
-                "YOUR_NAME", "YOUR_TARGET_ROLE", "CV_FILE_PATH")
+    required = ("AI_API_KEY", "YOUR_NAME", "YOUR_TARGET_ROLE")
     if not all(os.getenv(key) for key in required):
         return True
-    cv_value = Path(os.getenv("CV_FILE_PATH"))
-    if not cv_value.is_absolute():
-        cv_value = Path(__file__).parent / cv_value
-    companies_value = os.getenv("COMPANIES_FILE_PATH", "")
-    companies_path = Path(companies_value) if companies_value else None
-    if companies_path is not None and not companies_path.is_absolute():
+
+    companies_value = companies_arg or os.getenv("COMPANIES_FILE_PATH") or "companies.xlsx"
+    companies_path = Path(companies_value)
+    if not companies_path.is_absolute():
         companies_path = Path(__file__).parent / companies_path
-    return not cv_value.is_file() or companies_path is None or not companies_path.is_file()
+    return not companies_path.is_file()
 
 
 def _open_dashboard_setup():
@@ -117,10 +83,13 @@ def _open_dashboard_setup():
 
 
 def load_config():
+    """Config for PREPARATION only (research + write). Gmail credentials and
+    the CV are send-time concerns owned by mail_service.py/sender_worker.py,
+    which read GMAIL_* / CV_FILE_PATH from .env directly — not required here,
+    so an AI-key-only setup (no Gmail connected yet) can still prepare drafts."""
     load_dotenv(override=True)
 
-    required = ["AI_API_KEY", "GMAIL_ADDRESS", "GMAIL_APP_PASSWORD",
-                "YOUR_NAME", "YOUR_TARGET_ROLE", "CV_FILE_PATH"]
+    required = ["AI_API_KEY", "YOUR_NAME", "YOUR_TARGET_ROLE"]
     if not os.getenv("AI_API_KEY") and os.getenv("ANTHROPIC_API_KEY"):
         os.environ["AI_API_KEY"] = os.getenv("ANTHROPIC_API_KEY")
     missing = [k for k in required if not os.getenv(k)]
@@ -128,8 +97,6 @@ def load_config():
         print(f"ERROR: missing required .env values: {', '.join(missing)}")
         print("Copy .env.example to .env and fill it in first.")
         sys.exit(1)
-
-    cv_path = _resolve_input_path(os.getenv("CV_FILE_PATH"), (".pdf", ".doc", ".docx"), "CV")
 
     spec_path = Path(__file__).parent / "specializations.json"
     with open(spec_path) as f:
@@ -139,17 +106,10 @@ def load_config():
         "ai_api_key": os.getenv("AI_API_KEY"),
         "ai_base_url": os.getenv("AI_BASE_URL", "https://api.b.ai/v1"),
         "ai_model": os.getenv("AI_MODEL", DEFAULT_MODEL),
-        "gmail_address": os.getenv("GMAIL_ADDRESS"),
-        "gmail_app_password": os.getenv("GMAIL_APP_PASSWORD"),
         "applicant_name": os.getenv("YOUR_NAME"),
         "target_role": os.getenv("YOUR_TARGET_ROLE"),
-        "cv_file_path": str(cv_path),
-        "min_delay": int(os.getenv("MIN_DELAY_SECONDS", 45)),
-        "max_delay": int(os.getenv("MAX_DELAY_SECONDS", 120)),
-        "max_per_day": int(os.getenv("MAX_EMAILS_PER_DAY", 20)),
         "research_workers": int(os.getenv("RESEARCH_WORKERS", 3)),
         "writer_workers": int(os.getenv("WRITER_WORKERS", 2)),
-        "ready_queue_size": int(os.getenv("READY_QUEUE_SIZE", 3)),
         "core_identity": specializations["core_identity"],
         "extra_mentions": specializations["extra_mentions"],
     }
@@ -187,6 +147,12 @@ def load_companies(path: str) -> pd.DataFrame:
         sys.exit(1)
 
     total_before = len(df)
+
+    # Normalize (strip + lowercase) BEFORE validating/deduping — otherwise
+    # "Jane@Acme.com" and " jane@acme.com" are treated as two different
+    # mailboxes and both get an email, instead of being recognized as the
+    # same recipient and deduplicated to one.
+    df["email"] = df["email"].astype(str).str.strip().str.lower()
 
     # Drop rows with missing/invalid emails first — everything else depends on it.
     df = df[df["email"].apply(is_valid_email)].copy()
@@ -232,7 +198,6 @@ def load_companies(path: str) -> pd.DataFrame:
     else:
         df["contact_name"] = ""
 
-    df["email"] = df["email"].astype(str).str.strip()
     df["company_name"] = df["company_name"].astype(str).str.strip()
     df["website"] = df["website"].fillna("").astype(str).str.strip()
 
@@ -244,8 +209,6 @@ def load_companies(path: str) -> pd.DataFrame:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Legacy flag — preparation never sends; kept for compatibility")
     parser.add_argument("--limit", type=int, default=None,
                         help="Prepare at most N companies that still need work (skips finished rows)")
     parser.add_argument("--all", action="store_true",
@@ -258,7 +221,7 @@ def main():
                         help="Override WRITER_WORKERS from .env")
     args = parser.parse_args()
 
-    if _dashboard_setup_needed():
+    if _dashboard_setup_needed(args.companies):
         _open_dashboard_setup()
         return
 
@@ -303,7 +266,7 @@ def main():
           f"{writer_workers} writer worker(s).\n")
 
     pipeline = Pipeline(
-        client, cfg, cfg["ai_model"], dry_run=args.dry_run,
+        client, cfg, cfg["ai_model"],
         research_workers=research_workers,
         writer_workers=writer_workers,
     )

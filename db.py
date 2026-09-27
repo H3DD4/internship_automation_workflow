@@ -27,7 +27,29 @@ def get_connection():
     return conn
 
 
+_initialized_path = None
+
+
 def init_db():
+    """Create tables/columns and run one-time migrations.
+
+    Guarded to run its body only once per DB_PATH per process:
+    dashboard/app.py calls this on every request (index(), company_detail()),
+    and the one-time status-rename migrations below must not re-fire on
+    every page load — among other things, a row that legitimately fails
+    again later in the same process would otherwise get silently flipped
+    back to 'researched' (and its error message lost) the next time someone
+    just loads the page. Keying on DB_PATH (rather than a plain bool) means
+    tests that repoint DB_PATH at a fresh tmp file per test still get a real
+    init instead of a stale skip. CREATE TABLE IF NOT EXISTS / guarded ALTER
+    TABLE are idempotent either way, but skipping them too avoids a
+    redundant DB round-trip on every request.
+    """
+    global _initialized_path
+    if _initialized_path == DB_PATH:
+        return
+    _initialized_path = DB_PATH
+
     conn = get_connection()
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS applications (
@@ -83,6 +105,14 @@ def init_db():
         FOREIGN KEY (job_id) REFERENCES send_jobs (id),
         FOREIGN KEY (application_id) REFERENCES applications (id)
     );
+
+    -- Every dashboard page load filters/counts by status and orders by
+    -- updated_at (get_applications_paginated, get_stats, count_* helpers),
+    -- and the sender worker's get_next_queued_item filters send_job_items by
+    -- (job_id, status) on every item it processes.
+    CREATE INDEX IF NOT EXISTS idx_applications_status ON applications (status);
+    CREATE INDEX IF NOT EXISTS idx_applications_updated_at ON applications (updated_at);
+    CREATE INDEX IF NOT EXISTS idx_send_job_items_job_status ON send_job_items (job_id, status);
     """)
     conn.commit()
 
@@ -103,9 +133,13 @@ def init_db():
     # One-time status renames for the review-and-send architecture
     conn.execute("UPDATE applications SET status = 'ready' WHERE status = 'drafted'")
     conn.execute("UPDATE applications SET status = 'retry_wait' WHERE status = 'retry_later'")
-    # Failed writer runs with research done → researched (retry write, no re-scrape)
+    # Failed writer runs with research done → researched (retry write, no re-scrape).
+    # error_message is deliberately kept (not cleared) — losing the error is
+    # what made a genuine write failure look like it "disappeared" once this
+    # ran again on the next page load, before init_db() was guarded to run
+    # its migrations only once per process.
     conn.execute("""
-        UPDATE applications SET status = 'researched', error_message = NULL
+        UPDATE applications SET status = 'researched'
         WHERE status = 'failed'
           AND (subject IS NULL OR subject = '')
           AND industry IS NOT NULL
@@ -206,10 +240,16 @@ def count_sent_today() -> int:
     # sent_at is stored via _now() which is UTC — must compare against the
     # UTC calendar date, not the local one, or this under/overcounts by
     # however many hours the local timezone is offset near midnight.
+    #
+    # Filters on sent_at alone, NOT status = 'sent': the daily cap exists to
+    # limit how many messages actually left this Gmail account today, which
+    # doesn't change if a message we sent this morning is later found to
+    # have bounced (status becomes 'bounced', sent_at is untouched) — it
+    # still counts against today's quota either way.
     today_prefix = datetime.now(timezone.utc).date().isoformat()
     conn = get_connection()
     row = conn.execute(
-        "SELECT COUNT(*) as c FROM applications WHERE status = 'sent' AND sent_at LIKE ?",
+        "SELECT COUNT(*) as c FROM applications WHERE sent_at LIKE ?",
         (f"{today_prefix}%",),
     ).fetchone()
     conn.close()
@@ -254,27 +294,59 @@ def get_applications_paginated(status: str = None, search: str = None,
     return [dict(r) for r in rows], total
 
 
-def create_send_job(app_ids: list[int]) -> int:
-    """Create a send job and its items. Returns the job_id."""
+# Statuses from which an application can be queued for sending. ("retry_later"
+# was the pre-migration name for "retry_wait" — init_db() converts it once at
+# startup, so no row can be in that status by the time this is checked.)
+SENDABLE_STATUSES = frozenset({"ready", "failed", "retry_wait"})
+
+
+def create_send_job(app_ids: list[int]) -> tuple[int | None, list[int]]:
+    """Create a send job for the given application ids.
+
+    Each id is claimed with a single atomic UPDATE ... WHERE status IN
+    (sendable) — this is the only place that flips a row to 'queued', so two
+    concurrent requests for the same row (a double-click, or the row's own
+    "Send" button plus "Send selected" in the same instant) can never both
+    win: the second UPDATE simply matches zero rows once the first has
+    already moved the status away from a sendable state.
+
+    Returns (job_id, queued_app_ids). queued_app_ids may be shorter than
+    app_ids (or empty, with job_id None) if some/all were already claimed,
+    not in a sendable status, or have no draft.
+    """
     conn = get_connection()
     now = _now()
+    placeholders = ",".join("?" * len(SENDABLE_STATUSES))
+    queued_ids = []
+    for app_id in app_ids:
+        cur = conn.execute(
+            f"""UPDATE applications SET status = 'queued', updated_at = ?
+                WHERE id = ? AND status IN ({placeholders})
+                  AND subject IS NOT NULL AND subject != ''
+                  AND body IS NOT NULL AND body != ''""",
+            (now, app_id, *SENDABLE_STATUSES)
+        )
+        if cur.rowcount == 1:
+            queued_ids.append(app_id)
+
+    if not queued_ids:
+        conn.commit()
+        conn.close()
+        return None, []
+
     cur = conn.execute(
         "INSERT INTO send_jobs (status, total_items, created_at) VALUES ('pending', ?, ?)",
-        (len(app_ids), now)
+        (len(queued_ids), now)
     )
     job_id = cur.lastrowid
-    for app_id in app_ids:
+    for app_id in queued_ids:
         conn.execute(
             "INSERT INTO send_job_items (job_id, application_id, status) VALUES (?, ?, 'queued')",
             (job_id, app_id)
         )
-        conn.execute(
-            "UPDATE applications SET status = 'queued', updated_at = ? WHERE id = ?",
-            (now, app_id)
-        )
     conn.commit()
     conn.close()
-    return job_id
+    return job_id, queued_ids
 
 
 def get_send_job(job_id: int) -> dict | None:
@@ -338,9 +410,6 @@ def update_send_job(job_id: int, **fields):
     conn.close()
 
 
-# Statuses where preparation is finished — never regenerate the email.
-PREPARED_STATUSES = frozenset({"ready", "queued", "sending", "sent", "bounced"})
-
 # Statuses where the sender owns the row — pipeline must not touch these.
 SEND_IN_FLIGHT_STATUSES = frozenset({"queued", "sending"})
 
@@ -391,6 +460,90 @@ def count_needing_preparation() -> int:
     """).fetchone()
     conn.close()
     return row["c"]
+
+
+def recover_stale_preparation_rows() -> int:
+    """Call once when a preparation run starts.
+
+    A killed/crashed run (Ctrl+C mid-call, container restart) can leave rows
+    in 'researching' or 'writing' forever — nothing re-visits them once the
+    process that set that status is gone, so the dashboard would show them
+    as permanently "in progress". Reset 'researching' back to 'pending' (redo
+    the scrape+research) and 'writing' back to 'researched' (research is
+    already saved — only the write step needs to redo). Returns the count.
+    """
+    conn = get_connection()
+    now = _now()
+    cur1 = conn.execute(
+        "UPDATE applications SET status = 'pending', updated_at = ? WHERE status = 'researching'",
+        (now,),
+    )
+    cur2 = conn.execute(
+        "UPDATE applications SET status = 'researched', updated_at = ? WHERE status = 'writing'",
+        (now,),
+    )
+    conn.commit()
+    count = cur1.rowcount + cur2.rowcount
+    conn.close()
+    return count
+
+
+def recover_interrupted_sends() -> int:
+    """Call once when the sender worker starts (dashboard process launch).
+
+    If the previous process was killed mid-send, a row's application and its
+    send_job_item can be left in 'sending' forever — 'sending' isn't in
+    SEND_IN_FLIGHT's queued-only pickup (get_next_queued_item only selects
+    'queued'), so nothing would ever move it again. We don't know whether the
+    email actually went out before the crash, so we don't guess 'sent' —
+    we surface it as 'retry_wait' (sendable, editable) with a message telling
+    the user to check their Sent folder first. Also sweeps 'queued' items
+    left behind by a run that never got a job started, and closes out any
+    'running' job that has nothing left to do.
+    Returns the number of rows recovered.
+    """
+    conn = get_connection()
+    now = _now()
+    message = "Interrupted by a restart — check your Gmail Sent folder before resending."
+
+    stuck_items = conn.execute(
+        "SELECT id, application_id FROM send_job_items WHERE status = 'sending'"
+    ).fetchall()
+    for item in stuck_items:
+        conn.execute(
+            "UPDATE send_job_items SET status = 'retry_wait', error_message = ? WHERE id = ?",
+            (message, item["id"]),
+        )
+        conn.execute(
+            "UPDATE applications SET status = 'retry_wait', error_message = ?, updated_at = ? "
+            "WHERE id = ?",
+            (message, now, item["application_id"]),
+        )
+
+    # Orphaned applications stuck as 'queued'/'sending' with no live send_job_item
+    # at all (e.g. the job row itself failed to insert) — return them to 'ready'.
+    orphaned = conn.execute("""
+        SELECT id FROM applications
+        WHERE status IN ('queued', 'sending')
+          AND id NOT IN (SELECT application_id FROM send_job_items WHERE status IN ('queued', 'sending'))
+    """).fetchall()
+    for row in orphaned:
+        conn.execute(
+            "UPDATE applications SET status = 'ready', updated_at = ? WHERE id = ?",
+            (now, row["id"]),
+        )
+
+    # Close out any 'running' job with nothing left queued/sending.
+    conn.execute("""
+        UPDATE send_jobs SET status = 'completed', completed_at = ?
+        WHERE status = 'running'
+          AND id NOT IN (SELECT job_id FROM send_job_items WHERE status IN ('queued', 'sending'))
+    """, (now,))
+
+    conn.commit()
+    recovered = len(stuck_items) + len(orphaned)
+    conn.close()
+    return recovered
 
 
 def get_pending_send_jobs() -> list:

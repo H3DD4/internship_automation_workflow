@@ -22,22 +22,9 @@ and safe to run unattended.
 """
 
 import json
-import re
 
 from retry import with_retry
-
-try:
-    import anthropic
-    _API_RETRY_ON = tuple(
-        cls for cls in (
-            getattr(anthropic, "APIConnectionError", None),
-            getattr(anthropic, "APITimeoutError", None),
-            getattr(anthropic, "RateLimitError", None),
-            getattr(anthropic, "InternalServerError", None),
-        ) if cls is not None
-    ) or (Exception,)
-except ImportError:  # pragma: no cover
-    _API_RETRY_ON = (Exception,)
+from ai_client import extract_json_object, build_model_fallback_list
 
 
 WRITER_SYSTEM_PROMPT = """You are a TEMPLATE ASSEMBLER, not a creative writer.
@@ -124,13 +111,12 @@ def generate_email(client, model: str, core_identity: dict, applicant_name: str,
     }
 
     # hy3 is a reasoning model that often returns empty drafts — prefer these for writing.
-    WRITER_MODELS = []
-    for m in (model, "qwen3.8-flash", "mimo-v2.5", "glm-5.3-flash"):
-        if m and m not in WRITER_MODELS:
-            WRITER_MODELS.append(m)
-
+    # Transport-level errors (network, 429, 5xx) are already retried inside
+    # CompatibleAIClient.messages.create; retry_on here only covers a
+    # successful HTTP call that came back empty or unparsable, and only
+    # once per model, before falling through to the next model.
     last_err = None
-    for attempt_model in WRITER_MODELS:
+    for attempt_model in build_model_fallback_list(model):
         def _call_and_parse(model_name=attempt_model):
             resp = client.messages.create(
                 model=model_name,
@@ -141,7 +127,7 @@ def generate_email(client, model: str, core_identity: dict, applicant_name: str,
             raw_text = resp.content[0].text.strip()
             if not raw_text:
                 raise ValueError("Writer agent returned empty content")
-            cleaned = re.sub(r"^```(?:json)?\s*|```\s*$", "", raw_text, flags=re.MULTILINE).strip()
+            cleaned = extract_json_object(raw_text) or raw_text
             data = json.loads(cleaned)
             if "subject" not in data or "body" not in data:
                 raise ValueError(f"Writer agent response missing subject/body: {data}")
@@ -149,17 +135,18 @@ def generate_email(client, model: str, core_identity: dict, applicant_name: str,
             body = (data.get("body") or "").strip()
             if not subject or not body:
                 raise ValueError(f"Writer agent returned empty subject/body: {data}")
-            if attempt_model != model_name:
-                print(f"    [writer] used fallback model {model_name} for {company_name}")
             return {"subject": subject, "body": body}
 
         try:
-            return with_retry(
+            result = with_retry(
                 _call_and_parse,
-                attempts=3, base_delay=2.0,
-                retry_on=(ValueError, json.JSONDecodeError, RuntimeError, *_API_RETRY_ON),
+                attempts=2, base_delay=1.0,
+                retry_on=(ValueError, json.JSONDecodeError),
                 what=f"Writer call for {company_name} ({attempt_model})",
             )
+            if attempt_model != model:
+                print(f"    [writer] used fallback model {attempt_model} for {company_name}")
+            return result
         except Exception as e:
             last_err = e
             print(f"    [writer] model {attempt_model} failed for {company_name}: {e}")
