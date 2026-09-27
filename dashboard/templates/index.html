@@ -236,7 +236,7 @@
         <input id="ai-key" name="ai_api_key" type="password" placeholder="{{ 'Saved locally — enter to replace' if setup.has_api_key else 'Paste your provider key' }}" autocomplete="off">
         <button class="button button--ghost" type="button" id="validate-ai-btn">Validate</button>
       </div>
-      <span class="field-hint"><a href="{{ key_portal_url }}" target="_blank" rel="noreferrer">Open provider key portal</a>. {% if setup.has_api_key %}Saved locally.{% else %}Used for research and drafting.{% endif %}</span>
+      <span class="field-hint"><a href="{{ key_portal_url }}" target="_blank" rel="noreferrer">Open provider key portal</a>. {% if setup.has_api_key %}Saved locally.{% else %}Used only for company research — the emails themselves are built from your CV text.{% endif %}</span>
       <span class="field-hint validation-result" id="ai-validation-result" aria-live="polite"></span>
     </div>
     <div class="form-group">

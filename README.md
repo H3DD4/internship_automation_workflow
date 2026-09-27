@@ -1,7 +1,8 @@
 # Internship Application Automation
 
-Researches each company, writes a personalized application email around your
-fixed core pitch, and lets you **review every draft before anything is sent**.
+Researches each company, builds an application email tailored to what that
+company actually does, and lets you **review every draft before anything is
+sent**.
 Sending happens from a local dashboard, paced and capped to protect your Gmail
 account's reputation.
 
@@ -12,10 +13,10 @@ companies.xlsx / .csv
         │
         ▼
  ┌──────────────────┐     ┌──────────────────┐
- │  Research agent  │ ──▶ │   Writer agent   │   python main.py
- │  (scrapes site,  │     │ (core pitch +    │   (never sends)
- │  matches 0-2     │     │  matched extra   │
- │  extra mentions) │     │  sentences)      │
+ │  Research (AI)   │ ──▶ │  Composer (code) │   python main.py
+ │  picks CV areas, │     │  builds the email│   (never sends)
+ │  quotes the site │     │  from CV text    │
+ │  — then verified │     │  — no AI         │
  └──────────────────┘     └──────────────────┘
         │                          │
         └──────────┬───────────────┘
@@ -34,12 +35,23 @@ Two separate programs, on purpose:
   anything you want, pick which ones go out, and the background sender sends
   them with a randomized delay between each and a daily cap.
 
-Your **core identity** (RedBox, CTF wins, professional experience, the
-AI-from-security story) lives in `specializations.json` and appears in every
-email. The research agent only decides whether 0, 1, or 2 short **extra
-mentions** (cloud / software dev / data — configurable) genuinely fit a given
-company, and the writer weaves those in near-verbatim. It never restructures
-or shrinks the core pitch.
+### What each email says
+
+In the order a recruiter reads it:
+
+1. **Who you are, and what interests you about this company**, quoting what
+   they do in their own words — or, when nothing reliable was found about
+   them, a plain "I'm really interested in joining the team at <Company>".
+2. **How your experience matches their work**: the one or two areas of your
+   CV that fit them (offensive security, SOC, reverse engineering, agentic
+   AI, machine learning, cloud, software…), each backed by a concrete result.
+   Left out when nothing matched.
+3. **Your other strong points**, never repeating a project already cited.
+4. **The internship ask**: end-of-study, Bac+5, starting February 2027.
+5. **Closing**, with your CV attached.
+
+No tool names: the email says what you built, the CV lists the tools. All the
+wording lives in `specializations.json`.
 
 ## Setup
 
@@ -54,14 +66,15 @@ or shrinks the core pitch.
    (free tier, the default), OpenRouter, Together, a local Ollama. You only
    ever set three values: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`.
 
-   Unsure which model, or on a provider I haven't listed? Let the repo tell you:
+   Unsure which model, or on a provider not listed here? Let the repo tell you:
    ```bash
    python check_models.py --list   # what does this endpoint offer?
-   python check_models.py --all    # which of them writes a clean email?
+   python check_models.py --all    # which of them researches accurately?
+   python check_models.py --show   # ...and the emails that research produces
    ```
-   Each candidate writes a real email for a fixed test company; the script
-   checks it kept your CV's facts and invented nothing about the company,
-   then recommends the fastest one that passed.
+   Each candidate researches four fixed test websites — including an empty
+   login page, where the only right answer is "nothing here" — and the script
+   recommends the most accurate model that invented nothing.
 
 4. **Start the dashboard and fill in the setup form:**
    ```bash
@@ -85,23 +98,25 @@ or shrinks the core pitch.
 
 ### Keeping the emails truthful
 
-Every factual claim comes from one of two places, and nothing else is allowed in:
+Free AI models embellish when asked to write, so here **the AI never writes
+the email**. It answers two narrow research questions, and code checks both
+answers against the company's website text before using them:
 
-- **About you** — `specializations.json`, whose `verified_facts` block mirrors
-  your CV. The writer may reword for flow but may never change a number.
-- **About the company** — only what the research agent actually read on their
-  site. If a site is unreachable or says nothing concrete, the "what draws me
-  to you" paragraph is dropped rather than guessed at.
+- **Which CV areas fit** — picked from a closed list, kept only if the site
+  actually contains that area's keywords.
+- **One phrase describing what they do** — kept only if its words are really
+  on the site, it quotes no number the site doesn't, and the sentence it
+  cites is found there too.
 
-`agents/draft_guard.py` then checks the finished draft mechanically — no second
-AI call, so it can't hallucinate in turn. It rejects a draft that states a
-number absent from both sources, uses unverifiable flattery ("industry
-leader", "award-winning"), claims you used their product, drops one of your
-verified facts, or leaves a placeholder behind. A rejected draft goes back to
-the model with the specific complaint attached, and is regenerated.
+Anything that fails is dropped and the email falls back to its standard
+wording. A weak model can make an email *less specific*; it can't make it say
+something untrue. `agents/composer.py` then assembles the email from your CV
+text, and `agents/draft_guard.py` checks the result one last time (invented
+numbers, flattery like "industry leader", leftover placeholders).
 
-That guard is why the model choice matters less than it looks: a model that
-embroiders gets caught rather than emailed.
+Each company's page in the dashboard shows exactly why its email says what it
+says: the phrase used, the site sentence it came from, and which CV areas
+matched.
 
 ### Companies file
 
@@ -146,8 +161,9 @@ being redone.
 ### Per-company actions
 
 - **Skip** — leave a company out of preparation and sending, reversibly.
-- **Regenerate** — rewrite the draft using the research already on file (no
-  re-scraping, no new research call).
+- **Rebuild draft** — rebuild the email from the research already on file and
+  your current `specializations.json`. Instant, no AI call — use it after
+  editing your wording.
 
 ## Checking for bounces
 
@@ -183,12 +199,12 @@ Worth doing yourself:
 ```
 .
 ├── main.py                  # preparation (research + write). Never sends.
-├── pipeline.py              # concurrent research/writer pools, resume rules
+├── pipeline.py              # concurrent research/compose pools, resume rules
 ├── check_models.py          # discover + score models on any provider
 ├── agents/
-│   ├── research_agent.py    # scrapes the site, extracts its working axes
-│   ├── writer_agent.py      # assembles the email
-│   └── draft_guard.py       # rejects invented claims before you ever see them
+│   ├── research_agent.py    # scrapes the site, asks the AI, verifies the answers
+│   ├── composer.py          # builds the email from CV text (no AI)
+│   └── draft_guard.py       # final check for invented claims
 ├── ai_client.py             # OpenAI-compatible client, retries, rate limit
 ├── db.py                    # SQLite storage, send jobs, recovery sweeps
 ├── cache_store.py           # per-company on-disk cache (resumability)
@@ -197,7 +213,7 @@ Worth doing yourself:
 ├── mailer.py                # Gmail API / SMTP + error classification
 ├── google_auth_helper.py    # OAuth token storage and Gmail API
 ├── bounce_checker.py        # marks bounced applications
-├── specializations.json     # your core pitch + extra mentions (EDIT THIS)
+├── specializations.json     # all email wording, from your CV (EDIT THIS)
 ├── dashboard/
 │   ├── app.py               # Flask dashboard (python dashboard/app.py)
 │   ├── templates/
