@@ -67,6 +67,22 @@ def test_stop_flag_prevents_new_work(isolated):
     assert pipeline.results["ready"] == 0
 
 
+def test_stopped_run_accounts_for_cancelled_work(isolated):
+    """Work cancelled by the stop request never runs, so it never records an
+    outcome — without reconciling it, the run summary warns that companies
+    were lost when the user simply pressed Stop."""
+    rows = [(f"C{i}", f"c{i}@x.com", "", "") for i in range(3)]
+    pipeline = _pipeline()
+    pipeline._stop_file = str(isolated / "stop.flag")
+    (isolated / "stop.flag").touch()
+
+    with patch("builtins.print"):
+        results = pipeline.run(rows)
+
+    assert sum(results.values()) == len(rows)
+    assert results["ready"] == 0
+
+
 def test_research_context_rebuilt_from_db_when_cache_missing(isolated):
     app_id = db.get_or_create_application("R", "r@x.com", "")
     db.update_application(app_id, status="researched", industry="Tech",

@@ -69,10 +69,15 @@
   };
 
   // ── Live state shared across features ────────────────────────────────────
+  // Seeded from the server-rendered page so the cap warning and the duration
+  // estimate are correct on first load, not only after the first refresh tick.
+  const funnelEl = $("funnel");
+  const seededCap = funnelEl ? parseInt(funnelEl.dataset.capRemaining, 10) : NaN;
+  const seededDelay = funnelEl ? parseInt(funnelEl.dataset.avgDelay, 10) : NaN;
   const state = {
     sending: false,       // a send job is polling
-    capRemaining: null,
-    avgDelay: 80,         // rough seconds between sends, for the estimate
+    capRemaining: Number.isNaN(seededCap) ? null : seededCap,
+    avgDelay: Number.isNaN(seededDelay) || seededDelay <= 0 ? 80 : seededDelay,
   };
 
   // ── Selection + batch bar ────────────────────────────────────────────────

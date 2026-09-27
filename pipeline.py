@@ -71,6 +71,9 @@ class Pipeline:
                                                thread_name_prefix="writer")
 
         self._shutdown = threading.Event()
+        # Distinct from _shutdown, which is also set on normal completion to
+        # retire the watcher thread: this one means the user asked to stop.
+        self._stop_requested = threading.Event()
         self._stop_file = os.getenv("PIPELINE_STOP_FILE")
 
         self._lock = threading.Lock()
@@ -95,6 +98,7 @@ class Pipeline:
         what actually makes "Stop safely" take effect on not-yet-started work."""
         while not self._shutdown.is_set():
             if self._stop_file and os.path.exists(self._stop_file):
+                self._stop_requested.set()
                 self._shutdown.set()
                 break
             time.sleep(1)
@@ -250,10 +254,23 @@ class Pipeline:
                                        cancel_futures=self._shutdown.is_set())
         except KeyboardInterrupt:
             print("\nInterrupted — shutting down (completed work is saved)...")
+            self._stop_requested.set()
             self._shutdown.set()
             self.research_pool.shutdown(wait=False, cancel_futures=True)
             self.writer_pool.shutdown(wait=False, cancel_futures=True)
         finally:
             self._shutdown.set()  # let the stop-watcher thread exit promptly
+
+        if self._stop_requested.is_set():
+            # Work cancelled by the stop request never ran, so it never
+            # recorded an outcome. Count it as skipped, otherwise the caller's
+            # reconciliation check reports companies as "lost" when in fact
+            # the user asked us to stop.
+            with self._lock:
+                unaccounted = self.total_companies - self.terminal_count
+                if unaccounted > 0:
+                    self.results["skipped"] = self.results.get("skipped", 0) + unaccounted
+                    self.terminal_count += unaccounted
+            print("Stopped on request — prepared work is saved; re-run to continue.")
 
         return self.results
