@@ -19,7 +19,7 @@
   </td>
   <td class="col-extras">
     {% if a.matched_extra_mentions_list %}
-      {% for m in a.matched_extra_mentions_list %}<span class="chip">{{ m }}</span>{% endfor %}
+      {% for m in a.matched_extra_mentions_list %}<span class="chip" title="{{ m }}">{{ area_labels.get(m, m) if area_labels else m }}</span>{% endfor %}
     {% else %}
       <span class="cell-empty">—</span>
     {% endif %}

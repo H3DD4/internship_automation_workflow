@@ -12,9 +12,10 @@ class FakeClient:
 
 
 def _pipeline():
+    import json
+    from pathlib import Path
     cfg = {
-        "extra_mentions": [],
-        "core_identity": {"angle_prompt": "pitch"},
+        "spec": json.loads((Path(__file__).parent.parent / "specializations.json").read_text()),
         "applicant_name": "Me",
         "target_role": "Intern",
     }
@@ -86,11 +87,23 @@ def test_stopped_run_accounts_for_cancelled_work(isolated):
 def test_research_context_rebuilt_from_db_when_cache_missing(isolated):
     app_id = db.get_or_create_application("R", "r@x.com", "")
     db.update_application(app_id, status="researched", industry="Tech",
-                          talking_points='["cloud"]',
                           matched_extra_mentions='["cloud"]',
-                          match_reasons='{"cloud": "they use aws"}')
+                          match_reasons='{"cloud": "3 keyword(s) on the site"}',
+                          company_hook="managed cloud platforms", hook_status="grounded")
     context = _load_research("r@x.com", db.get_application_by_id(app_id))
     assert context["industry"] == "Tech"
+    assert context["areas"] == ["cloud"]
+    assert context["company_hook"] == "managed cloud platforms"
+
+
+def test_research_from_before_the_current_format_is_redone(isolated):
+    """Old research carries nothing the composer can use (no verified areas
+    or hook), so it's treated as missing and the company is researched again."""
+    email = "old@x.com"
+    cache_store.save_research(email, {"industry": "tech", "matched_extra_mentions": ["cloud"]})
+    app_id = db.get_or_create_application("Old", email, "")
+    db.update_application(app_id, status="researched", industry="tech")
+    assert _load_research(email, db.get_application_by_id(app_id)) is None
 
 
 def test_stale_in_progress_rows_are_recovered(isolated, make_app):

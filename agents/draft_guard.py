@@ -60,18 +60,16 @@ def _allowed_numbers(facts: dict, research: dict) -> set:
             for item in value:
                 allowed.update(_numbers_in(str(item)))
 
-    for key in ("working_axes", "evidence", "talking_points"):
-        for item in research.get(key, []) or []:
-            allowed.update(_numbers_in(str(item)))
-    for key in ("mission_or_focus", "industry", "notable_products_or_news"):
-        allowed.update(_numbers_in(str(research.get(key, ""))))
+    # The hook was already verified against the site text, so a number it
+    # quotes (e.g. "24/7 monitoring") is the company's own, not an invention.
+    for key in ("company_hook", "hook_evidence"):
+        allowed.update(_numbers_in(str(research.get(key, "") or "")))
 
     return allowed
 
 
 def check_draft(draft: dict, *, facts: dict, research: dict, company_name: str,
-                greeting: str, applicant_name: str,
-                extra_sentences: list = None) -> None:
+                greeting: str, applicant_name: str) -> None:
     """Raise GuardRejection with a specific, actionable complaint, or return
     None if the draft is clean."""
     subject = (draft.get("subject") or "").strip()
@@ -101,10 +99,10 @@ def check_draft(draft: dict, *, facts: dict, research: dict, company_name: str,
 
     # --- Length ---
     word_count = len(body.split())
-    if word_count < 170:
-        problems.append(f"The body is only {word_count} words; it must be at least 200.")
-    elif word_count > 420:
-        problems.append(f"The body is {word_count} words; trim it to under 330.")
+    if word_count < 120:
+        problems.append(f"The body is only {word_count} words; it must be at least 120.")
+    elif word_count > 400:
+        problems.append(f"The body is {word_count} words; it must stay under 400.")
 
     # --- Unverifiable flattery and filler ---
     lowered = body.lower()
@@ -115,7 +113,9 @@ def check_draft(draft: dict, *, facts: dict, research: dict, company_name: str,
             )
 
     # --- Invented numbers ---
-    allowed = _allowed_numbers(facts, research)
+    # Digits in the company's own name ("42 Labs", "1Password") or in the
+    # greeting's contact name aren't claims.
+    allowed = _allowed_numbers(facts, research) | _numbers_in(company_name) | _numbers_in(greeting)
     for sentence in re.split(r"(?<=[.!?])\s+", body):
         for number in _numbers_in(sentence):
             if number not in allowed:
@@ -125,21 +125,12 @@ def check_draft(draft: dict, *, facts: dict, research: dict, company_name: str,
                     f"{sentence.strip()[:130]!r}"
                 )
 
-    # --- Extra sentences must actually be carried over ---
-    for sentence in extra_sentences or []:
-        anchor = " ".join(sentence.split()[:6]).rstrip(",.").lower()
-        if anchor and anchor not in lowered:
-            problems.append(
-                f"The provided extra sentence starting {anchor!r} was dropped; insert it once."
-            )
-
-    # --- The company paragraph must not appear when there was nothing to say ---
-    has_research = bool(research.get("working_axes")) or research.get("industry") not in (
-        None, "", "unknown")
-    if not has_research and f"draws me to {company_name.lower()}" in lowered:
+    # --- A claim of interest in their specific work needs a verified hook ---
+    hook = (research.get("company_hook") or "").strip()
+    if not hook and f"interests me most about {company_name.lower()}" in lowered:
         problems.append(
-            "No company research was available, so the 'what draws me to you' paragraph "
-            "must be omitted entirely rather than written from guesswork."
+            "No verified phrase from the company's website was available, so the email "
+            "must not claim a specific interest in their work."
         )
 
     if problems:

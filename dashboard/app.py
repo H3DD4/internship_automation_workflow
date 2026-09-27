@@ -153,9 +153,7 @@ def _preparation_config() -> dict:
         "ai_model": os.getenv("AI_MODEL", DEFAULT_MODEL),
         "applicant_name": os.getenv("YOUR_NAME", ""),
         "target_role": os.getenv("YOUR_TARGET_ROLE", ""),
-        "core_identity": specializations["core_identity"],
-        "extra_mentions": specializations["extra_mentions"],
-        "company_paragraph": specializations.get("company_paragraph", {}),
+        "spec": specializations,
     }
 
 
@@ -336,6 +334,17 @@ def _request_origin_ok() -> bool:
     return False
 
 
+@app.context_processor
+def _inject_area_labels():
+    """Readable names for CV area ids ("soc_blue_team" -> "security operations
+    and threat detection") in every template, including the live-refresh rows."""
+    try:
+        spec = json.loads((ROOT_DIR / "specializations.json").read_text(encoding="utf-8"))
+        return {"area_labels": {area["id"]: area["label"] for area in spec.get("areas", [])}}
+    except (OSError, ValueError, KeyError):
+        return {"area_labels": {}}
+
+
 @app.before_request
 def _csrf_guard():
     if request.method in ("GET", "HEAD", "OPTIONS") or request.endpoint == "static":
@@ -509,11 +518,13 @@ def api_skip(app_id):
 
 @app.post("/api/regenerate/<int:app_id>")
 def api_regenerate(app_id):
-    """Re-run the writer agent for one company, reusing its saved research so
-    nothing is scraped or researched again."""
+    """Rebuild one company's draft from its saved research and the current
+    specializations.json. Instant and AI-free — the email is assembled, not
+    generated — so this is also how an edit to specializations.json reaches
+    drafts that were already prepared."""
     import cache_store
-    from ai_client import CompatibleAIClient
-    from agents.writer_agent import generate_email
+    from agents.composer import compose_email
+    from agents.draft_guard import GuardRejection
     from utils import build_greeting
     import pipeline as pipeline_module
 
@@ -522,41 +533,33 @@ def api_regenerate(app_id):
         return jsonify({"ok": False, "message": "Application not found."}), 404
     if application["status"] in db.SEND_IN_FLIGHT_STATUSES or application["status"] == "sent":
         return jsonify({"ok": False,
-                        "message": f"Can't regenerate — already {application['status']}."})
+                        "message": f"Can't rebuild — already {application['status']}."})
 
     load_dotenv(ENV_PATH, override=True)
     try:
         cfg = _preparation_config()
     except (OSError, KeyError, ValueError) as exc:
         return jsonify({"ok": False, "message": f"Configuration problem: {exc}"}), 400
-    if not cfg["ai_api_key"]:
-        return jsonify({"ok": False, "message": "Add your AI API key in the setup form first."}), 400
 
-    context = pipeline_module._load_research(application["email"], application)
-    if context is None:
-        return jsonify({"ok": False,
-                        "message": "No saved research for this company yet — run preparation first."})
-
-    client = CompatibleAIClient(cfg["ai_api_key"], cfg["ai_base_url"])
+    # No research yet (or research from before the current format) still
+    # yields a correct email: the standard version, with no company-specific
+    # claims — exactly what's wanted when nothing is known about them.
+    context = pipeline_module._load_research(application["email"], application) or {}
     greeting = build_greeting(application.get("contact_name"), application["company_name"])
     try:
-        draft = generate_email(
-            client, cfg["ai_model"], cfg["core_identity"], cfg["applicant_name"],
-            context, application["company_name"], cfg["extra_mentions"],
-            cfg["target_role"], greeting,
-            company_paragraph_rules=cfg.get("company_paragraph"),
-        )
-    except Exception as exc:
-        db.log_event(app_id, "write", "Regenerate failed", detail={"error": str(exc)})
-        return jsonify({"ok": False, "message": f"Writer agent failed: {exc}"}), 502
+        draft = compose_email(cfg["spec"], context, application["company_name"], greeting,
+                              cfg["applicant_name"], cfg["target_role"])
+    except GuardRejection as exc:
+        return jsonify({"ok": False,
+                        "message": f"specializations.json produced an invalid email: {exc}"}), 400
 
     cache_store.save_draft(application["email"], draft)
     db.update_application(app_id, status="ready", subject=draft["subject"],
                           body=draft["body"], error_message=None)
-    db.log_event(app_id, "write", f"Draft regenerated from dashboard: \"{draft['subject']}\"",
+    db.log_event(app_id, "write", f"Draft rebuilt from dashboard: \"{draft['subject']}\"",
                  detail=draft)
     return jsonify({"ok": True, "subject": draft["subject"], "body": draft["body"],
-                    "message": "Draft regenerated."})
+                    "message": "Draft rebuilt."})
 
 
 @app.post("/setup")

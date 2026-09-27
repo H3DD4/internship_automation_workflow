@@ -21,7 +21,7 @@ import db
 import cache_store
 from utils import build_greeting
 from agents.research_agent import get_company_context
-from agents.writer_agent import generate_email
+from agents.composer import compose_email
 
 
 def _load_draft(email: str, app: dict | None) -> dict | None:
@@ -35,7 +35,9 @@ def _load_draft(email: str, app: dict | None) -> dict | None:
 def _load_research(email: str, app: dict | None) -> dict | None:
     """Research from disk cache first, then rebuild from DB columns."""
     context = cache_store.load_research(email)
-    if context:
+    # Research saved before the verified-areas/hook format (no "areas" key)
+    # carries nothing the composer can use, so treat it as a miss and redo it.
+    if context and "areas" in context:
         return context
     if app:
         context = db.research_context_from_application(app)
@@ -147,7 +149,7 @@ class Pipeline:
                              f"Scraping and analyzing {website or '(no website given)'}")
 
                 context = get_company_context(
-                    self.client, self.model, company_name, website, self.cfg["extra_mentions"]
+                    self.client, self.model, company_name, website, self.cfg["spec"]["areas"]
                 )
                 cache_store.save_research(email, context)
 
@@ -158,12 +160,16 @@ class Pipeline:
                     mission_or_focus=context.get("mission_or_focus"),
                     tone_of_voice=context.get("tone_of_voice"),
                     talking_points=json.dumps(context.get("talking_points", [])),
-                    matched_extra_mentions=json.dumps(context.get("matched_extra_mentions", [])),
+                    matched_extra_mentions=json.dumps(context.get("areas", [])),
                     match_reasons=json.dumps(context.get("match_reasons", {})),
+                    company_hook=context.get("company_hook") or None,
+                    hook_evidence=context.get("hook_evidence") or None,
+                    hook_status=context.get("hook_status"),
                 )
                 db.log_event(
                     app_id, "research",
-                    f"Matched extra mentions: {context.get('matched_extra_mentions') or 'none'}",
+                    f"CV areas: {', '.join(context.get('areas') or []) or 'none'} · "
+                    f"hook: {context.get('company_hook') or context.get('hook_status')}",
                     detail=context,
                 )
 
@@ -196,10 +202,9 @@ class Pipeline:
             db.update_application(app_id, status="writing")
             greeting = build_greeting(contact_name, company_name)
 
-            email_content = generate_email(
-                self.client, self.model, self.cfg["core_identity"], self.cfg["applicant_name"],
-                context, company_name, self.cfg["extra_mentions"], self.cfg["target_role"], greeting,
-                company_paragraph_rules=self.cfg.get("company_paragraph"),
+            email_content = compose_email(
+                self.cfg["spec"], context, company_name, greeting,
+                self.cfg["applicant_name"], self.cfg["target_role"],
             )
             cache_store.save_draft(email, email_content)
 

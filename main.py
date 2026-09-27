@@ -110,9 +110,7 @@ def load_config():
         "target_role": os.getenv("YOUR_TARGET_ROLE"),
         "research_workers": int(os.getenv("RESEARCH_WORKERS", 3)),
         "writer_workers": int(os.getenv("WRITER_WORKERS", 2)),
-        "core_identity": specializations["core_identity"],
-        "extra_mentions": specializations["extra_mentions"],
-        "company_paragraph": specializations.get("company_paragraph", {}),
+        "spec": specializations,
     }
 
 

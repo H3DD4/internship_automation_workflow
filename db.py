@@ -125,6 +125,9 @@ def init_db():
         ("last_attempt_at", "TEXT"),
         ("message_id", "TEXT"),
         ("error_code", "TEXT"),
+        ("company_hook", "TEXT"),
+        ("hook_evidence", "TEXT"),
+        ("hook_status", "TEXT"),
     ]:
         if col_name not in existing_cols:
             conn.execute(f"ALTER TABLE applications ADD COLUMN {col_name} {col_def}")
@@ -482,23 +485,30 @@ def draft_from_application(app: dict) -> dict | None:
 
 
 def research_context_from_application(app: dict) -> dict | None:
-    """Rebuild research JSON from DB columns when the disk cache is missing."""
+    """Rebuild the research context from DB columns when the disk cache is
+    missing. Returns None for rows researched before the verified-areas
+    format, so they get researched again rather than composed from nothing."""
     if not app:
         return None
     try:
-        talking_points = json.loads(app.get("talking_points") or "[]")
-        matched = json.loads(app.get("matched_extra_mentions") or "[]")
+        areas = json.loads(app.get("matched_extra_mentions") or "[]")
         reasons = json.loads(app.get("match_reasons") or "{}")
     except (TypeError, json.JSONDecodeError):
         return None
-    if not app.get("industry") and not talking_points and not matched:
+    if not app.get("hook_status"):
         return None
+    hook = app.get("company_hook") or ""
     return {
         "industry": app.get("industry") or "unknown",
         "mission_or_focus": app.get("mission_or_focus") or "",
         "tone_of_voice": app.get("tone_of_voice") or "unknown",
-        "talking_points": talking_points,
-        "matched_extra_mentions": matched,
+        "company_hook": hook,
+        "hook_evidence": app.get("hook_evidence") or "",
+        "hook_status": app.get("hook_status"),
+        "areas": areas,
+        "area_notes": [f"{k}: {v}" for k, v in reasons.items()],
+        "talking_points": [hook] if hook else [],
+        "matched_extra_mentions": areas,
         "match_reasons": reasons,
     }
 

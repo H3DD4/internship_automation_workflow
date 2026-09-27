@@ -62,11 +62,11 @@ def test_personal_domains_are_not_scraped_as_company_sites():
 
 
 @pytest.mark.parametrize("contact,company,expected", [
-    ("Charly Dupont", "Rtone", "Hello Charly,"),
-    ("recruiting", "Rtone", "Hello Rtone team,"),
-    ("", "Rtone", "Hello Rtone team,"),
-    ("Rtone", "Rtone", "Hello Rtone team,"),
-    ("hr@rtone.fr", "Rtone", "Hello Rtone team,"),
+    ("Charly Dupont", "Rtone", "Dear Charly,"),
+    ("recruiting", "Rtone", "Dear Rtone Team,"),
+    ("", "Rtone", "Dear Rtone Team,"),
+    ("Rtone", "Rtone", "Dear Rtone Team,"),
+    ("hr@rtone.fr", "Rtone", "Dear Rtone Team,"),
 ])
 def test_greeting_rules(contact, company, expected):
     assert build_greeting(contact, company) == expected

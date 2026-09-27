@@ -137,15 +137,15 @@
     regenBtn.addEventListener("click", async () => {
       regenBtn.disabled = true;
       const original = regenBtn.textContent;
-      regenBtn.textContent = "Writing…";
-      setResult("Asking the writer agent for a new draft — this takes a few seconds.");
+      regenBtn.textContent = "Rebuilding…";
+      setResult("");
       try {
         const data = await postJSON(`/api/regenerate/${regenBtn.dataset.appId}`, {});
         if (!data.ok) {
           setResult(`✗ ${data.message}`, false);
           return;
         }
-        setResult("✓ New draft written", true);
+        setResult("✓ Draft rebuilt", true);
         setTimeout(() => window.location.reload(), 900);
       } catch (err) {
         setResult(`✗ ${err.message}`, false);

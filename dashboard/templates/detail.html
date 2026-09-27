@@ -23,7 +23,7 @@
     {% endif %}
     {% if application.editable or application.status in ('researched', 'pending') %}
     <button class="button button--ghost" id="regenerate-btn" data-app-id="{{ application.id }}" type="button"
-            title="Re-run the writer agent using the saved research (no re-scraping)">Regenerate</button>
+            title="Rebuild this draft from the saved research and your current specializations.json — instant, no AI">Rebuild draft</button>
     {% endif %}
     {% if application.status == 'skipped' %}
     <button class="button button--ghost" id="unskip-detail-btn" data-app-id="{{ application.id }}" type="button">Un-skip</button>
@@ -122,18 +122,20 @@
     </section>
 
     <section class="panel">
-      <h2>Why these extra mentions</h2>
-      {% if matched_extras %}
-      <ul class="reasoning-list">
-        {% for m in matched_extras %}
-        <li>
-          <span class="chip chip--accent">{{ m }}</span>
-          <span class="reasoning-text">{{ match_reasons.get(m, "no reason recorded") }}</span>
-        </li>
-        {% endfor %}
+      <h2>How this email was tailored</h2>
+      <dl class="fact-list">
+        <dt>Interest line</dt>
+        <dd>{% if application.company_hook %}"…your work on <strong>{{ application.company_hook }}</strong>."{% else %}<span class="cell-empty">Standard wording — no phrase from their site could be verified{% if application.hook_status and application.hook_status not in ('grounded',) %} ({{ application.hook_status }}){% endif %}.</span>{% endif %}</dd>
+        {% if application.hook_evidence %}
+        <dt>From their site</dt><dd class="reasoning-text">“{{ application.hook_evidence }}”</dd>
+        {% endif %}
+        <dt>CV areas matched</dt>
+        <dd>{% if matched_extras %}{% for m in matched_extras %}<span class="chip chip--accent">{{ area_labels.get(m, m) }}</span>{% endfor %}{% else %}<span class="cell-empty">None — the match paragraph is left out.</span>{% endif %}</dd>
+      </dl>
+      {% if match_reasons %}
+      <ul class="reasoning-list" style="margin-top:12px;">
+        {% for m, reason in match_reasons.items() %}<li><span class="chip">{{ area_labels.get(m, m) }}</span><span class="reasoning-text">{{ reason }}</span></li>{% endfor %}
       </ul>
-      {% else %}
-      <p class="cell-empty">No extra mentions matched — the email used your core pitch only.</p>
       {% endif %}
     </section>
   </div>

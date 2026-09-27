@@ -1,20 +1,21 @@
 """Discover and compare AI models for this pipeline.
 
 Any OpenAI-compatible provider works (Groq, OpenCode, OpenRouter, Together,
-a local Ollama…) — the pipeline only ever speaks /chat/completions. What
-actually matters is whether a given model can follow a long, rule-heavy
-prompt without inventing facts, and that is a property of the model, not the
-provider. This script measures exactly that.
+a local Ollama…). The model's only job is research: pick which of your CV
+areas fit a company, and copy one phrase describing what the company does
+from its own site. This script measures exactly that on four fixed test
+websites, including an empty cookie-banner page where the only correct
+answer is to find nothing.
 
   python check_models.py --list              what models does my endpoint offer?
   python check_models.py                     test the model in my .env
   python check_models.py --all               compare every suggested model
   python check_models.py -m modelA,modelB    compare specific models
+  python check_models.py --show              also print the emails it leads to
 
-Each tested model writes a real email for a fixed fake company, and the
-result is scored by the same draft_guard.py the pipeline uses, plus a check
-that the CV's facts survived intact. Pick the model that passes with the
-lowest latency.
+A model is scored on: right CV areas, a hook that survives verification
+against the site, and — most important — inventing nothing when there's
+nothing to find.
 """
 
 import argparse
@@ -23,6 +24,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import requests
 from dotenv import load_dotenv
@@ -34,45 +36,58 @@ from ai_client import (  # noqa: E402
     DEFAULT_BASE_URL, DEFAULT_MODEL, KEY_PORTAL_URL, SUPPORTED_MODELS,
     CompatibleAIClient, RateLimiter,
 )
-from agents.draft_guard import GuardRejection, check_draft  # noqa: E402
-from agents.writer_agent import generate_email  # noqa: E402
-from utils import build_greeting  # noqa: E402
+from agents import research_agent  # noqa: E402
+from agents.composer import compose_email  # noqa: E402
 
-# A fixed company with deliberately *tempting* gaps: the research says nothing
-# about size, funding, clients or awards, so any model that mentions them is
-# inventing. Keeping it fixed makes model comparisons fair.
-FAKE_COMPANY = "Rootshell Security"
-FAKE_RESEARCH = {
-    "industry": "offensive security / vulnerability management",
-    "company_size_guess": "unknown",
-    "mission_or_focus": ("They run a vulnerability management platform and pair every "
-                          "client with a dedicated security consultant."),
-    "tone_of_voice": "technical",
-    "working_axes": [
-        "continuous penetration testing delivered through their own platform",
-        "threat intelligence feeds combined with AI-driven analysis",
-        "a dedicated security consultant guiding each client from setup through remediation",
-    ],
-    "evidence": [
-        "\"continuous penetration testing, managed in the Rootshell platform\"",
-        "\"AI-driven analysis and threat intelligence\"",
-        "\"a dedicated consultant supports you from onboarding to remediation\"",
-    ],
-    "talking_points": ["Platform plus human expertise", "Remediation-focused, not just scanning"],
-    "notable_products_or_news": "none found",
-    "matched_extra_mentions": ["ai_agents"],
-    "match_reasons": {"ai_agents": "They describe AI-driven analysis in their platform."},
-}
-
-
-def load_spec() -> dict:
-    with open(ROOT / "specializations.json") as f:
-        return json.load(f)
+# Fixed, fictional sites so every model faces the same test.
+TEST_SITES = [
+    {
+        "name": "Northwatch Security",
+        "expect_areas": {"soc_blue_team"},
+        "expect_hook": True,
+        "text": ("Northwatch Security provides managed detection and response for mid-sized "
+                 "businesses. Our analysts monitor your environment around the clock from our "
+                 "security operations centre, correlating SIEM alerts and leading incident "
+                 "response when a threat is confirmed. We also run proactive threat hunting "
+                 "across endpoints and cloud workloads, and publish threat intelligence reports "
+                 "for our clients."),
+    },
+    {
+        "name": "Lumen Agents",
+        "expect_areas": {"agentic_ai"},
+        "expect_hook": True,
+        "text": ("Lumen Agents builds AI agents that automate back-office work for insurance "
+                 "companies. Our multi-agent platform combines large language models with "
+                 "retrieval-augmented generation over each client's documents, so claims are "
+                 "triaged and summarised in minutes. Every agent's output is traced and reviewed "
+                 "before it reaches a customer."),
+    },
+    {
+        "name": "Breakpoint Labs",
+        "expect_areas": {"offensive_security"},
+        "expect_hook": True,
+        "text": ("Breakpoint Labs is a penetration testing firm. We run web and mobile "
+                 "application security assessments, red team engagements that emulate real "
+                 "adversaries, and continuous vulnerability testing for SaaS companies. Each "
+                 "engagement ends with a remediation workshop with your developers."),
+    },
+    {
+        "name": "Portal Login",
+        "expect_areas": set(),
+        "expect_hook": False,
+        "text": ("We use cookies to improve your experience. Accept all. Manage preferences. "
+                 "Sign in. Email. Password. Forgot your password? Create account."),
+    },
+]
 
 
 def list_models(base_url: str, api_key: str) -> list:
     url = base_url.rstrip("/") + "/models"
-    response = requests.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=30)
+    try:
+        response = requests.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=30)
+    except requests.RequestException as exc:
+        print(f"  could not reach {url}: {exc}")
+        return []
     if response.status_code != 200:
         print(f"  {url} -> HTTP {response.status_code}: {response.text[:300]}")
         return []
@@ -81,66 +96,29 @@ def list_models(base_url: str, api_key: str) -> list:
     return sorted(str(item.get("id", item)) for item in items)
 
 
-def score_draft(draft: dict, spec: dict, greeting: str, applicant_name: str) -> tuple:
-    """Returns (list_of_problems, list_of_notes)."""
-    problems, notes = [], []
-    body = draft["body"]
+def run_site(client, model: str, site: dict, areas: list) -> dict:
+    """Research one test site with one model (no fallback, no network fetch)."""
+    with patch.object(research_agent, "fetch_website_text", return_value=site["text"]), \
+         patch.object(research_agent, "build_model_fallback_list", return_value=[model]), \
+         patch("builtins.print"):
+        started = time.time()
+        context = research_agent.get_company_context(client, model, site["name"], "x", areas)
+    context["seconds"] = time.time() - started
 
-    try:
-        check_draft(draft, facts=spec["core_identity"].get("verified_facts", {}),
-                    research=FAKE_RESEARCH, company_name=FAKE_COMPANY,
-                    greeting=greeting, applicant_name=applicant_name,
-                    extra_sentences=[])
-    except GuardRejection as rejection:
-        problems.append(str(rejection))
+    problems = []
+    got_areas = set(context["areas"])
+    if site["expect_areas"] and not site["expect_areas"] & got_areas:
+        problems.append(f"missed {'/'.join(sorted(site['expect_areas']))} (got {sorted(got_areas) or 'none'})")
+    if not site["expect_areas"] and got_areas:
+        problems.append(f"matched {sorted(got_areas)} on a page with nothing to match")
 
-    lowered = body.lower()
-
-    # The CV's facts must survive verbatim — a model that "improves" 60+ into
-    # 70+ or ENSIT into a longer school name is worse than useless here.
-    for needle, label in [
-        ("ensit", "school (ENSIT)"),
-        ("redbox", "flagship project (RedBox)"),
-        ("60+", "CTF count (60+)"),
-        ("february 2027", "start date (February 2027)"),
-        ("forvis mazars", "employer (Forvis Mazars)"),
-        ("talan", "employer (Talan)"),
-        ("nomios", "employer (TDS Global by Nomios)"),
-    ]:
-        if needle not in lowered:
-            problems.append(f"dropped or altered the {label}")
-
-    # The company paragraph should exist and be grounded.
-    if f"draws me to {FAKE_COMPANY.lower()}" not in lowered:
-        notes.append("no 'what draws me to...' paragraph")
-    grounded = any(term in lowered for term in
-                    ("consultant", "penetration testing", "threat intelligence", "remediation"))
-    if not grounded:
-        problems.append("company paragraph cites nothing from the research")
-
-    notes.append(f"{len(body.split())} words")
-    return problems, notes
-
-
-def test_model(model: str, client, spec: dict, applicant_name: str, target_role: str) -> dict:
-    greeting = f"Dear {FAKE_COMPANY} Team,"
-    started = time.time()
-    try:
-        draft = generate_email(
-            client, model, spec["core_identity"], applicant_name,
-            FAKE_RESEARCH, FAKE_COMPANY, spec["extra_mentions"], target_role, greeting,
-            company_paragraph_rules=spec.get("company_paragraph"),
-            allow_fallback=False,  # report on THIS model, not its stand-ins
-        )
-    except Exception as exc:
-        return {"model": model, "ok": False, "seconds": time.time() - started,
-                "problems": [f"failed to produce a usable draft: {str(exc)[:200]}"],
-                "notes": [], "draft": None}
-
-    seconds = time.time() - started
-    problems, notes = score_draft(draft, spec, greeting, applicant_name)
-    return {"model": model, "ok": not problems, "seconds": seconds,
-            "problems": problems, "notes": notes, "draft": draft}
+    status = context["hook_status"]
+    if site["expect_hook"] and not context["company_hook"]:
+        problems.append(f"no usable hook ({status})")
+    if not site["expect_hook"] and status not in ("none offered", "model gave no usable answer"):
+        problems.append(f"INVENTED a hook for an empty page ({status})")
+    context["problems"] = problems
+    return context
 
 
 def main():
@@ -149,82 +127,83 @@ def main():
     parser.add_argument("--list", action="store_true", help="list models the endpoint offers")
     parser.add_argument("--all", action="store_true", help="test every suggested model")
     parser.add_argument("-m", "--models", help="comma-separated models to test")
-    parser.add_argument("--show", action="store_true", help="print the winning email in full")
+    parser.add_argument("--show", action="store_true", help="print the emails the best model produces")
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env", override=True)
-    api_key = (os.getenv("AI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    api_key = (os.getenv("AI_API_KEY") or "").strip()
     base_url = (os.getenv("AI_BASE_URL") or DEFAULT_BASE_URL).strip()
     configured = (os.getenv("AI_MODEL") or DEFAULT_MODEL).strip()
 
     if not api_key:
-        print(f"No AI_API_KEY in .env. Get a key ({KEY_PORTAL_URL} for Groq) and add it,\n"
+        print(f"No AI_API_KEY in .env. Get one ({KEY_PORTAL_URL} for Groq) and add it,\n"
               f"or set it in the dashboard's setup form.")
         return 1
 
     print(f"endpoint : {base_url}")
-    print(f"key      : {api_key[:8]}…{api_key[-4:]}\n")
+    print(f"key      : {api_key[:6]}…{api_key[-4:]}\n")
 
     available = list_models(base_url, api_key)
     if available:
         print(f"{len(available)} model(s) available:")
         for model in available:
-            marker = "  <- configured" if model == configured else ""
-            print(f"  {model}{marker}")
+            print(f"  {model}{'  <- configured' if model == configured else ''}")
     else:
         print("Could not list models from this endpoint (some providers don't expose /models).")
     print()
-
     if args.list:
         return 0
 
     if args.models:
         models = [m.strip() for m in args.models.split(",") if m.strip()]
     elif args.all:
-        models = [m for m in SUPPORTED_MODELS if not available or m in available]
-        if not models:
-            models = available[:6]
+        models = [m for m in SUPPORTED_MODELS if not available or m in available] or available[:6]
     else:
         models = [configured]
 
-    unknown = [m for m in models if available and m not in available]
-    if unknown:
-        print(f"note: {', '.join(unknown)} not offered by this endpoint — testing anyway\n")
-
-    spec = load_spec()
-    applicant_name = os.getenv("YOUR_NAME", "Mohamed Hedda")
-    target_role = os.getenv("YOUR_TARGET_ROLE", "End-of-Study Internship")
+    spec = json.loads((ROOT / "specializations.json").read_text())
     client = CompatibleAIClient(api_key, base_url, rate_limiter=RateLimiter(60))
-
-    print(f"Writing a test email for '{FAKE_COMPANY}' with each model.")
-    print("Scored on: facts preserved, nothing invented, company paragraph grounded.\n")
+    print(f"Researching {len(TEST_SITES)} test websites with each model "
+          f"(the last one is an empty login page — the right answer there is 'nothing').\n")
 
     results = []
     for model in models:
-        print(f"  {model} … ", end="", flush=True)
-        result = test_model(model, client, spec, applicant_name, target_role)
-        results.append(result)
-        verdict = "PASS" if result["ok"] else "FAIL"
-        print(f"{verdict}  ({result['seconds']:.1f}s, {', '.join(result['notes']) or '—'})")
-        for problem in result["problems"]:
-            print(f"      ✗ {problem[:190]}")
+        print(f"{model}")
+        runs, seconds = [], 0.0
+        for site in TEST_SITES:
+            ctx = run_site(client, model, site, spec["areas"])
+            runs.append((site, ctx))
+            seconds += ctx["seconds"]
+            mark = "ok " if not ctx["problems"] else "BAD"
+            detail = ctx["company_hook"] or "—"
+            print(f"   {mark} {site['name']:<20} areas={ctx['areas'] or '[]'}  hook={detail[:60]!r}")
+            for problem in ctx["problems"]:
+                print(f"         ✗ {problem}")
+        failures = sum(len(ctx["problems"]) for _, ctx in runs)
+        invented = any("INVENTED" in p for _, ctx in runs for p in ctx["problems"])
+        results.append({"model": model, "failures": failures, "invented": invented,
+                        "seconds": seconds, "runs": runs})
+        print(f"   → {failures} problem(s), {seconds:.1f}s\n")
 
-    passed = [r for r in results if r["ok"]]
-    print("\n" + "=" * 60)
-    if not passed:
-        print("No model passed. Check the failures above — if they're all 401/404,\n"
-              "the key or the base URL is wrong rather than the models.")
+    safe = [r for r in results if not r["invented"]]
+    print("=" * 64)
+    if not safe:
+        print("Every model invented something on the empty page. Don't use any of them\n"
+              "as-is — or check the failures above for a wrong key or base URL (401/404).")
         return 1
-
-    best = min(passed, key=lambda r: r["seconds"])
-    print(f"RECOMMENDED: {best['model']}  ({best['seconds']:.1f}s)")
-    print(f"\nSet it with:  AI_MODEL={best['model']}")
-    print("or pick it in the dashboard's setup form.")
+    best = min(safe, key=lambda r: (r["failures"], r["seconds"]))
+    print(f"RECOMMENDED: {best['model']}  ({best['failures']} problem(s), {best['seconds']:.1f}s)")
+    print(f"Set it with:  AI_MODEL={best['model']}   (or pick it in the dashboard)")
+    print("\nEven a weaker model is safe here: anything it can't back up with the site's own\n"
+          "words is dropped, and the email falls back to its standard wording.")
 
     if args.show:
-        print("\n" + "-" * 60)
-        print(f"Subject: {best['draft']['subject']}\n")
-        print(best["draft"]["body"])
+        for site, ctx in best["runs"]:
+            draft = compose_email(spec, ctx, site["name"], f"Dear {site['name']} Team,",
+                                  os.getenv("YOUR_NAME", "Mohamed Hedda"),
+                                  os.getenv("YOUR_TARGET_ROLE", "End-of-Study Internship"))
+            print("\n" + "-" * 64)
+            print(f"Subject: {draft['subject']}\n\n{draft['body']}")
     return 0
 
 

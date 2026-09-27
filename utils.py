@@ -118,9 +118,9 @@ def resolve_greeting_name(contact_name, company_name: str) -> str | None:
 
 
 def build_greeting(contact_name, company_name: str) -> str:
-    """Returns the exact opening line to use, e.g. 'Hello Charly,' or
-    'Hello Rtone team,'."""
+    """Returns the exact opening line to use, e.g. 'Dear Charly,' or
+    'Dear Rtone Team,'."""
     first_name = resolve_greeting_name(contact_name, company_name)
     if first_name:
-        return f"Hello {first_name},"
-    return f"Hello {company_name} team,"
+        return f"Dear {first_name},"
+    return f"Dear {company_name} Team,"
