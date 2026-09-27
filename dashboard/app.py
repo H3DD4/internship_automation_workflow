@@ -35,6 +35,7 @@ from flask import Flask, abort, flash, jsonify, redirect, render_template, reque
 from dotenv import load_dotenv
 import db
 import sender_worker
+from ai_client import DEFAULT_BASE_URL, DEFAULT_MODEL, KEY_PORTAL_URL, SUPPORTED_MODELS
 
 # Allows OAuth's local HTTP redirect (127.0.0.1:5050) to satisfy oauthlib's
 # strict HTTPS check. Safe only because this dashboard is hardcoded to bind
@@ -148,12 +149,13 @@ def _preparation_config() -> dict:
         specializations = json.load(f)
     return {
         "ai_api_key": (os.getenv("AI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or "").strip(),
-        "ai_base_url": os.getenv("AI_BASE_URL", "https://api.b.ai/v1"),
-        "ai_model": os.getenv("AI_MODEL", "hy3"),
+        "ai_base_url": os.getenv("AI_BASE_URL", DEFAULT_BASE_URL),
+        "ai_model": os.getenv("AI_MODEL", DEFAULT_MODEL),
         "applicant_name": os.getenv("YOUR_NAME", ""),
         "target_role": os.getenv("YOUR_TARGET_ROLE", ""),
         "core_identity": specializations["core_identity"],
         "extra_mentions": specializations["extra_mentions"],
+        "company_paragraph": specializations.get("company_paragraph", {}),
     }
 
 
@@ -193,7 +195,7 @@ def _is_placeholder(value: str) -> bool:
     # in both spaced and unspaced form.
     compact = lowered.replace(" ", "")
     exact_placeholders = {
-        "your_bai_api_key_here", "your_anthropic_api_key_here",
+        "your_bai_api_key_here", "your_anthropic_api_key_here", "your_groq_api_key_here",
         "you@gmail.com", "your full name", "xxxx xxxx xxxx xxxx",
         "xxxxxxxxxxxxxxxx", "./my_cv.pdf", "my_cv.pdf",
         "companies.xlsx", "./companies.xlsx",
@@ -267,8 +269,8 @@ def _setup_state():
         "companies_rows": _count_companies_rows(companies_path) if has_companies else None,
         "cv_name": cv_path.name if has_cv else "",
         "cv_size_kb": round(cv_path.stat().st_size / 1024, 1) if has_cv else None,
-        "ai_model": os.getenv("AI_MODEL", "hy3"),
-        "ai_base_url": os.getenv("AI_BASE_URL", "https://api.b.ai/v1"),
+        "ai_model": os.getenv("AI_MODEL", DEFAULT_MODEL),
+        "ai_base_url": os.getenv("AI_BASE_URL", DEFAULT_BASE_URL),
     }
 
 
@@ -438,6 +440,8 @@ def index():
         run_state=_run_state(),
         active_job=db.get_send_job(active_job["id"]) if active_job else None,
         status_tabs=STATUS_TABS,
+        supported_models=SUPPORTED_MODELS,
+        key_portal_url=KEY_PORTAL_URL,
         **context,
     )
 
@@ -540,6 +544,7 @@ def api_regenerate(app_id):
             client, cfg["ai_model"], cfg["core_identity"], cfg["applicant_name"],
             context, application["company_name"], cfg["extra_mentions"],
             cfg["target_role"], greeting,
+            company_paragraph_rules=cfg.get("company_paragraph"),
         )
     except Exception as exc:
         db.log_event(app_id, "write", "Regenerate failed", detail={"error": str(exc)})
@@ -601,7 +606,7 @@ def setup():
     # Back-compat: an older .env may only have ANTHROPIC_API_KEY.
     if not required_fields["AI_API_KEY"]:
         required_fields["AI_API_KEY"] = os.getenv("ANTHROPIC_API_KEY", "")
-    required_fields["AI_KEY_PORTAL"] = "https://chat.b.ai/key"
+    required_fields["AI_KEY_PORTAL"] = KEY_PORTAL_URL
     if not all(v for k, v in required_fields.items() if k != "AI_KEY_PORTAL"):
         missing = [k for k, v in required_fields.items() if not v and k != "AI_KEY_PORTAL"]
         flash(f"Add every field before saving. Missing: {', '.join(missing)}.", "error")
@@ -866,10 +871,10 @@ def api_validate_ai():
     if not api_key:
         api_key = os.getenv("ANTHROPIC_API_KEY", "")
     base_url = (payload.get("ai_base_url", "") or "").strip() or os.getenv("AI_BASE_URL", "")
-    base_url = base_url or "https://api.b.ai/v1"
-    model = (payload.get("ai_model", "") or "").strip() or os.getenv("AI_MODEL", "hy3")
+    base_url = base_url or DEFAULT_BASE_URL
+    model = (payload.get("ai_model", "") or "").strip() or os.getenv("AI_MODEL", DEFAULT_MODEL)
     if not api_key or _is_placeholder(api_key):
-        return jsonify({"ok": False, "message": "Paste your BAI API key first (get one at https://chat.b.ai/key)."})
+        return jsonify({"ok": False, "message": f"Paste your API key first (get one at {KEY_PORTAL_URL})."})
     try:
         response = requests.post(
             base_url.rstrip("/") + "/chat/completions",
@@ -883,7 +888,7 @@ def api_validate_ai():
     if response.status_code == 200:
         return jsonify({"ok": True, "message": f"AI key works — model '{model}' answered."})
     if response.status_code in (401, 403):
-        return jsonify({"ok": False, "message": "AI server rejected the key (401/403). Paste a fresh key from https://chat.b.ai/key."})
+        return jsonify({"ok": False, "message": f"AI server rejected the key (401/403). Paste a fresh key from {KEY_PORTAL_URL}."})
     if response.status_code == 404:
         return jsonify({"ok": False, "message": f"Model '{model}' not found (404). Try another model from the dropdown."})
     return jsonify({"ok": False, "message": f"AI server returned {response.status_code}: {response.text[:200]}"})

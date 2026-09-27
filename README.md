@@ -50,7 +50,20 @@ or shrinks the core pitch.
    pip install -r requirements.txt
    ```
 
-3. **Start the dashboard and fill in the setup form:**
+3. **Pick an AI provider.** Any OpenAI-compatible endpoint works — Groq
+   (free tier, the default), OpenRouter, Together, a local Ollama. You only
+   ever set three values: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`.
+
+   Unsure which model, or on a provider I haven't listed? Let the repo tell you:
+   ```bash
+   python check_models.py --list   # what does this endpoint offer?
+   python check_models.py --all    # which of them writes a clean email?
+   ```
+   Each candidate writes a real email for a fixed test company; the script
+   checks it kept your CV's facts and invented nothing about the company,
+   then recommends the fastest one that passed.
+
+4. **Start the dashboard and fill in the setup form:**
    ```bash
    python dashboard/app.py
    ```
@@ -62,13 +75,33 @@ or shrinks the core pitch.
    You only need the AI key, your profile, and the companies file to start
    **preparing** drafts. Gmail and the CV are needed only when you send.
 
-4. **Connect Gmail**, either way:
+5. **Connect Gmail**, either way:
    - **Sign in with Google (recommended).** Put your OAuth client file
      (`client_secret_*.json` or `credentials.json`) in the project folder, then
      click "Sign in with Google". No app password needed, and bounce checking
      works through the same connection.
    - **App password.** Needs 2-Step Verification on your Google account; create
      one at <https://myaccount.google.com/apppasswords>.
+
+### Keeping the emails truthful
+
+Every factual claim comes from one of two places, and nothing else is allowed in:
+
+- **About you** — `specializations.json`, whose `verified_facts` block mirrors
+  your CV. The writer may reword for flow but may never change a number.
+- **About the company** — only what the research agent actually read on their
+  site. If a site is unreachable or says nothing concrete, the "what draws me
+  to you" paragraph is dropped rather than guessed at.
+
+`agents/draft_guard.py` then checks the finished draft mechanically — no second
+AI call, so it can't hallucinate in turn. It rejects a draft that states a
+number absent from both sources, uses unverifiable flattery ("industry
+leader", "award-winning"), claims you used their product, drops one of your
+verified facts, or leaves a placeholder behind. A rejected draft goes back to
+the model with the specific complaint attached, and is regenerated.
+
+That guard is why the model choice matters less than it looks: a model that
+embroiders gets caught rather than emailed.
 
 ### Companies file
 
@@ -151,9 +184,11 @@ Worth doing yourself:
 .
 ├── main.py                  # preparation (research + write). Never sends.
 ├── pipeline.py              # concurrent research/writer pools, resume rules
+├── check_models.py          # discover + score models on any provider
 ├── agents/
-│   ├── research_agent.py    # scrapes the site, matches extra mentions
-│   └── writer_agent.py      # assembles the email
+│   ├── research_agent.py    # scrapes the site, extracts its working axes
+│   ├── writer_agent.py      # assembles the email
+│   └── draft_guard.py       # rejects invented claims before you ever see them
 ├── ai_client.py             # OpenAI-compatible client, retries, rate limit
 ├── db.py                    # SQLite storage, send jobs, recovery sweeps
 ├── cache_store.py           # per-company on-disk cache (resumability)

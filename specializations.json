@@ -1,24 +1,66 @@
 {
   "core_identity": {
-    "description": "Your fixed positioning. This is ALWAYS included in every email, worded the same way in substance regardless of company. It does not get rewritten per company — only lightly reworded for tone/grammar flow.",
-    "angle_prompt": "Write the email using these facts, in roughly this order, cleaned up into clear professional English (fix grammar, break into short paragraphs — do not just paste this verbatim):\n\n1. OPENING: I'm a final-year software engineering student at the Higher National School of Engineers in Tunis, specialized in cybersecurity and agentic AI engineering. I'm looking for an end-of-study internship starting February 2027. Express genuine interest in joining {company_name} as an intern, with openness to a longer-term role afterward.\n\n2. FLAGSHIP PROOF (most important part, give it real space): My GitHub has 20+ projects, but the one that best proves my expertise is RedBox — an autonomous AI agent that finds vulnerabilities in live, deployed websites and applications, and solves CTF challenges. Make clear it's not just a proof-of-concept: it has solved 70+ CTF tasks and found 3 confirmed vulnerabilities in production software.\n\n3. PASSION & SKILLS: My love for cybersecurity comes from wanting to understand and break down 'black box' systems, which is what pulled me toward technology in the first place. I've played many CTFs and won several national and international competitions. I have deep experience in reverse engineering, offensive security, log analysis, digital forensics, and SIEM tools.\n\n4. PROFESSIONAL EXPERIENCE: I've worked at three respected companies: Forvis Mazars (Cybersecurity Group of Excellence), Talan, and TDS Global by Nomios.\n\n5. AI CONNECTION: My passion for cybersecurity is what led me to learn AI — specifically to automate my own security methodologies — combined with a solid foundation in software development and system design.\n\n6. CLOSING: Mention the CV is attached for more detail. Close with genuine enthusiasm about joining {company_name} specifically, wanting to take on new challenges and grow there, and looking forward to their reply.\n\nTONE: Confident and genuinely enthusiastic, not arrogant. Keep it authentic to a student who has real hands-on results, not just coursework."
+    "description": "Mohamed Hedda's fixed positioning, taken from his CV. Every fact here is verifiable in the attached CV — the writer agent may reword for flow but may never add a fact that isn't here, and never changes a number.",
+
+    "angle_prompt": "Write the email as SIX paragraphs, in this exact order, in clear professional English. Facts are fixed; wording may flow naturally.\n\n1. OPENING (2 sentences): I'm a final-year Computer Engineering student at ENSIT (Tunis), specialised in cybersecurity and agentic AI engineering, looking for an end-of-study internship starting February 2027.\n\n2. WHY THIS COMPANY — written from COMPANY_RESEARCH only (see its own rules). Open with \"What draws me to {company_name} specifically is...\", name the concrete thing they do, then say in one clause why that fits the way I work. If COMPANY_RESEARCH is empty or says unknown, SKIP this paragraph entirely and write nothing in its place.\n\n3. FLAGSHIP PROOF: My GitHub holds 20+ projects, but the one that best proves my expertise is RedBox — an autonomous AI agent that finds vulnerabilities in live, deployed applications and solves CTF challenges. Make clear it is not a proof-of-concept: it has solved 60+ CTF challenges automatically and reported 3 real vulnerabilities found in production environments.\n\n4. PASSION & SKILLS: My interest in cybersecurity started from wanting to understand and break down \"black box\" systems, which is what first pulled me toward technology. I've competed in numerous CTFs, winning several national and international competitions, and built deep experience in reverse engineering, offensive security, log analysis, digital forensics, and SIEM tooling.\n\n5. PROFESSIONAL EXPERIENCE — three internships, each with its specific achievement, in one flowing sentence: at Forvis Mazars (Cybersecurity Group of Excellence), I built a RAG-based LLM assistant for pentesters; at Talan, I contributed to AI-driven pipelines during an intensive applied-AI program; and at TDS Global by Nomios, I helped build an ML-powered SOC platform. Then: my path into AI grew directly out of wanting to automate my own security methodologies.\n\n6. CLOSING: My CV is attached with further detail. Say I'd be genuinely glad to bring this background to {company_name} and grow with the team, and that I look forward to hearing from them.\n\nTONE: confident and genuinely enthusiastic, never boastful or salesy. A student with real hands-on results, writing to a team he respects. No marketing adjectives, no \"I am writing to express my keen interest\", no filler.\n\nLENGTH: 230–330 words total, excluding greeting and sign-off.",
+
+    "verified_facts": {
+      "description": "Checked programmatically against the generated draft. A number or name appearing in the email that isn't derivable from here is treated as a hallucination and the draft is rejected.",
+      "school": "ENSIT",
+      "city": "Tunis",
+      "level": "final-year Computer Engineering student",
+      "internship_start": "February 2027",
+      "github_projects": "20+",
+      "ctf_challenges_solved_by_redbox": "60+",
+      "production_vulnerabilities_reported": 3,
+      "employers": ["Forvis Mazars", "Talan", "TDS Global by Nomios"],
+      "flagship_project": "RedBox",
+      "allowed_numbers": ["20", "60", "3", "2027"]
+    }
   },
+
+  "company_paragraph": {
+    "description": "Rules for paragraph 2, the only part of the email that varies by company. This is where most hallucination risk lives, so it is fenced tightly.",
+    "rules": [
+      "Use ONLY facts present in COMPANY_RESEARCH. Every claim about the company must trace to a specific line of it.",
+      "Never state or imply anything about the company's size, funding, clients, founding date, awards, revenue, location or headcount unless COMPANY_RESEARCH says so explicitly.",
+      "Never invent a product name, a customer name, or a technology they use.",
+      "Never claim to have used their product, met their team, read their blog, or seen a job posting.",
+      "Prefer their own framing: if they describe themselves as doing X, say X, don't upgrade it into a bigger claim.",
+      "One connection sentence maximum back to my own work — it must reference something in my fixed pitch, not a new claim about me.",
+      "If COMPANY_RESEARCH has nothing concrete (industry 'unknown' and no talking points), write nothing at all for this paragraph."
+    ],
+    "good_example": "What draws me to Rootshell Security specifically is how you've paired AI-driven analysis and threat intelligence with a dedicated security consultant guiding every client from setup through remediation — it's a rare balance between automation and genuine human accountability, and it's exactly the kind of platform-plus-expertise model I want to learn to build.",
+    "bad_examples": [
+      "I've long admired your reputation as the industry leader — 'industry leader' is not in the research and is empty flattery.",
+      "Having followed your work since your Series B — invented funding knowledge.",
+      "Your recent launch of SecureScan v4 caught my eye — invented product name.",
+      "With over 500 enterprise clients, you clearly — invented number."
+    ]
+  },
+
   "extra_mentions": [
     {
       "id": "cloud",
       "match_description": "Company website mentions AWS/GCP/Azure, Kubernetes, Docker, DevOps, CI/CD, cloud infrastructure, or deployment/scaling of services.",
-      "sentence": "I also have hands-on experience with Docker and cloud deployment, from shipping and operating projects like RedBox in production."
+      "sentence": "On the infrastructure side, I've deployed and operated production workloads on AWS EC2 with hardened security groups, work with Docker day to day, and am currently completing the AWS Solutions Architect – Associate certification."
     },
     {
       "id": "software_dev",
       "match_description": "Company describes itself mainly as a general software/product company with no explicit AI, cybersecurity, or cloud-infra focus (e.g. 'we build web/mobile products', generic SaaS, digital agency).",
-      "sentence": "Beyond security and AI, I also have a solid foundation in software development and system design, built through coursework and my three professional experiences."
+      "sentence": "Beyond security and AI, I build full products end to end — React and TypeScript on the front, FastAPI and Node.js behind it, with PostgreSQL, MongoDB and Neo4j depending on what the data actually looks like."
     },
     {
       "id": "data",
-      "match_description": "Company website mentions data pipelines, analytics, business intelligence, data science, or data engineering.",
-      "sentence": "My background in log analysis and digital forensics/SIEM work has also given me solid experience investigating and structuring large, messy datasets."
+      "match_description": "Company website mentions data pipelines, analytics, business intelligence, data science, data engineering, or machine learning on data.",
+      "sentence": "I also work comfortably with messy data at scale: my anomaly-detection model at TDS Global reached 97% accuracy on the CICIDS dataset, and my forensics and SIEM background is largely about making sense of very noisy logs."
+    },
+    {
+      "id": "ai_agents",
+      "match_description": "Company website mentions LLMs, generative AI, AI agents, RAG, copilots, or automation built on language models.",
+      "sentence": "Agentic AI is where I spend most of my time: RedBox runs on LLM orchestration and MCP workflows, and both my Forvis Mazars assistant and my Carthage Connect platform are RAG systems with multi-agent pipelines behind them."
     }
   ],
-  "notes": "core_identity is always used and is treated as near-final text — the writer agent only lightly formats it, it does not rewrite it. extra_mentions are optional add-ons: the research agent matches 0+ of these per company, and the writer agent inserts the matched item's ready-made 'sentence' close to verbatim (at most 2 total) — it never rewrites the sentence or restructures the email around it."
+
+  "notes": "core_identity.angle_prompt is near-final text: the writer lightly formats it and never rewrites the facts. Paragraph 2 is the only company-specific part and is governed by company_paragraph.rules. extra_mentions are optional add-ons the research agent matches (0-2 per company) and the writer inserts close to verbatim. Every fact traces to the CV; verified_facts is enforced in code by agents/draft_guard.py."
 }

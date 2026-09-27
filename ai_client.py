@@ -121,12 +121,29 @@ class _Messages:
         self.client = client
 
     def create(self, model: str, max_tokens: int, system: str, messages: list,
-               max_attempts: int = 3):
+               max_attempts: int = 3, temperature: float = None,
+               json_mode: bool = False, reasoning_effort: str = None):
+        """`temperature` matters a lot here: unset, providers default to 1.0,
+        which invites a model to embroider facts in what is meant to be near-
+        verbatim assembly. Both agents pass a low value.
+
+        `json_mode` asks the provider for guaranteed-parsable JSON, and
+        `reasoning_effort` caps how long a reasoning model thinks (the writing
+        task needs no deliberation, and long reasoning eats the token budget).
+        Both are ignored by providers that don't support them, so the raw
+        response is still parsed defensively downstream.
+        """
         payload = {
             "model": model,
             "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system}, *messages],
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
 
         for attempt in range(1, max_attempts + 1):
             # Rate-limit before every call
@@ -160,6 +177,16 @@ class _Messages:
                     )
                 self._backoff(attempt, f"HTTP {response.status_code}")
                 continue
+
+            # --- Optional params the model may not accept ---
+            # Not every model supports JSON mode or reasoning_effort, and a
+            # rejected optional param comes back as a fatal 400. Drop it and
+            # retry once rather than failing the company over a nicety.
+            if response.status_code == 400:
+                dropped = self._drop_unsupported_param(payload, response.text)
+                if dropped:
+                    print(f"    [ai] {model} rejected '{dropped}' — retrying without it")
+                    continue
 
             # --- Non-retryable HTTP errors (401, 403, 404, etc.) ---
             if response.status_code != 200:
@@ -214,6 +241,17 @@ class _Messages:
         raise RuntimeError("AI call failed: exhausted all retry attempts")
 
     @staticmethod
+    def _drop_unsupported_param(payload: dict, error_text: str) -> str | None:
+        """Remove one optional param the provider complained about, if any.
+        Returns the removed key so the caller can retry and log it."""
+        lowered = (error_text or "").lower()
+        for key in ("response_format", "reasoning_effort"):
+            if key in payload and key in lowered:
+                payload.pop(key)
+                return key
+        return None
+
+    @staticmethod
     def _backoff(attempt: int, reason: str):
         delay = (2 ** attempt) + random.uniform(0, 1)
         print(f"    [ai-retry] attempt {attempt} failed ({reason}) — "
@@ -221,8 +259,35 @@ class _Messages:
         time.sleep(delay)
 
 
+# ---------------------------------------------------------------------------
+# Provider defaults (Groq's OpenAI-compatible API)
+# ---------------------------------------------------------------------------
+DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
+KEY_PORTAL_URL = "https://console.groq.com/keys"
+
+# gpt-oss-120b is the default: of Groq's line-up it follows a long, rule-heavy
+# system prompt most reliably, which is the whole job here — the email is
+# mostly fixed text that must come back unchanged.
+DEFAULT_MODEL = "openai/gpt-oss-120b"
+
+# Fallbacks are deliberately a DIFFERENT architecture from the default: if
+# gpt-oss returns something unusable, another gpt-oss size will often fail the
+# same way, whereas Llama tends to fail differently.
+DEFAULT_FALLBACK_MODELS = ("llama-3.3-70b-versatile", "openai/gpt-oss-20b")
+
+# Shown in the dashboard's model dropdown.
+SUPPORTED_MODELS = [
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-20b",
+    "moonshotai/kimi-k2-instruct",
+    "qwen/qwen3-32b",
+    "llama-3.1-8b-instant",
+]
+
+
 def build_model_fallback_list(primary: str,
-                               fallbacks: tuple = ("qwen3.8-flash", "mimo-v2.5", "glm-5.3-flash")) -> list[str]:
+                               fallbacks: tuple = DEFAULT_FALLBACK_MODELS) -> list[str]:
     """Ordered, de-duplicated [primary, *fallbacks] — shared by both agents so a
     model that returns empty/malformed output (common with reasoning models
     under narrow prompts) falls through to another rather than failing the

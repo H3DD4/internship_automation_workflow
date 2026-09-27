@@ -38,7 +38,7 @@ from utils import is_valid_email, extract_company_name, derive_website_from_emai
     _company_name_from_domain
 from pipeline import Pipeline, needs_preparation
 
-DEFAULT_MODEL = "hy3"
+from ai_client import DEFAULT_BASE_URL, DEFAULT_MODEL
 SETUP_URL = "http://127.0.0.1:5050"
 
 
@@ -104,7 +104,7 @@ def load_config():
 
     return {
         "ai_api_key": os.getenv("AI_API_KEY"),
-        "ai_base_url": os.getenv("AI_BASE_URL", "https://api.b.ai/v1"),
+        "ai_base_url": os.getenv("AI_BASE_URL", DEFAULT_BASE_URL),
         "ai_model": os.getenv("AI_MODEL", DEFAULT_MODEL),
         "applicant_name": os.getenv("YOUR_NAME"),
         "target_role": os.getenv("YOUR_TARGET_ROLE"),
@@ -112,6 +112,7 @@ def load_config():
         "writer_workers": int(os.getenv("WRITER_WORKERS", 2)),
         "core_identity": specializations["core_identity"],
         "extra_mentions": specializations["extra_mentions"],
+        "company_paragraph": specializations.get("company_paragraph", {}),
     }
 
 

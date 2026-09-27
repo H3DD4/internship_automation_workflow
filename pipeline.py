@@ -199,6 +199,7 @@ class Pipeline:
             email_content = generate_email(
                 self.client, self.model, self.cfg["core_identity"], self.cfg["applicant_name"],
                 context, company_name, self.cfg["extra_mentions"], self.cfg["target_role"], greeting,
+                company_paragraph_rules=self.cfg.get("company_paragraph"),
             )
             cache_store.save_draft(email, email_content)
 

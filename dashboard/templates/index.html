@@ -37,7 +37,7 @@
     <li class="checklist-item checklist-item--{{ 'done' if setup.has_api_key else 'todo' }}">
       <span class="checklist-mark">{{ "✓" if setup.has_api_key else "1" }}</span>
       <span class="checklist-text">AI key for research + writing
-        {% if not setup.has_api_key %}<span class="checklist-note">Get one at chat.b.ai/key, then paste it below.</span>{% endif %}
+        {% if not setup.has_api_key %}<span class="checklist-note">Get one at console.groq.com/keys, then paste it below.</span>{% endif %}
       </span>
     </li>
     <li class="checklist-item checklist-item--{{ 'done' if setup.has_profile_and_files else 'todo' }}">
@@ -236,18 +236,18 @@
         <input id="ai-key" name="ai_api_key" type="password" placeholder="{{ 'Saved locally — enter to replace' if setup.has_api_key else 'Paste your provider key' }}" autocomplete="off">
         <button class="button button--ghost" type="button" id="validate-ai-btn">Validate</button>
       </div>
-      <span class="field-hint"><a href="https://chat.b.ai/key" target="_blank" rel="noreferrer">Open provider key portal</a>. {% if setup.has_api_key %}Saved locally.{% else %}Used for research and drafting.{% endif %}</span>
+      <span class="field-hint"><a href="{{ key_portal_url }}" target="_blank" rel="noreferrer">Open provider key portal</a>. {% if setup.has_api_key %}Saved locally.{% else %}Used for research and drafting.{% endif %}</span>
       <span class="field-hint validation-result" id="ai-validation-result" aria-live="polite"></span>
     </div>
     <div class="form-group">
       <label for="ai-model">Agent model</label>
       <select id="ai-model" name="ai_model">
-        {% for model in ["hy3", "mimo-v2.5", "glm-5.3-flash", "qwen3.8-flash"] %}<option value="{{ model }}"{% if setup.ai_model == model %} selected{% endif %}>{{ model }}</option>{% endfor %}
+        {% for model in supported_models %}<option value="{{ model }}"{% if setup.ai_model == model %} selected{% endif %}>{{ model }}{% if loop.first %} — recommended{% endif %}</option>{% endfor %}
       </select>
     </div>
     <div class="form-group">
       <label for="ai-base-url">AI API base URL</label>
-      <input id="ai-base-url" type="url" name="ai_base_url" value="{{ setup.ai_base_url }}" placeholder="https://api.b.ai/v1">
+      <input id="ai-base-url" type="url" name="ai_base_url" value="{{ setup.ai_base_url }}" placeholder="https://api.groq.com/openai/v1">
       <span class="field-hint">The key portal and the inference API are separate URLs.</span>
     </div>
 

@@ -24,39 +24,47 @@ from ai_client import extract_json_object, build_model_fallback_list
 # a page that genuinely doesn't exist just wastes time.
 _FETCH_RETRY_ON = (requests.ConnectionError, requests.Timeout)
 
-RESEARCH_SYSTEM_PROMPT_TEMPLATE = """You are a research assistant that reads raw, messy
-website text and extracts a concise, structured summary of a company for use
-in a personalized job application email.
+RESEARCH_SYSTEM_PROMPT_TEMPLATE = """You are an extraction tool. You read raw, messy
+website text and report ONLY what that text actually says about the company.
+You are not a summariser embellishing a brochure and not a marketer: if the
+text doesn't say it, it does not go in your output.
 
-You are also given a list of optional "extra mention" add-ons the applicant can
-reference IN ADDITION to their fixed core pitch (their core pitch is separate and
-NOT part of this task). Your job is to identify which of these add-ons, if any,
-are genuinely supported by real signals in the company's text.
+The output feeds one paragraph of a job application email explaining why the
+applicant is drawn to this specific company, so the valuable part is the
+concrete WORK the company does — the "working axes" — not adjectives.
 
-Extra mention add-ons available (id: match_description):
+Extra mention add-ons the applicant can reference (id: match_description):
 {extra_mentions_block}
 
-Respond with ONLY a JSON object (no markdown fences, no preamble, no commentary).
-Use this exact schema:
+Respond with ONLY a JSON object (no markdown fences, no preamble, no commentary):
 
 {{
-  "industry": "short phrase, e.g. 'fintech / payments'",
+  "industry": "short phrase, e.g. 'fintech / payments', or 'unknown'",
   "company_size_guess": "startup | small | mid-size | large enterprise | unknown",
-  "mission_or_focus": "1-2 sentence summary of what the company does / cares about",
+  "mission_or_focus": "1-2 sentences on what they do, in their own framing",
   "tone_of_voice": "formal | casual | technical | mission-driven | unknown",
-  "talking_points": ["2-4 short specific facts or values worth referencing in an email"],
+  "working_axes": [
+    "2-4 CONCRETE things this company actually builds, runs or offers, each a short phrase grounded in the text, e.g. 'continuous penetration testing delivered through their own platform' or 'threat intelligence feeds paired with a named consultant per client'. No adjectives-only entries like 'innovative solutions'."
+  ],
+  "evidence": [
+    "For each working_axis, a short quote or near-quote FROM THE TEXT that supports it, in the same order."
+  ],
+  "talking_points": ["2-4 short specific facts or values worth referencing"],
   "notable_products_or_news": "1 sentence, or 'none found'",
-  "matched_extra_mentions": ["0 or more ids from the list above that have REAL supporting evidence"],
+  "matched_extra_mentions": ["0 or more ids from the list above with REAL supporting evidence"],
   "match_reasons": {{"extra_mention_id": "1 short sentence: the SPECIFIC fact that justifies this match"}}
 }}
 
-It is completely normal and expected for matched_extra_mentions to be an empty list
-if nothing clearly fits — do NOT force a match. A company can also genuinely match
-more than one add-on at once if there's real evidence for each.
-
-If the provided text is too thin to infer something, use "unknown" or "none found"
-rather than inventing facts. Never fabricate specific numbers, funding rounds,
-client names, or news that isn't in the text.
+HARD RULES:
+- Never invent a number, funding round, client name, founding date, headcount,
+  award, or product name. If it isn't in the text, it doesn't exist for you.
+- working_axes must be things the TEXT states. An empty list is correct and
+  expected when the page is a cookie banner, a login wall, or pure boilerplate.
+- Do not infer what a company "probably" does from its name or domain.
+- An empty matched_extra_mentions list is normal — never force a match.
+- When the text is too thin, use "unknown" / "none found" / empty lists. A thin
+  honest result is far more useful here than a confident invented one: the
+  email simply drops its company paragraph rather than saying something false.
 """
 
 
@@ -120,6 +128,8 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
         "company_size_guess": "unknown",
         "mission_or_focus": f"{company_name} — no additional context available.",
         "tone_of_voice": "formal",
+        "working_axes": [],
+        "evidence": [],
         "talking_points": [],
         "notable_products_or_news": "none found",
         "matched_extra_mentions": [],
@@ -151,6 +161,11 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
                 max_tokens=2000,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
+                # Extraction, not composition: near-zero temperature, and ask
+                # the provider to guarantee JSON where it can.
+                temperature=0.1,
+                json_mode=True,
+                reasoning_effort="low",
             )
             raw = response.content[0].text.strip()
             block = extract_json_object(raw) or raw
@@ -159,6 +174,13 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
             # make sure all expected keys exist
             for key in fallback:
                 data.setdefault(key, fallback[key])
+
+            # Keep list-shaped fields list-shaped even if the model sends a string.
+            for key in ("working_axes", "evidence", "talking_points"):
+                if isinstance(data.get(key), str):
+                    data[key] = [data[key]]
+                elif not isinstance(data.get(key), list):
+                    data[key] = []
 
             # guard against the model inventing ids that aren't in our config
             known_ids = {m["id"] for m in extra_mentions}
