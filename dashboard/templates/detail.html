@@ -2,15 +2,46 @@
 {% block title %}{{ application.company_name }} — Application Tracker{% endblock %}
 {% block content %}
 
-<a class="back-link" href="{{ url_for('index') }}">← All companies</a>
+<div class="detail-topline">
+  <a class="back-link" href="{{ url_for('index') }}">← All companies</a>
+  <nav class="detail-nav" aria-label="Company navigation">
+    {% if prev_id %}<a class="button button--ghost button--sm" href="{{ url_for('company_detail', app_id=prev_id) }}">← Previous</a>{% endif %}
+    {% if next_id %}<a class="button button--ghost button--sm" href="{{ url_for('company_detail', app_id=next_id) }}">Next →</a>{% endif %}
+  </nav>
+</div>
 
 <header class="detail-header">
   <div>
     <h1>{{ application.company_name }}</h1>
-    <p class="subtitle cell-mono">{{ application.email }}</p>
+    <p class="subtitle cell-mono">{{ application.email }}{% if application.website %} · <a href="{{ application.website }}" target="_blank" rel="noreferrer">{{ application.website }}</a>{% endif %}</p>
   </div>
-  <span class="status-pill status-{{ application.status }} status-pill--lg">{{ application.status_label }}</span>
+  <div class="detail-actions">
+    <span class="status-pill status-{{ application.status }} status-pill--lg">{{ application.status_label }}</span>
+    {% if application.sendable %}
+    <button class="button button--primary send-detail-btn" id="send-detail-btn"
+            data-app-id="{{ application.id }}" type="button">Send now</button>
+    {% endif %}
+    {% if application.editable or application.status in ('researched', 'pending') %}
+    <button class="button button--ghost" id="regenerate-btn" data-app-id="{{ application.id }}" type="button"
+            title="Re-run the writer agent using the saved research (no re-scraping)">Regenerate</button>
+    {% endif %}
+    {% if application.status == 'skipped' %}
+    <button class="button button--ghost" id="unskip-detail-btn" data-app-id="{{ application.id }}" type="button">Un-skip</button>
+    {% elif application.status not in ('sent', 'queued', 'sending') %}
+    <button class="button button--ghost" id="skip-detail-btn" data-app-id="{{ application.id }}" type="button">Skip</button>
+    {% endif %}
+  </div>
 </header>
+
+<span class="field-hint" id="detail-action-result" aria-live="polite"></span>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<div class="flash-stack">
+  {% for category, message in messages %}<div class="flash flash--{{ category }}">{{ message }}</div>{% endfor %}
+</div>
+{% endif %}
+{% endwith %}
 
 {% if application.error_message %}
 <div class="error-box">
@@ -20,6 +51,61 @@
 
 <div class="detail-grid">
   <div class="detail-col">
+    {% if application.subject or application.body %}
+    <section class="panel">
+      <div class="panel-heading-row">
+        <h2>Email</h2>
+        <span class="word-count{% if word_count and (word_count < 180 or word_count > 360) %} word-count--warn{% endif %}"
+              id="word-count">{{ word_count }} words (target 200–320)</span>
+      </div>
+
+      <div class="detail-tabs" role="tablist">
+        <button class="detail-tab detail-tab--active" type="button" role="tab" data-tab="preview">Preview</button>
+        <button class="detail-tab" type="button" role="tab" data-tab="edit">Edit</button>
+      </div>
+
+      {# ── Preview: what the recipient actually receives ── #}
+      <div class="detail-panel" id="panel-preview" role="tabpanel">
+        <div class="email-preview">
+          <div class="email-preview__headers">
+            <span class="email-preview__key">From</span>
+            <span class="email-preview__val">{{ from_email }}</span>
+            <span class="email-preview__key">To</span>
+            <span class="email-preview__val">{{ application.email }}</span>
+            <span class="email-preview__key">Subject</span>
+            <span class="email-preview__val email-preview__subject" id="preview-subject">{{ application.subject or "—" }}</span>
+          </div>
+          <div class="email-preview__body" id="preview-body">{{ application.body or "No draft yet." }}</div>
+          {% if cv_info %}
+          <div class="attachment-chip">📎 {{ cv_info.name }} <span class="field-hint">{{ cv_info.size_kb }} KB</span></div>
+          {% else %}
+          <div class="attachment-chip attachment-chip--missing">⚠ No CV attached — add one in the workspace setup before sending.</div>
+          {% endif %}
+        </div>
+      </div>
+
+      {# ── Edit ── #}
+      <div class="detail-panel" id="panel-edit" role="tabpanel" hidden>
+        {% if application.editable %}
+        <form class="email-editor" action="{{ url_for('edit_email', app_id=application.id) }}" method="post">
+          <label for="subject">Subject</label>
+          <input id="subject" type="text" name="subject" value="{{ application.subject or '' }}" required>
+          <label for="body">Message</label>
+          <textarea id="body" name="body" rows="18" required>{{ application.body or '' }}</textarea>
+          <button class="button button--primary" type="submit">Save draft</button>
+        </form>
+        {% else %}
+        <p class="cell-empty">This email can't be edited while it's "{{ application.status_label }}".</p>
+        {% endif %}
+      </div>
+    </section>
+    {% else %}
+    <section class="panel">
+      <h2>Email</h2>
+      <p class="cell-empty">No draft yet. Run preparation — or, if research is already done, hit Regenerate.</p>
+    </section>
+    {% endif %}
+
     <section class="panel">
       <h2>Company research</h2>
       <dl class="fact-list">
@@ -36,7 +122,7 @@
     </section>
 
     <section class="panel">
-      <h2>AI reasoning — extra mentions</h2>
+      <h2>Why these extra mentions</h2>
       {% if matched_extras %}
       <ul class="reasoning-list">
         {% for m in matched_extras %}
@@ -47,30 +133,9 @@
         {% endfor %}
       </ul>
       {% else %}
-      <p class="cell-empty">No extra mentions matched — email used the core pitch only.</p>
+      <p class="cell-empty">No extra mentions matched — the email used your core pitch only.</p>
       {% endif %}
     </section>
-
-    {% if application.subject or application.body %}
-    <section class="panel">
-      <div class="panel-heading-row"><h2>Email draft</h2><span class="field-hint">ID {{ application.id }} — edit here, then send from this page or the main table.</span></div>
-      <form class="email-editor" action="{{ url_for('edit_email', app_id=application.id) }}" method="post">
-        <label for="subject">Subject</label>
-        <input id="subject" name="subject" value="{{ application.subject or '' }}" required>
-        <label for="body">Message</label>
-        <textarea id="body" name="body" rows="14" required>{{ application.body or '' }}</textarea>
-        <button class="button button--primary" type="submit">Save email draft</button>
-      </form>
-      {% if application.status in ('ready', 'failed', 'retry_wait') and application.subject %}
-      <button class="button button--primary send-detail-btn" id="send-detail-btn"
-              data-app-id="{{ application.id }}" type="button"
-              style="margin-top: 12px;">
-        Send this email now
-      </button>
-      <span class="field-hint" id="send-detail-result" aria-live="polite"></span>
-      {% endif %}
-    </section>
-    {% endif %}
   </div>
 
   <div class="detail-col">
@@ -78,10 +143,16 @@
       <h2>Timeline</h2>
       <ol class="timeline">
         {% for e in events %}
-        <li class="timeline-item">
+        <li class="timeline-item timeline-item--{{ e.stage }}">
           <span class="timeline-stage">{{ e.stage }}</span>
           <span class="timeline-time cell-mono">{{ e.timestamp[:19].replace("T", " ") }}</span>
           <p class="timeline-message">{{ e.message }}</p>
+          {% if e.detail_parsed %}
+          <details class="timeline-detail">
+            <summary class="timeline-detail-toggle">details</summary>
+            <pre class="log-output">{{ e.detail_parsed | tojson(indent=2) }}</pre>
+          </details>
+          {% endif %}
         </li>
         {% endfor %}
         {% if not events %}
@@ -89,64 +160,39 @@
         {% endif %}
       </ol>
     </section>
+
+    <section class="panel">
+      <h2>Send record</h2>
+      <dl class="fact-list">
+        <dt>Attempts</dt><dd>{{ application.send_attempts or 0 }}</dd>
+        <dt>Sent at</dt><dd>{{ application.sent_at[:19].replace("T", " ") if application.sent_at else "—" }}</dd>
+        <dt>Message ID</dt><dd class="cell-mono" style="overflow-wrap:anywhere;">{{ application.message_id or "—" }}</dd>
+      </dl>
+    </section>
   </div>
 </div>
 
-<script>
-(function () {
-  const btn = document.getElementById("send-detail-btn");
-  const result = document.getElementById("send-detail-result");
-  if (!btn) return;
+<div class="send-toast" id="send-toast" hidden>
+  <div class="send-toast-inner">
+    <span id="send-toast-text">Sending…</span>
+    <div class="send-toast-bar"><div class="send-toast-fill" id="send-toast-fill"></div></div>
+  </div>
+</div>
 
-  btn.addEventListener("click", async () => {
-    if (!confirm("Send this email now?")) return;
-    btn.disabled = true;
-    btn.textContent = "Sending…";
-    result.textContent = "";
-    try {
-      const resp = await fetch("/api/send-job", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ app_ids: [parseInt(btn.dataset.appId)] }),
-      });
-      const data = await resp.json();
-      if (!data.ok) {
-        result.textContent = "✗ " + data.message;
-        result.style.color = "#F87171";
-        btn.disabled = false;
-        btn.textContent = "Send this email now";
-        return;
-      }
-      const poll = async () => {
-        const r = await fetch(`/api/send-job/${data.job_id}`);
-        const j = await r.json();
-        if (j.status === "completed") {
-          const item = j.items[0] || {};
-          if (item.status === "sent") {
-            result.textContent = "✓ Sent!";
-            result.style.color = "#4ADE80";
-            btn.textContent = "Sent ✓";
-            setTimeout(() => window.location.reload(), 1500);
-          } else {
-            result.textContent = "✗ " + (item.error || "Send failed");
-            result.style.color = "#F87171";
-            btn.disabled = false;
-            btn.textContent = "Send this email now";
-          }
-        } else {
-          result.textContent = "Sending…";
-          setTimeout(poll, 1500);
-        }
-      };
-      poll();
-    } catch (err) {
-      result.textContent = "✗ " + err.message;
-      result.style.color = "#F87171";
-      btn.disabled = false;
-      btn.textContent = "Send this email now";
-    }
-  });
-})();
-</script>
+<div class="modal-backdrop" id="confirm-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h3 id="confirm-title">Send this application?</h3>
+    <p class="modal-copy" id="confirm-copy"></p>
+    <ul class="modal-list" id="confirm-list"></ul>
+    <div class="modal-actions">
+      <button class="button button--ghost" id="confirm-cancel" type="button">Cancel</button>
+      <button class="button button--primary" id="confirm-ok" type="button">Send now</button>
+    </div>
+  </div>
+</div>
 
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='detail.js') }}"></script>
 {% endblock %}

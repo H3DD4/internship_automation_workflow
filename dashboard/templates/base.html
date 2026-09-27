@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Application Tracker{% endblock %}</title>
+  {# Inline SVG favicon (a paper-plane mark) — no binary asset to ship. #}
+  <link rel="icon" href="data:image/svg+xml,{{ "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#12151A'/><path d='M6 16.5 26 7l-7 18-3.5-7.5L6 16.5Z' fill='#4FD1C5'/></svg>" | urlencode }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -12,5 +14,6 @@
   <div class="page">
     {% block content %}{% endblock %}
   </div>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

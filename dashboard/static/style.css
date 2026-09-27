@@ -1,26 +1,71 @@
 /* ---- Tokens ----
-   Background:  #12151A (near-black slate)
-   Surface:     #1A1E25
-   Border:      #262B34
-   Text:        #E7EAEF (primary)  #8A93A3 (muted)
-   Accent:      #4FD1C5 (teal — signal/ops feel, not the generic terracotta/cream default)
-   Status:      sent #4ADE80 / failed #F87171 / bounced #FBBF24 / retry #60A5FA / neutral #8A93A3
    Type: Inter for UI text, JetBrains Mono for data (emails, timestamps, counts)
+   Every status gets its OWN hue: ready/researching/writing/sending used to
+   share one teal, which made the table's most important distinction — is this
+   draft waiting for me, or is the machine still working on it? — invisible.
 */
+:root {
+  --bg: #12151A;
+  --surface: #1A1E25;
+  --surface-2: #161A21;
+  --surface-3: #1F232B;
+  --field: #14171D;
+  --border: #262B34;
+  --border-soft: #1F232B;
+  --text: #E7EAEF;
+  --text-2: #C4CAD3;
+  --text-muted: #8A93A3;
+  --text-dim: #687283;
+  --accent: #4FD1C5;
+  --accent-hover: #72E0D5;
+  --accent-ink: #10201F;
+
+  /* One hue per pipeline stage */
+  --st-pending: #8A93A3;    /* not started      */
+  --st-research: #A78BFA;   /* machine working  */
+  --st-write: #818CF8;      /* machine working  */
+  --st-ready: #4FD1C5;      /* waiting for YOU  */
+  --st-queued: #60A5FA;     /* about to go out  */
+  --st-sending: #38BDF8;    /* going out now    */
+  --st-sent: #4ADE80;       /* done             */
+  --st-failed: #F87171;     /* needs attention  */
+  --st-retry: #FB923C;      /* needs attention  */
+  --st-bounced: #FBBF24;    /* needs attention  */
+  --st-skipped: #545D6B;    /* intentionally out */
+
+  --radius: 10px;
+  --radius-sm: 7px;
+}
 
 * { box-sizing: border-box; }
 
+/* An author-level `display` (e.g. .batch-actions{display:flex}) outranks the
+   UA stylesheet's [hidden]{display:none}, which would leave JS-toggled
+   elements — the batch bar, send toast, modal — permanently on screen. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
-  background: #12151A;
-  color: #E7EAEF;
+  background: var(--bg);
+  color: var(--text);
   font-family: "Inter", -apple-system, sans-serif;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
+/* Respect a reduced-motion preference for the pulse/shake/transition effects. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Wide enough for the 9-column tracker table to breathe — at 1040px every
+   column truncated to an ellipsis and the timestamps read "202…". */
 .page {
-  max-width: 1040px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 48px 32px 96px;
 }
@@ -86,12 +131,26 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.01em
 .setup-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .form-group { display: grid; gap: 6px; }
 .form-group--wide { grid-column: 1 / -1; }
-.form-group label { color: #C4CAD3; font-size: 12px; font-weight: 600; }
-.form-group input[type="text"], .form-group input[type="email"], .form-group input[type="password"], .form-group input[type="file"], .form-group select {
-  width: 100%; background: #14171D; border: 1px solid #262B34; color: #E7EAEF;
-  border-radius: 7px; padding: 9px 10px; font: 13px "Inter", sans-serif;
+.form-group label { color: var(--text-2); font-size: 12px; font-weight: 600; }
+/* Styled by exclusion rather than by listing each type: an input with no
+   type attribute (or type=number/url/search) previously fell through every
+   selector and rendered as a white browser-default box on this dark page. */
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+  width: 100%;
+  background: var(--field);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  font: 13px "Inter", sans-serif;
 }
-.form-group input[type="file"] { padding: 7px; color: #A6ADB9; }
+input::placeholder, textarea::placeholder { color: var(--text-dim); }
+input[type="file"] { padding: 7px; color: #A6ADB9; }
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent);
+}
 .field-hint { color: #687283; font-size: 11px; }
 .form-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; margin-top: 3px; }
 .input-row { display: flex; gap: 8px; align-items: stretch; }
@@ -152,43 +211,103 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.01em
   max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* Stat cards */
-.stats-row {
+/* ── Funnel: the five pipeline stages, in order, each a link that filters
+   the table. Replaces a row of up to 11 identical raw-status cards. ── */
+.funnel {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 12px;
-  margin-bottom: 36px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
 }
+@media (max-width: 860px) { .funnel { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .funnel { grid-template-columns: 1fr; } }
 
-.stat-card {
-  background: #1A1E25;
-  border: 1px solid #262B34;
-  border-radius: 10px;
-  padding: 16px 18px;
+.funnel-card {
+  display: block;
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color .15s, background .15s, transform .15s;
 }
-
-.stat-card--primary {
-  background: linear-gradient(155deg, #1B2A29, #1A1E25);
-  border-color: #2E4F4A;
+.funnel-card:hover {
+  text-decoration: none;
+  border-color: color-mix(in srgb, var(--stage, var(--accent)) 55%, var(--border));
+  background: color-mix(in srgb, var(--stage, var(--accent)) 6%, var(--surface));
 }
-
-.stat-value {
+.funnel-card--active {
+  border-color: var(--stage, var(--accent));
+  background: color-mix(in srgb, var(--stage, var(--accent)) 10%, var(--surface));
+}
+.funnel-card__value {
   font-family: "JetBrains Mono", monospace;
-  font-size: 26px;
-  font-weight: 600;
-  color: #E7EAEF;
+  font-size: 26px; font-weight: 600; line-height: 1.1;
+  color: var(--stage, var(--text));
 }
+.funnel-card__label { font-size: 12.5px; color: var(--text-muted); margin-top: 4px; }
+.funnel-card__meta { font-size: 11px; color: var(--text-dim); margin-top: 6px; font-family: "JetBrains Mono", monospace; }
+.funnel-card--to_prepare { --stage: var(--st-research); }
+.funnel-card--ready      { --stage: var(--st-ready); }
+.funnel-card--sending    { --stage: var(--st-sending); }
+.funnel-card--sent       { --stage: var(--st-sent); }
+.funnel-card--problems   { --stage: var(--st-failed); }
 
-.stat-label {
-  font-size: 12.5px;
-  color: #8A93A3;
-  margin-top: 4px;
+.funnel-mini-track {
+  height: 4px; border-radius: 999px; background: var(--surface-3);
+  margin-top: 8px; overflow: hidden;
 }
+.funnel-mini-fill { height: 100%; border-radius: 999px; background: var(--stage, var(--accent)); transition: width .3s ease; }
+
+/* ── Status tabs above the table ── */
+.status-tabs {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 12px 16px 0;
+}
+.status-tab {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12.5px; font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.status-tab:hover { color: var(--text); border-color: #3A4150; text-decoration: none; }
+.status-tab--active {
+  color: var(--accent-ink); background: var(--accent); border-color: var(--accent); font-weight: 600;
+}
+.status-tab__count { opacity: .75; font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
 
 /* Table */
-.table-section { border: 1px solid #262B34; border-radius: 10px; overflow: hidden; }
+.table-section { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 
-.app-table { width: 100%; border-collapse: collapse; background: #161A21; }
+/* The table has 9 columns — without its own scroll container it forced the
+   whole page to scroll sideways on a laptop or phone. */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* Fixed layout so the long free-text columns (subject, email) truncate to
+   their share instead of pushing the row-actions column off the right edge —
+   the Send button was unreachable at 1440px before this. */
+.app-table {
+  width: 100%; min-width: 900px;
+  border-collapse: collapse; background: var(--surface-2);
+  table-layout: fixed;
+}
+/* All-percentage so the widths always total exactly the table width — mixing
+   px and % here overflowed the container and clipped the actions column. */
+.app-table th:nth-child(1), .app-table td:nth-child(1) { width: 3%; }    /* checkbox */
+.app-table th:nth-child(2), .app-table td:nth-child(2) { width: 4%; }    /* id */
+.app-table th:nth-child(3), .app-table td:nth-child(3) { width: 14%; }   /* company */
+.app-table th:nth-child(4), .app-table td:nth-child(4) { width: 15%; }   /* email */
+.app-table th:nth-child(5), .app-table td:nth-child(5) { width: 13%; }   /* status */
+.app-table th:nth-child(6), .app-table td:nth-child(6) { width: 8%; overflow: hidden; } /* extras */
+.app-table th:nth-child(7), .app-table td:nth-child(7) { width: 16%; }   /* subject */
+.app-table th:nth-child(8), .app-table td:nth-child(8) { width: 10%; padding-left: 8px; padding-right: 8px; } /* updated */
+.app-table th:nth-child(9), .app-table td:nth-child(9) { width: 17%; padding-left: 8px; } /* actions */
 
 .app-table th {
   text-align: left;
@@ -211,7 +330,12 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.01em
 .app-table tr:hover td { background: #1C212A; }
 
 .cell-company { font-weight: 500; }
-.cell-subject { color: #A6ADB9; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Truncate rather than wrap, so a long subject or address can't make one row
+   three lines tall and push the rest of the table out of view. */
+.cell-company, .cell-subject, .app-table .cell-mono {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cell-subject { color: #A6ADB9; }
 .cell-empty { color: #545D6B; }
 .cell-time { white-space: nowrap; }
 
@@ -231,27 +355,49 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.01em
 }
 .email-editor textarea { font-family: "JetBrains Mono", monospace; font-size: 12px; }
 
-/* Status pills */
+/* Status pills — each status has its own hue (see :root tokens), plus a dot,
+   so the pipeline stage is readable at a glance and doesn't rely on color
+   alone being distinguishable. */
 .status-pill {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 3px 10px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
+  border: 1px solid transparent;
+  color: var(--pill, var(--text-muted));
+  background: color-mix(in srgb, var(--pill, var(--text-muted)) 13%, transparent);
+  border-color: color-mix(in srgb, var(--pill, var(--text-muted)) 28%, transparent);
+}
+.status-pill::before {
+  content: "";
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--pill, var(--text-muted));
+  flex-shrink: 0;
 }
 .status-pill--lg { padding: 6px 14px; font-size: 13px; }
 
-.status-sent          { background: rgba(74, 222, 128, 0.12); color: #4ADE80; }
-.status-failed        { background: rgba(248, 113, 113, 0.12); color: #F87171; }
-.status-bounced       { background: rgba(251, 191, 36, 0.12); color: #FBBF24; }
-.status-retry_later   { background: rgba(96, 165, 250, 0.12); color: #60A5FA; }
-.status-sending,
-.status-writing,
-.status-researched,
-.status-researching   { background: rgba(79, 209, 197, 0.12); color: #4FD1C5; }
-.status-drafted       { background: rgba(166, 173, 185, 0.14); color: #A6ADB9; }
-.status-pending       { background: rgba(138, 147, 163, 0.12); color: #8A93A3; }
+.status-pending     { --pill: var(--st-pending); }
+.status-researching { --pill: var(--st-research); }
+.status-researched  { --pill: var(--st-research); }
+.status-writing     { --pill: var(--st-write); }
+.status-ready       { --pill: var(--st-ready); }
+.status-queued      { --pill: var(--st-queued); }
+.status-sending     { --pill: var(--st-sending); }
+.status-sent        { --pill: var(--st-sent); }
+.status-failed      { --pill: var(--st-failed); }
+.status-retry_wait  { --pill: var(--st-retry); }
+.status-bounced     { --pill: var(--st-bounced); }
+.status-skipped     { --pill: var(--st-skipped); }
+
+/* An actively-running stage pulses its dot, so "the machine is working on
+   this right now" is distinguishable from "it's parked at this stage". */
+.status-researching::before,
+.status-writing::before,
+.status-sending::before { animation: pulse 1.6s ease-in-out infinite; }
 
 /* Chips */
 .chip {
@@ -533,14 +679,6 @@ details[open] .smtp-fallback-toggle::before { transform: rotate(90deg); }
   transition: width 0.3s ease; width: 0%;
 }
 
-/* ── Status pills for new statuses ── */
-.status-ready {
-  background: rgba(79, 209, 197, 0.15); color: #4FD1C5;
-}
-.status-queued {
-  background: rgba(96, 165, 250, 0.12); color: #60A5FA;
-}
-
 /* ── Collapsible setup + pagination ── */
 .setup-collapse { margin-top: 24px; }
 .setup-collapse-toggle {
@@ -553,8 +691,146 @@ details[open] .smtp-fallback-toggle::before { transform: rotate(90deg); }
   margin-top: 16px; font-size: 13px; color: #8A93A3;
 }
 .pagination-label { font-family: "JetBrains Mono", monospace; }
-.batch-limit-label { font-size: 12px; color: #8A93A3; display: flex; align-items: center; gap: 8px; }
-.batch-limit-input {
-  width: 88px; padding: 6px 8px; border-radius: 6px;
-  border: 1px solid #262B34; background: #12151A; color: #E7EAEF;
+.batch-limit-label { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.batch-limit-input { width: 88px; padding: 6px 8px; }
+
+/* ── Setup checklist (shown until the workspace is usable) ── */
+.checklist {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 20px;
+}
+.checklist--partial { border-color: rgba(251, 191, 36, .35); }
+.checklist h2 { margin: 6px 0 4px; font-size: 17px; }
+.checklist-items { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 10px; }
+.checklist-item { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; }
+.checklist-mark {
+  width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+  display: grid; place-items: center; font-size: 11px; font-weight: 700; margin-top: 1px;
+}
+.checklist-item--done .checklist-mark { background: rgba(74,222,128,.16); color: var(--st-sent); }
+.checklist-item--todo .checklist-mark { background: var(--surface-3); color: var(--text-dim); border: 1px dashed #3A4150; }
+.checklist-item--done .checklist-text { color: var(--text-2); }
+.checklist-item--todo .checklist-text { color: var(--text-muted); }
+.checklist-note { font-size: 11.5px; color: var(--text-dim); display: block; margin-top: 2px; }
+
+/* ── Workspace summary bar (replaces the checklist once ready) ── */
+.workspace-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px; margin-bottom: 20px;
+  font-size: 12.5px; color: var(--text-muted);
+}
+.workspace-bar__facts { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.workspace-bar__fact { display: flex; align-items: center; gap: 6px; }
+.workspace-bar__fact strong { color: var(--text-2); font-weight: 500; }
+
+/* ── Confirm modal (replaces window.confirm for sends) ── */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(8, 10, 13, .72);
+  display: grid; place-items: center; padding: 20px;
+}
+.modal-backdrop[hidden] { display: none; }
+.modal {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 22px 24px;
+  width: min(480px, 100%);
+  box-shadow: 0 24px 64px rgba(0,0,0,.6);
+}
+.modal h3 { margin: 0 0 8px; font-size: 17px; }
+.modal-copy { margin: 0 0 14px; font-size: 13.5px; color: var(--text-muted); }
+.modal-list {
+  margin: 0 0 16px; padding: 10px 12px; max-height: 190px; overflow-y: auto;
+  background: var(--field); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font: 12px "JetBrains Mono", monospace; color: var(--text-2);
+  list-style: none;
+}
+.modal-list li { padding: 2px 0; }
+.modal-warn { color: var(--st-bounced); font-size: 12.5px; margin: 0 0 14px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+/* ── Activity log panel ── */
+.log-panel { margin-top: 12px; }
+.log-panel-toggle {
+  cursor: pointer; font-size: 12.5px; color: var(--text-muted);
+  list-style: none; padding: 6px 0; user-select: none;
+}
+.log-panel-toggle::-webkit-details-marker { display: none; }
+.log-panel-toggle:hover { color: var(--text-2); }
+.log-output {
+  white-space: pre-wrap; font: 11.5px/1.65 "JetBrains Mono", monospace;
+  color: #A6ADB9; background: var(--field);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 12px 14px; max-height: 260px; overflow-y: auto; margin: 8px 0 0;
+}
+
+/* ── Detail page: Edit / Preview tabs + rendered email preview ── */
+.detail-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+.detail-tab {
+  padding: 6px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 500;
+  background: transparent; border: 1px solid var(--border); color: var(--text-muted); cursor: pointer;
+}
+.detail-tab--active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.detail-panel[hidden] { display: none; }
+
+.email-preview {
+  background: var(--field); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.email-preview__headers {
+  padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface-3);
+  display: grid; grid-template-columns: 62px 1fr; gap: 4px 10px;
+  font-size: 12.5px;
+}
+.email-preview__key { color: var(--text-dim); font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
+.email-preview__val { color: var(--text-2); min-width: 0; overflow-wrap: anywhere; }
+.email-preview__subject { color: var(--text); font-weight: 600; }
+/* No max-height: the whole email is the thing being reviewed before an
+   irreversible send, so it should never be clipped mid-sentence. */
+.email-preview__body {
+  padding: 18px 20px 4px; white-space: pre-wrap;
+  font-size: 13.5px; line-height: 1.75; color: #D6DAE1;
+}
+.attachment-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin: 0 16px 14px; padding: 7px 12px;
+  background: var(--surface-3); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font-size: 12.5px; color: var(--text-2);
+}
+.attachment-chip--missing { color: var(--st-bounced); border-color: rgba(251,191,36,.3); }
+.word-count { font: 11.5px "JetBrains Mono", monospace; color: var(--text-dim); }
+.word-count--warn { color: var(--st-bounced); }
+
+.detail-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.detail-nav { display: flex; gap: 8px; align-items: center; font-size: 12.5px; }
+
+.detail-topline {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
+}
+.detail-topline .back-link { margin-bottom: 0; }
+.timeline-detail { margin-top: 8px; }
+.timeline-detail-toggle {
+  cursor: pointer; font-size: 11.5px; color: var(--text-dim);
+  list-style: none; user-select: none;
+}
+.timeline-detail-toggle::-webkit-details-marker { display: none; }
+.timeline-detail-toggle:hover { color: var(--text-muted); }
+.timeline-detail .log-output { max-height: 220px; margin-top: 6px; }
+
+/* Stage-colored timeline dots, matching the status pill hues. */
+.timeline-item--research::before { background: var(--st-research); }
+.timeline-item--write::before    { background: var(--st-write); }
+.timeline-item--send::before     { background: var(--st-sent); }
+.timeline-item--bounce_check::before { background: var(--st-bounced); }
+.timeline-item--skip::before     { background: var(--st-skipped); }
+
+/* ── Table: drop the lowest-value columns before the layout gets cramped ── */
+@media (max-width: 980px) {
+  .app-table .col-extras, .app-table .col-updated { display: none; }
+}
+@media (max-width: 720px) {
+  .app-table .col-email { display: none; }
+  .app-table th, .app-table td { padding: 11px 12px; }
 }

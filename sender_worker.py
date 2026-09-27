@@ -22,6 +22,15 @@ import mail_service
 ENV_PATH = Path(__file__).parent / ".env"
 
 
+def _env_int(name: str, default: int) -> int:
+    """int() on a stray non-numeric .env value would crash the worker thread
+    and silently stop all sending, so fall back to the default instead."""
+    try:
+        return int(str(os.getenv(name, default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 class SenderWorker:
     """Daemon thread that processes send jobs from the database."""
 
@@ -34,9 +43,14 @@ class SenderWorker:
         """Re-read pacing/cap from .env on every job so a value changed in the
         dashboard's setup form takes effect without restarting the process."""
         load_dotenv(ENV_PATH, override=True)
-        self._min_delay = int(os.getenv("MIN_DELAY_SECONDS", "45"))
-        self._max_delay = int(os.getenv("MAX_DELAY_SECONDS", "120"))
-        self._max_per_day = int(os.getenv("MAX_EMAILS_PER_DAY", "20"))
+        self._min_delay = _env_int("MIN_DELAY_SECONDS", 45)
+        self._max_delay = _env_int("MAX_DELAY_SECONDS", 120)
+        self._max_per_day = _env_int("MAX_EMAILS_PER_DAY", 20)
+        # random.randint(min, max) raises when min > max, which would abort the
+        # whole job mid-send over nothing more than two settings being typed
+        # the wrong way round.
+        if self._max_delay < self._min_delay:
+            self._min_delay, self._max_delay = self._max_delay, self._min_delay
 
     def start(self):
         if self._thread is not None and self._thread.is_alive():

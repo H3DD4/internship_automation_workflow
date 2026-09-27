@@ -114,6 +114,7 @@ STATUS_LABELS = {
     "failed": "Failed",
     "retry_wait": "Retry later",
     "bounced": "Bounced",
+    "skipped": "Skipped",
 }
 
 # Statuses that mean "a background worker is actively on this one right now" —
@@ -121,6 +122,39 @@ STATUS_LABELS = {
 # NOT included: it means research finished and it's waiting to be picked up
 # by a writer worker, not that anything is actively running on it.
 IN_PROGRESS_STATUSES = {"researching", "writing", "sending", "queued"}
+
+# Statuses whose draft can still be edited (nothing has been sent yet, and no
+# sender worker owns the row).
+EDITABLE_STATUSES = frozenset({"ready", "failed", "retry_wait"})
+
+# The tabs above the table. Each value is either a group name from
+# db.STATUS_GROUPS or a single status; "" means no filter.
+STATUS_TABS = [
+    ("", "All"),
+    ("to_prepare", "To prepare"),
+    ("ready", "Ready"),
+    ("sent", "Sent"),
+    ("problems", "Problems"),
+    ("skipped", "Skipped"),
+]
+
+
+def _preparation_config() -> dict:
+    """AI + applicant config for a one-off writer run from the dashboard
+    (the Regenerate button). Mirrors main.load_config() but raises instead of
+    calling sys.exit(), which would kill the dashboard process."""
+    spec_path = ROOT_DIR / "specializations.json"
+    with open(spec_path) as f:
+        specializations = json.load(f)
+    return {
+        "ai_api_key": (os.getenv("AI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or "").strip(),
+        "ai_base_url": os.getenv("AI_BASE_URL", "https://api.b.ai/v1"),
+        "ai_model": os.getenv("AI_MODEL", "hy3"),
+        "applicant_name": os.getenv("YOUR_NAME", ""),
+        "target_role": os.getenv("YOUR_TARGET_ROLE", ""),
+        "core_identity": specializations["core_identity"],
+        "extra_mentions": specializations["extra_mentions"],
+    }
 
 
 def _run_state():
@@ -216,6 +250,10 @@ def _setup_state():
         "ready": send_ready,
         "prep_ready": prep_ready,
         "send_ready": send_ready,
+        "has_profile_and_files": has_profile and has_companies,
+        "min_delay": os.getenv("MIN_DELAY_SECONDS", "45"),
+        "max_delay": os.getenv("MAX_DELAY_SECONDS", "120"),
+        "max_per_day": os.getenv("MAX_EMAILS_PER_DAY", "20"),
         "has_api_key": has_api_key,
         "has_gmail": has_gmail,
         "has_gmail_oauth": has_gmail_oauth,
@@ -308,23 +346,8 @@ def _csrf_guard():
     return None
 
 
-@app.route("/")
-def index():
-    db.init_db()
-    sender_worker.ensure_running()
-    load_dotenv(ENV_PATH, override=True)
-    stats = db.get_stats()
-
-    page = max(1, request.args.get("page", 1, type=int))
-    table_limit = 50
-    status_param = request.args.get("status", "").strip() or None
-    search_param = request.args.get("q", "").strip() or None
-    applications, table_total = db.get_applications_paginated(
-        status=status_param, search=search_param, page=page, limit=table_limit
-    )
-    table_pages = max(1, (table_total + table_limit - 1) // table_limit)
-    pending_prep = db.count_needing_preparation()
-
+def _decorate_rows(applications: list) -> list:
+    """Add the display-only fields the table needs to each application row."""
     for a in applications:
         a["status_label"] = STATUS_LABELS.get(a["status"], a["status"])
         try:
@@ -335,52 +358,200 @@ def index():
         # retry_wait row is understandable at a glance without a click-through.
         msg = a.get("error_message") or ""
         a["error_short"] = (msg[:80] + "…") if len(msg) > 80 else msg
+        a["sendable"] = bool(a["status"] in db.SENDABLE_STATUSES and a.get("subject"))
+        # "09-27 20:22" — the year is always the current one and just crowded
+        # the column until the whole timestamp truncated to "202…".
+        a["updated_short"] = (a["updated_at"][5:16].replace("T", " ")
+                               if a.get("updated_at") else "—")
+    return applications
 
-    ordered_stats = [
-        ("total", "Total companies"),
-        ("sent", "Sent"),
-        ("ready", "Ready to send"),
-        ("queued", "Queued"),
-        ("failed", "Failed"),
-        ("bounced", "Bounced"),
-        ("retry_wait", "Retry later"),
-        ("pending", "Pending"),
-        ("researching", "Researching"),
-        ("researched", "Researched"),
-        ("writing", "Writing"),
-    ]
-    stat_cards = [(label, stats.get(key, 0)) for key, label in ordered_stats if key in stats or key == "total"]
 
-    in_progress_count = sum(stats.get(s, 0) for s in IN_PROGRESS_STATUSES)
-    completed_count = sum(stats.get(s, 0) for s in
-                          ("sent", "failed", "bounced", "retry_wait", "ready"))
+# The funnel cards shown above the table: (group key, label, the status filter
+# clicking the card applies). Each maps to a db.STATUS_GROUPS bucket.
+FUNNEL_CARDS = [
+    ("to_prepare", "To prepare", "to_prepare"),
+    ("ready", "Ready to review", "ready"),
+    ("sending", "Sending", "sending"),
+    ("sent", "Sent", "sent"),
+    ("problems", "Problems", "problems"),
+]
+
+# Group names usable as a ?status= filter value, expanded to their statuses so
+# a funnel card and a status tab can both filter by a whole stage.
+FILTER_GROUPS = db.STATUS_GROUPS
+
+
+def _table_context(page: int, status_param: str, search_param: str, limit: int = 50) -> dict:
+    """Shared table/stat payload for both the full page render and the JSON
+    refresh endpoint, so the live-updating view can never drift from the
+    server-rendered one."""
+    statuses = FILTER_GROUPS.get(status_param) if status_param else None
+    applications, table_total = db.get_applications_paginated(
+        status=status_param if not statuses else None,
+        statuses=list(statuses) if statuses else None,
+        search=search_param, page=page, limit=limit,
+    )
+    grouped = db.get_grouped_stats()
     sent_today = db.count_sent_today()
     max_per_day = int(os.getenv("MAX_EMAILS_PER_DAY", 20))
+    return {
+        "applications": _decorate_rows(applications),
+        "table_total": table_total,
+        "table_page": page,
+        "table_pages": max(1, (table_total + limit - 1) // limit),
+        "table_limit": limit,
+        "funnel": [
+            {"key": key, "label": label, "filter": filter_value, "value": grouped.get(key, 0)}
+            for key, label, filter_value in FUNNEL_CARDS
+        ],
+        "grouped": grouped,
+        "total_count": grouped.get("total", 0),
+        "skipped_count": grouped.get("skipped", 0),
+        "sent_today": sent_today,
+        "max_per_day": max_per_day,
+        "cap_remaining": max(0, max_per_day - sent_today),
+        "in_progress_count": sum(grouped["by_status"].get(s, 0) for s in IN_PROGRESS_STATUSES),
+        "pending_prep": db.count_needing_preparation(),
+        "filter_status": status_param or "",
+        "filter_q": search_param or "",
+    }
+
+
+@app.route("/")
+def index():
+    db.init_db()
+    sender_worker.ensure_running()
+    load_dotenv(ENV_PATH, override=True)
+
+    page = max(1, request.args.get("page", 1, type=int))
+    status_param = request.args.get("status", "").strip()
+    search_param = request.args.get("q", "").strip()
+
+    context = _table_context(page, status_param, search_param)
 
     active_jobs = db.get_pending_send_jobs()
     active_job = active_jobs[0] if active_jobs else None
-    active_job_detail = db.get_send_job(active_job["id"]) if active_job else None
 
     return render_template(
         "index.html",
-        applications=applications,
-        stat_cards=stat_cards,
-        sent_today=sent_today,
-        max_per_day=max_per_day,
-        in_progress_count=in_progress_count,
-        completed_count=completed_count,
-        total_count=stats.get("total", 0),
         setup=_setup_state(),
         run_state=_run_state(),
-        active_job=active_job_detail,
-        table_page=page,
-        table_pages=table_pages,
-        table_total=table_total,
-        table_limit=table_limit,
-        filter_status=status_param or "",
-        filter_q=search_param or "",
-        pending_prep=pending_prep,
+        active_job=db.get_send_job(active_job["id"]) if active_job else None,
+        status_tabs=STATUS_TABS,
+        **context,
     )
+
+
+@app.get("/api/overview")
+def api_overview():
+    """Stats + the current table page, so the dashboard can refresh live in
+    place. A full page reload (the old behavior) cleared any checked rows and
+    interrupted an in-flight send's progress toast.
+
+    The rows come back as HTML rendered from the same _rows.html partial the
+    full page uses, so the live view can't drift from the server-rendered one.
+    """
+    page = max(1, request.args.get("page", 1, type=int))
+    status_param = request.args.get("status", "").strip()
+    search_param = request.args.get("q", "").strip()
+    context = _table_context(page, status_param, search_param)
+    run_state = _run_state()
+    return jsonify({
+        "ok": True,
+        "rows_html": render_template("_rows.html", applications=context["applications"]),
+        "funnel": context["funnel"],
+        "grouped": {k: v for k, v in context["grouped"].items() if k != "by_status"},
+        "table_total": context["table_total"],
+        "table_page": context["table_page"],
+        "table_pages": context["table_pages"],
+        "total_count": context["total_count"],
+        "pending_prep": context["pending_prep"],
+        "in_progress_count": context["in_progress_count"],
+        "sent_today": context["sent_today"],
+        "max_per_day": context["max_per_day"],
+        "cap_remaining": context["cap_remaining"],
+        "running": run_state["running"],
+        "log_tail": run_state["log_tail"],
+    })
+
+
+@app.post("/api/skip/<int:app_id>")
+def api_skip(app_id):
+    """Mark a company as deliberately skipped (or un-skip it). Skipped rows
+    are left alone by preparation and can't be sent, but nothing is deleted,
+    so it's always reversible."""
+    payload = request.get_json(silent=True) or {}
+    unskip = bool(payload.get("unskip"))
+    application = db.get_application_by_id(app_id)
+    if not application:
+        return jsonify({"ok": False, "message": "Application not found."}), 404
+
+    if unskip:
+        if application["status"] != "skipped":
+            return jsonify({"ok": False, "message": "That company isn't skipped."})
+        # Back to 'ready' when a draft exists, otherwise let preparation redo it.
+        new_status = "ready" if (application.get("subject") and application.get("body")) else "pending"
+        db.update_application(app_id, status=new_status, error_message=None)
+        db.log_event(app_id, "skip", "Un-skipped from dashboard.")
+        return jsonify({"ok": True, "status": new_status, "message": "Company un-skipped."})
+
+    if application["status"] in db.SEND_IN_FLIGHT_STATUSES or application["status"] == "sent":
+        return jsonify({"ok": False,
+                        "message": f"Can't skip — already {application['status']}."})
+    db.update_application(app_id, status="skipped", error_message=None)
+    db.log_event(app_id, "skip", "Skipped from dashboard.")
+    return jsonify({"ok": True, "status": "skipped", "message": "Company skipped."})
+
+
+@app.post("/api/regenerate/<int:app_id>")
+def api_regenerate(app_id):
+    """Re-run the writer agent for one company, reusing its saved research so
+    nothing is scraped or researched again."""
+    import cache_store
+    from ai_client import CompatibleAIClient
+    from agents.writer_agent import generate_email
+    from utils import build_greeting
+    import pipeline as pipeline_module
+
+    application = db.get_application_by_id(app_id)
+    if not application:
+        return jsonify({"ok": False, "message": "Application not found."}), 404
+    if application["status"] in db.SEND_IN_FLIGHT_STATUSES or application["status"] == "sent":
+        return jsonify({"ok": False,
+                        "message": f"Can't regenerate — already {application['status']}."})
+
+    load_dotenv(ENV_PATH, override=True)
+    try:
+        cfg = _preparation_config()
+    except (OSError, KeyError, ValueError) as exc:
+        return jsonify({"ok": False, "message": f"Configuration problem: {exc}"}), 400
+    if not cfg["ai_api_key"]:
+        return jsonify({"ok": False, "message": "Add your AI API key in the setup form first."}), 400
+
+    context = pipeline_module._load_research(application["email"], application)
+    if context is None:
+        return jsonify({"ok": False,
+                        "message": "No saved research for this company yet — run preparation first."})
+
+    client = CompatibleAIClient(cfg["ai_api_key"], cfg["ai_base_url"])
+    greeting = build_greeting(application.get("contact_name"), application["company_name"])
+    try:
+        draft = generate_email(
+            client, cfg["ai_model"], cfg["core_identity"], cfg["applicant_name"],
+            context, application["company_name"], cfg["extra_mentions"],
+            cfg["target_role"], greeting,
+        )
+    except Exception as exc:
+        db.log_event(app_id, "write", "Regenerate failed", detail={"error": str(exc)})
+        return jsonify({"ok": False, "message": f"Writer agent failed: {exc}"}), 502
+
+    cache_store.save_draft(application["email"], draft)
+    db.update_application(app_id, status="ready", subject=draft["subject"],
+                          body=draft["body"], error_message=None)
+    db.log_event(app_id, "write", f"Draft regenerated from dashboard: \"{draft['subject']}\"",
+                 detail=draft)
+    return jsonify({"ok": True, "subject": draft["subject"], "body": draft["body"],
+                    "message": "Draft regenerated."})
 
 
 @app.post("/setup")
@@ -405,6 +576,18 @@ def setup():
         "GMAIL_ADDRESS": "gmail_address",
         "GMAIL_APP_PASSWORD": "gmail_app_password",
     }
+    # Numeric pacing settings: keep the saved value when left blank, and
+    # ignore anything non-numeric rather than writing a value that would
+    # crash the sender worker's int() parse later.
+    pacing_fields = {}
+    for key, form_name, minimum in (
+        ("MIN_DELAY_SECONDS", "min_delay", 0),
+        ("MAX_DELAY_SECONDS", "max_delay", 0),
+        ("MAX_EMAILS_PER_DAY", "max_per_day", 1),
+    ):
+        raw = (request.form.get(form_name, "") or "").strip()
+        if raw.isdigit() and int(raw) >= minimum:
+            pacing_fields[key] = raw
     # Keep previously-saved values when a field is left blank (e.g. passwords
     # shown as "Saved locally" placeholders must not be wiped on re-save).
     required_fields = {
@@ -462,7 +645,8 @@ def setup():
         flash("CV file is empty or unreadable — please re-upload it.", "error")
         return redirect(url_for("index"))
 
-    env_updates = {**required_fields, **optional_fields, "COMPANIES_FILE_PATH": str(companies_path)}
+    env_updates = {**required_fields, **optional_fields, **pacing_fields,
+                    "COMPANIES_FILE_PATH": str(companies_path)}
     if cv_path:
         env_updates["CV_FILE_PATH"] = str(cv_path)
     _save_env(env_updates)
@@ -769,7 +953,6 @@ def edit_email(app_id):
         flash("Subject and body are required.", "error")
         return redirect(url_for("company_detail", app_id=app_id))
 
-    EDITABLE_STATUSES = {"ready", "failed", "retry_wait"}
     if application["status"] not in EDITABLE_STATUSES:
         flash(f"Cannot edit — email is currently '{application['status']}'.", "error")
         return redirect(url_for("company_detail", app_id=app_id))
@@ -814,6 +997,17 @@ def company_detail(app_id):
         match_reasons = {}
 
     application["status_label"] = STATUS_LABELS.get(application["status"], application["status"])
+    application["sendable"] = bool(application["status"] in db.SENDABLE_STATUSES
+                                    and application.get("subject"))
+    application["editable"] = application["status"] in EDITABLE_STATUSES
+
+    load_dotenv(ENV_PATH, override=True)
+    cv_path = _resolve_saved_path((os.getenv("CV_FILE_PATH", "") or "").strip())
+    cv_info = None
+    if cv_path and cv_path.is_file():
+        cv_info = {"name": cv_path.name, "size_kb": round(cv_path.stat().st_size / 1024, 1)}
+
+    word_count = len((application.get("body") or "").split())
 
     return render_template(
         "detail.html",
@@ -822,6 +1016,11 @@ def company_detail(app_id):
         talking_points=talking_points,
         matched_extras=matched_extras,
         match_reasons=match_reasons,
+        prev_id=db.get_adjacent_application_id(app_id, direction="prev"),
+        next_id=db.get_adjacent_application_id(app_id, direction="next"),
+        from_email=(os.getenv("GMAIL_ADDRESS", "") or "").strip() or "your Gmail account",
+        cv_info=cv_info,
+        word_count=word_count,
     )
 
 
@@ -941,7 +1140,6 @@ def api_update_draft():
     if not app:
         return jsonify({"ok": False, "message": "Application not found."})
 
-    EDITABLE_STATUSES = {"ready", "failed", "retry_wait"}
     if app["status"] not in EDITABLE_STATUSES:
         return jsonify({"ok": False,
                         "message": f"Cannot edit — status is '{app['status']}'."})

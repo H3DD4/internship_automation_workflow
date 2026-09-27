@@ -49,7 +49,7 @@ def needs_preparation(app: dict | None) -> bool:
     """True if this email still needs research and/or writing."""
     if not app:
         return True
-    if app["status"] in ("sent", "bounced"):
+    if app["status"] in db.PREPARATION_DONE_STATUSES:
         return False
     if app["status"] in db.SEND_IN_FLIGHT_STATUSES:
         return False
@@ -118,7 +118,7 @@ class Pipeline:
             existing = db.get_application_by_email(email)
             app_id = db.get_or_create_application(company_name, email, website, contact_name)
 
-            if existing and existing["status"] in ("sent", "bounced"):
+            if existing and existing["status"] in db.PREPARATION_DONE_STATUSES:
                 print(f"  [skip] {company_name} <{email}> (id={app_id}) — already {existing['status']}.")
                 self._record("skipped")
                 return

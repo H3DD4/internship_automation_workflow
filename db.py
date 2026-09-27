@@ -236,6 +236,32 @@ def get_stats():
     return stats
 
 
+# The pipeline stages a company moves through, grouped into the five buckets
+# the dashboard shows as a funnel. Showing one card per raw status (11 of them)
+# made it impossible to see at a glance how much work was left vs. done.
+STATUS_GROUPS = {
+    "to_prepare": ("pending", "researching", "researched", "writing"),
+    "ready": ("ready",),
+    "sending": ("queued", "sending"),
+    "sent": ("sent",),
+    "problems": ("failed", "retry_wait", "bounced"),
+    "skipped": ("skipped",),
+}
+
+
+def get_grouped_stats() -> dict:
+    """Per-status counts collapsed into the dashboard's funnel groups, plus
+    'total' and the raw per-status counts under 'by_status'."""
+    stats = get_stats()
+    grouped = {
+        group: sum(stats.get(status, 0) for status in statuses)
+        for group, statuses in STATUS_GROUPS.items()
+    }
+    grouped["total"] = stats.get("total", 0)
+    grouped["by_status"] = {k: v for k, v in stats.items() if k != "total"}
+    return grouped
+
+
 def count_sent_today() -> int:
     # sent_at is stored via _now() which is UTC — must compare against the
     # UTC calendar date, not the local one, or this under/overcounts by
@@ -263,14 +289,39 @@ def get_application_by_id(app_id: int):
     return dict(row) if row else None
 
 
-def get_applications_paginated(status: str = None, search: str = None,
+def get_adjacent_application_id(app_id: int, direction: str = "next") -> int | None:
+    """The next/previous application id by id order, for walking through
+    companies on the detail page without going back to the list each time."""
+    conn = get_connection()
+    if direction == "prev":
+        row = conn.execute(
+            "SELECT id FROM applications WHERE id < ? ORDER BY id DESC LIMIT 1", (app_id,)
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id FROM applications WHERE id > ? ORDER BY id ASC LIMIT 1", (app_id,)
+        ).fetchone()
+    conn.close()
+    return row["id"] if row else None
+
+
+def get_applications_paginated(status: str = None, statuses: list = None,
+                                search: str = None,
                                 page: int = 1, limit: int = 50) -> tuple[list, int]:
-    """Returns (rows, total_count) with pagination, optional status filter, optional search."""
+    """Returns (rows, total_count) with pagination and optional filters.
+
+    `status` matches one exact status; `statuses` matches any of several (used
+    by the dashboard's grouped funnel/tab filters, e.g. "problems" covering
+    failed + retry_wait + bounced).
+    """
     conn = get_connection()
     conditions = []
     params = []
 
-    if status:
+    if statuses:
+        conditions.append(f"status IN ({','.join('?' * len(statuses))})")
+        params.extend(statuses)
+    elif status:
         conditions.append("status = ?")
         params.append(status)
     if search:
@@ -413,6 +464,11 @@ def update_send_job(job_id: int, **fields):
 # Statuses where the sender owns the row — pipeline must not touch these.
 SEND_IN_FLIGHT_STATUSES = frozenset({"queued", "sending"})
 
+# Statuses where this company is finished as far as preparation is concerned:
+# already sent/bounced, or deliberately skipped by the user. Preparation never
+# researches or re-drafts these.
+PREPARATION_DONE_STATUSES = frozenset({"sent", "bounced", "skipped"})
+
 
 def draft_from_application(app: dict) -> dict | None:
     """Return {subject, body} from a DB row, or None if no draft stored."""
@@ -449,15 +505,17 @@ def research_context_from_application(app: dict) -> dict | None:
 
 def count_needing_preparation() -> int:
     """Rows in DB that still need research and/or writing."""
+    done = PREPARATION_DONE_STATUSES | {"ready"} | SEND_IN_FLIGHT_STATUSES
+    placeholders = ",".join("?" * len(done))
     conn = get_connection()
-    row = conn.execute("""
+    row = conn.execute(f"""
         SELECT COUNT(*) AS c FROM applications
-        WHERE status NOT IN ('sent', 'bounced', 'ready', 'queued', 'sending')
+        WHERE status NOT IN ({placeholders})
           AND NOT (
             subject IS NOT NULL AND subject != ''
             AND body IS NOT NULL AND body != ''
           )
-    """).fetchone()
+    """, tuple(done)).fetchone()
     conn.close()
     return row["c"]
 
