@@ -356,7 +356,7 @@
 
   // ── Credential validation (no save, no reload, no lost typing) ───────────
   const gmailFields = ["gmail-address", "gmail-password"];
-  const aiFields = ["ai-key", "ai-base-url", "ai-model"];
+  const aiFields = ["ai-key", "ai-base-url", "ai-model", "ai-provider"];
 
   function markInvalid(fieldIds) {
     fieldIds.forEach((id) => {
@@ -413,11 +413,83 @@
     gmail_app_password: val("gmail-password").trim(),
   }), gmailFields);
 
-  wireValidate("validate-ai-btn", "ai-validation-result", "/api/validate-ai", () => ({
+  const aiPayload = () => ({
+    ai_provider: val("ai-provider").trim(),
     ai_api_key: val("ai-key").trim(),
     ai_base_url: val("ai-base-url").trim(),
     ai_model: val("ai-model").trim(),
-  }), aiFields);
+  });
+  wireValidate("validate-ai-btn", "ai-validation-result", "/api/validate-ai", aiPayload, aiFields);
+
+  // ── Provider picker: each provider has its own base URL, key and models ──
+  const providerSelect = $("ai-provider");
+  const modelInput = $("ai-model");
+  const modelOptions = $("ai-model-options");
+  const modelsResult = $("models-result");
+
+  function fillModelOptions(models) {
+    if (!modelOptions) return;
+    modelOptions.innerHTML = "";
+    models.forEach((m) => {
+      const option = document.createElement("option");
+      option.value = m;
+      modelOptions.appendChild(option);
+    });
+  }
+
+  if (providerSelect) {
+    providerSelect.addEventListener("change", () => {
+      const opt = providerSelect.selectedOptions[0];
+      const baseUrl = $("ai-base-url");
+      if (baseUrl) baseUrl.value = opt.dataset.baseUrl || "";
+      const key = $("ai-key");
+      if (key) {
+        key.value = "";
+        key.placeholder = opt.dataset.keySaved ? "Saved — enter to replace" : "Paste your key";
+      }
+      const hint = $("ai-portal-hint");
+      if (hint) {
+        hint.innerHTML = "";
+        if (opt.dataset.portal) {
+          const a = document.createElement("a");
+          a.href = opt.dataset.portal; a.target = "_blank"; a.rel = "noreferrer";
+          a.textContent = "Get a key";
+          hint.appendChild(a);
+          hint.appendChild(document.createTextNode(". "));
+        }
+        hint.appendChild(document.createTextNode("Stored only in your local .env."));
+      }
+      const suggested = (opt.dataset.suggested || "").split(",").filter(Boolean);
+      fillModelOptions(suggested);
+      if (modelInput) modelInput.value = opt.dataset.defaultModel || "";
+      if (modelsResult) modelsResult.textContent = "";
+    });
+  }
+
+  const loadModelsBtn = $("load-models-btn");
+  if (loadModelsBtn) {
+    loadModelsBtn.addEventListener("click", async () => {
+      loadModelsBtn.disabled = true;
+      modelsResult.textContent = "Loading…";
+      modelsResult.classList.remove("validation-result--ok", "validation-result--bad");
+      try {
+        const data = await postJSON("/api/models", aiPayload());
+        modelsResult.textContent = (data.ok ? "✓ " : "✗ ") + data.message +
+          (data.ok ? " Click the Model field to pick one." : "");
+        modelsResult.classList.add(data.ok ? "validation-result--ok" : "validation-result--bad");
+        if (data.ok) {
+          fillModelOptions(data.models);
+          if (modelInput && !modelInput.value && data.models.length) modelInput.value = data.models[0];
+          if (modelInput) modelInput.focus();
+        }
+      } catch (err) {
+        modelsResult.textContent = "✗ Could not reach the dashboard server.";
+        modelsResult.classList.add("validation-result--bad");
+      } finally {
+        loadModelsBtn.disabled = false;
+      }
+    });
+  }
 
   // ── Bounce check ─────────────────────────────────────────────────────────
   const bounceBtn = $("check-bounces-btn");

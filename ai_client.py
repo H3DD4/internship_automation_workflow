@@ -7,6 +7,7 @@ Includes:
 """
 
 import json
+import os
 import time
 import random
 import threading
@@ -260,39 +261,140 @@ class _Messages:
 
 
 # ---------------------------------------------------------------------------
-# Provider defaults (Groq's OpenAI-compatible API)
+# Providers
 # ---------------------------------------------------------------------------
-DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
-KEY_PORTAL_URL = "https://console.groq.com/keys"
+# Every provider here speaks the same OpenAI-compatible /chat/completions API,
+# so switching is only a matter of which key, base URL and model are used.
+# Each provider keeps its OWN key in .env (GROQ_API_KEY, OPENCODE_API_KEY, …),
+# so switching back and forth in the dashboard never loses a key.
+PROVIDERS = {
+    "groq": {
+        "label": "Groq",
+        "base_url": "https://api.groq.com/openai/v1",
+        "key_env": "GROQ_API_KEY",
+        "key_portal": "https://console.groq.com/keys",
+        # gpt-oss-120b follows a strict extraction prompt most reliably of
+        # Groq's line-up; the fallbacks are a different architecture so they
+        # tend to fail differently rather than the same way.
+        "default_model": "openai/gpt-oss-120b",
+        "fallbacks": ["llama-3.3-70b-versatile", "openai/gpt-oss-20b"],
+        "suggested_models": ["openai/gpt-oss-120b", "llama-3.3-70b-versatile",
+                              "openai/gpt-oss-20b", "moonshotai/kimi-k2-instruct",
+                              "qwen/qwen3-32b", "llama-3.1-8b-instant"],
+    },
+    "opencode": {
+        "label": "OpenCode Zen",
+        # Not verified from this project's build environment (the host was
+        # unreachable); "Load models" in the dashboard confirms it, and the
+        # base URL is editable if OpenCode documents a different one.
+        "base_url": "https://opencode.ai/zen/v1",
+        "key_env": "OPENCODE_API_KEY",
+        "key_portal": "https://opencode.ai",
+        "default_model": "",
+        "fallbacks": [],
+        "suggested_models": [],
+    },
+    "openrouter": {
+        "label": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "key_env": "OPENROUTER_API_KEY",
+        "key_portal": "https://openrouter.ai/keys",
+        "default_model": "",
+        "fallbacks": [],
+        "suggested_models": [],
+    },
+    "custom": {
+        "label": "Custom (any OpenAI-compatible endpoint)",
+        "base_url": "",
+        "key_env": "CUSTOM_API_KEY",
+        "key_portal": "",
+        "default_model": "",
+        "fallbacks": [],
+        "suggested_models": [],
+    },
+}
 
-# gpt-oss-120b is the default: of Groq's line-up it follows a long, rule-heavy
-# system prompt most reliably, which is the whole job here — the email is
-# mostly fixed text that must come back unchanged.
-DEFAULT_MODEL = "openai/gpt-oss-120b"
-
-# Fallbacks are deliberately a DIFFERENT architecture from the default: if
-# gpt-oss returns something unusable, another gpt-oss size will often fail the
-# same way, whereas Llama tends to fail differently.
-DEFAULT_FALLBACK_MODELS = ("llama-3.3-70b-versatile", "openai/gpt-oss-20b")
-
-# Shown in the dashboard's model dropdown.
-SUPPORTED_MODELS = [
-    "openai/gpt-oss-120b",
-    "llama-3.3-70b-versatile",
-    "openai/gpt-oss-20b",
-    "moonshotai/kimi-k2-instruct",
-    "qwen/qwen3-32b",
-    "llama-3.1-8b-instant",
-]
+DEFAULT_PROVIDER = "groq"
+DEFAULT_BASE_URL = PROVIDERS[DEFAULT_PROVIDER]["base_url"]
+DEFAULT_MODEL = PROVIDERS[DEFAULT_PROVIDER]["default_model"]
+KEY_PORTAL_URL = PROVIDERS[DEFAULT_PROVIDER]["key_portal"]
+SUPPORTED_MODELS = PROVIDERS[DEFAULT_PROVIDER]["suggested_models"]
 
 
-def build_model_fallback_list(primary: str,
-                               fallbacks: tuple = DEFAULT_FALLBACK_MODELS) -> list[str]:
-    """Ordered, de-duplicated [primary, *fallbacks] — shared by both agents so a
-    model that returns empty/malformed output (common with reasoning models
-    under narrow prompts) falls through to another rather than failing the
-    whole company. Transport-level errors are already retried inside
-    CompatibleAIClient; this list is for content-shaped failures only."""
+def _env(env, name: str) -> str:
+    return str(env.get(name) or "").strip()
+
+
+def resolve_ai_settings(env=None) -> dict:
+    """The provider, key, base URL, model and fallbacks to use, from .env.
+
+    AI_PROVIDER picks the provider; its key comes from that provider's own
+    variable, and its base URL can be overridden with <PROVIDER>_BASE_URL.
+    Older single-provider settings (AI_API_KEY / AI_BASE_URL) still work."""
+    env = os.environ if env is None else env
+    provider = _env(env, "AI_PROVIDER").lower()
+
+    if provider in PROVIDERS:
+        preset = PROVIDERS[provider]
+        api_key = _env(env, preset["key_env"]) or _env(env, "AI_API_KEY")
+        base_url = _env(env, f"{provider.upper()}_BASE_URL") or preset["base_url"]
+        if provider == "custom":
+            base_url = base_url or _env(env, "AI_BASE_URL")
+    else:
+        # Legacy .env: one key and one base URL. Treat it as the provider
+        # whose base URL it matches, else as a custom endpoint.
+        base_url = _env(env, "AI_BASE_URL") or DEFAULT_BASE_URL
+        provider = next((pid for pid, p in PROVIDERS.items()
+                         if p["base_url"] and p["base_url"] == base_url.rstrip("/")), "custom")
+        preset = PROVIDERS[provider]
+        api_key = _env(env, "AI_API_KEY") or _env(env, "ANTHROPIC_API_KEY")
+
+    model = _env(env, "AI_MODEL") or preset["default_model"]
+    configured_fallbacks = [m.strip() for m in _env(env, "AI_FALLBACK_MODELS").split(",") if m.strip()]
+    return {
+        "provider": provider,
+        "label": preset["label"],
+        "api_key": api_key,
+        "base_url": base_url.rstrip("/"),
+        "model": model,
+        "fallbacks": configured_fallbacks or list(preset["fallbacks"]),
+    }
+
+
+def list_provider_models(base_url: str, api_key: str, timeout: int = 20) -> tuple:
+    """(model_ids, error_message) from the provider's /models endpoint."""
+    if not base_url:
+        return [], "No base URL set for this provider."
+    if not api_key:
+        return [], "No API key for this provider yet."
+    url = base_url.rstrip("/") + "/models"
+    try:
+        response = requests.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=timeout)
+    except requests.RequestException as exc:
+        return [], f"Could not reach {url} ({exc})."
+    if response.status_code in (401, 403):
+        return [], "The provider rejected this API key (401/403)."
+    if response.status_code != 200:
+        return [], f"{url} answered {response.status_code}: {response.text[:200]}"
+    try:
+        payload = response.json()
+    except ValueError:
+        return [], f"{url} did not return JSON."
+    items = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        return [], f"Unexpected /models response from {url}."
+    return sorted({str(item.get("id", "")) if isinstance(item, dict) else str(item)
+                   for item in items} - {""}), None
+
+
+def build_model_fallback_list(primary: str, fallbacks=None) -> list[str]:
+    """Ordered, de-duplicated [primary, *fallbacks]. By default the fallbacks
+    are the current provider's (or AI_FALLBACK_MODELS), because another
+    provider's model ids don't exist on this one. Transport-level errors are
+    already retried inside CompatibleAIClient; this list is for answers that
+    came back unusable."""
+    if fallbacks is None:
+        fallbacks = resolve_ai_settings()["fallbacks"]
     models = []
     for m in (primary, *fallbacks):
         if m and m not in models:

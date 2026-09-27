@@ -35,7 +35,8 @@ from flask import Flask, abort, flash, jsonify, redirect, render_template, reque
 from dotenv import load_dotenv
 import db
 import sender_worker
-from ai_client import DEFAULT_BASE_URL, DEFAULT_MODEL, KEY_PORTAL_URL, SUPPORTED_MODELS
+from ai_client import (DEFAULT_PROVIDER, PROVIDERS, CompatibleAIClient,
+                       list_provider_models, resolve_ai_settings)
 
 # Allows OAuth's local HTTP redirect (127.0.0.1:5050) to satisfy oauthlib's
 # strict HTTPS check. Safe only because this dashboard is hardcoded to bind
@@ -141,16 +142,12 @@ STATUS_TABS = [
 
 
 def _preparation_config() -> dict:
-    """AI + applicant config for a one-off writer run from the dashboard
-    (the Regenerate button). Mirrors main.load_config() but raises instead of
-    calling sys.exit(), which would kill the dashboard process."""
+    """What rebuilding a draft needs: the wording spec and the applicant's
+    profile. No AI settings — drafts are assembled, not generated."""
     spec_path = ROOT_DIR / "specializations.json"
     with open(spec_path) as f:
         specializations = json.load(f)
     return {
-        "ai_api_key": (os.getenv("AI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or "").strip(),
-        "ai_base_url": os.getenv("AI_BASE_URL", DEFAULT_BASE_URL),
-        "ai_model": os.getenv("AI_MODEL", DEFAULT_MODEL),
         "applicant_name": os.getenv("YOUR_NAME", ""),
         "target_role": os.getenv("YOUR_TARGET_ROLE", ""),
         "spec": specializations,
@@ -194,6 +191,7 @@ def _is_placeholder(value: str) -> bool:
     compact = lowered.replace(" ", "")
     exact_placeholders = {
         "your_bai_api_key_here", "your_anthropic_api_key_here", "your_groq_api_key_here",
+        "your_opencode_api_key_here", "your_openrouter_api_key_here",
         "you@gmail.com", "your full name", "xxxx xxxx xxxx xxxx",
         "xxxxxxxxxxxxxxxx", "./my_cv.pdf", "my_cv.pdf",
         "companies.xlsx", "./companies.xlsx",
@@ -209,7 +207,8 @@ def _setup_state():
     cv_path = _resolve_saved_path("" if _is_placeholder(cv_raw) else cv_raw)
     has_companies = bool(companies_path and companies_path.is_file())
     has_cv = bool(cv_path and cv_path.is_file())
-    ai_key = (os.getenv("AI_API_KEY", "") or os.getenv("ANTHROPIC_API_KEY", "")).strip()
+    ai = resolve_ai_settings()
+    ai_key = ai["api_key"]
     gmail_address = (os.getenv("GMAIL_ADDRESS", "") or "").strip()
     gmail_password = (os.getenv("GMAIL_APP_PASSWORD", "") or "").strip()
     your_name = (os.getenv("YOUR_NAME", "") or "").strip()
@@ -267,8 +266,14 @@ def _setup_state():
         "companies_rows": _count_companies_rows(companies_path) if has_companies else None,
         "cv_name": cv_path.name if has_cv else "",
         "cv_size_kb": round(cv_path.stat().st_size / 1024, 1) if has_cv else None,
-        "ai_model": os.getenv("AI_MODEL", DEFAULT_MODEL),
-        "ai_base_url": os.getenv("AI_BASE_URL", DEFAULT_BASE_URL),
+        "ai_provider": ai["provider"],
+        "ai_provider_label": ai["label"],
+        "ai_model": ai["model"],
+        "ai_base_url": ai["base_url"],
+        # Which providers already have a key saved, so the form can say
+        # "saved" per provider without ever sending a key to the browser.
+        "saved_provider_keys": {pid: bool(os.getenv(p["key_env"], "").strip())
+                                 for pid, p in PROVIDERS.items()},
     }
 
 
@@ -449,8 +454,7 @@ def index():
         run_state=_run_state(),
         active_job=db.get_send_job(active_job["id"]) if active_job else None,
         status_tabs=STATUS_TABS,
-        supported_models=SUPPORTED_MODELS,
-        key_portal_url=KEY_PORTAL_URL,
+        providers=PROVIDERS,
         **context,
     )
 
@@ -573,16 +577,34 @@ def setup():
     # password OR OAuth, checked separately) and the CV are send-time-only
     # concerns — requiring them up front used to block saving a workspace,
     # and therefore starting preparation, before Gmail was connected at all.
-    field_names = {
-        "AI_API_KEY": "ai_api_key",
-        "AI_BASE_URL": "ai_base_url",
-        "AI_MODEL": "ai_model",
-        "YOUR_NAME": "your_name",
-        "YOUR_TARGET_ROLE": "target_role",
+    # AI provider: each provider keeps its own key variable, so switching
+    # provider in this form never overwrites another provider's saved key.
+    provider = (request.form.get("ai_provider") or os.getenv("AI_PROVIDER") or DEFAULT_PROVIDER)
+    provider = provider.strip().lower()
+    if provider not in PROVIDERS:
+        provider = DEFAULT_PROVIDER
+    preset = PROVIDERS[provider]
+    ai_fields = {"AI_PROVIDER": provider}
+    typed_key = (request.form.get("ai_api_key") or "").strip()
+    if typed_key:
+        ai_fields[preset["key_env"]] = typed_key
+    typed_base = (request.form.get("ai_base_url") or "").strip().rstrip("/")
+    base_env = f"{provider.upper()}_BASE_URL"
+    if typed_base:
+        # Store an override only when it differs from the preset; an empty
+        # value means "use the preset".
+        ai_fields[base_env] = "" if typed_base == preset["base_url"] else typed_base
+    ai_fields["AI_MODEL"] = ((request.form.get("ai_model") or "").strip()
+                             or os.getenv("AI_MODEL", "") or preset["default_model"])
+
+    profile_fields = {
+        key: (request.form.get(form_name) or "").strip() or os.getenv(key, "")
+        for key, form_name in (("YOUR_NAME", "your_name"), ("YOUR_TARGET_ROLE", "target_role"))
     }
-    optional_field_names = {
-        "GMAIL_ADDRESS": "gmail_address",
-        "GMAIL_APP_PASSWORD": "gmail_app_password",
+    optional_fields = {
+        key: (request.form.get(form_name) or "").strip() or os.getenv(key, "")
+        for key, form_name in (("GMAIL_ADDRESS", "gmail_address"),
+                                ("GMAIL_APP_PASSWORD", "gmail_app_password"))
     }
     # Numeric pacing settings: keep the saved value when left blank, and
     # ignore anything non-numeric rather than writing a value that would
@@ -596,22 +618,16 @@ def setup():
         raw = (request.form.get(form_name, "") or "").strip()
         if raw.isdigit() and int(raw) >= minimum:
             pacing_fields[key] = raw
-    # Keep previously-saved values when a field is left blank (e.g. passwords
-    # shown as "Saved locally" placeholders must not be wiped on re-save).
-    required_fields = {
-        key: request.form.get(form_name, "").strip() or os.getenv(key, "")
-        for key, form_name in field_names.items()
-    }
-    optional_fields = {
-        key: request.form.get(form_name, "").strip() or os.getenv(key, "")
-        for key, form_name in optional_field_names.items()
-    }
-    # Back-compat: an older .env may only have ANTHROPIC_API_KEY.
-    if not required_fields["AI_API_KEY"]:
-        required_fields["AI_API_KEY"] = os.getenv("ANTHROPIC_API_KEY", "")
-    required_fields["AI_KEY_PORTAL"] = KEY_PORTAL_URL
-    if not all(v for k, v in required_fields.items() if k != "AI_KEY_PORTAL"):
-        missing = [k for k, v in required_fields.items() if not v and k != "AI_KEY_PORTAL"]
+
+    effective = resolve_ai_settings({**os.environ, **ai_fields})
+    missing = [label for label, value in (
+        (f"{preset['label']} API key", effective["api_key"]),
+        ("provider base URL", effective["base_url"]),
+        ("AI model", effective["model"]),
+        ("your name", profile_fields["YOUR_NAME"]),
+        ("target role", profile_fields["YOUR_TARGET_ROLE"]),
+    ) if not value]
+    if missing:
         flash(f"Add every field before saving. Missing: {', '.join(missing)}.", "error")
         return redirect(url_for("index"))
 
@@ -653,7 +669,7 @@ def setup():
         flash("CV file is empty or unreadable — please re-upload it.", "error")
         return redirect(url_for("index"))
 
-    env_updates = {**required_fields, **optional_fields, **pacing_fields,
+    env_updates = {**ai_fields, **profile_fields, **optional_fields, **pacing_fields,
                     "COMPANIES_FILE_PATH": str(companies_path)}
     if cv_path:
         env_updates["CV_FILE_PATH"] = str(cv_path)
@@ -864,37 +880,61 @@ def api_gmail_status():
                         "message": "Google libraries not installed."})
 
 
+def _ai_settings_from_request(payload: dict) -> dict:
+    """The provider settings to test: whatever the form currently shows,
+    falling back to what's saved for that provider."""
+    load_dotenv(ENV_PATH, override=True)
+    provider = (payload.get("ai_provider") or os.getenv("AI_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
+    if provider not in PROVIDERS:
+        provider = DEFAULT_PROVIDER
+    overrides = {"AI_PROVIDER": provider}
+    preset = PROVIDERS[provider]
+    if (payload.get("ai_api_key") or "").strip():
+        overrides[preset["key_env"]] = payload["ai_api_key"].strip()
+    if (payload.get("ai_base_url") or "").strip():
+        overrides[f"{provider.upper()}_BASE_URL"] = payload["ai_base_url"].strip()
+    if (payload.get("ai_model") or "").strip():
+        overrides["AI_MODEL"] = payload["ai_model"].strip()
+    return resolve_ai_settings({**os.environ, **overrides})
+
+
+@app.post("/api/models")
+def api_models():
+    """List the models the selected provider offers, for the model picker."""
+    ai = _ai_settings_from_request(request.get_json(silent=True) or {})
+    models, error = list_provider_models(ai["base_url"], ai["api_key"])
+    if error:
+        return jsonify({"ok": False, "message": error, "models": []})
+    return jsonify({"ok": True, "models": models,
+                    "message": f"{len(models)} model(s) available on {ai['label']}."})
+
+
 @app.post("/api/validate-ai")
 def api_validate_ai():
-    """JSON check that the BAI key authenticates against the API."""
-    import requests
-    load_dotenv(ENV_PATH, override=True)
-    payload = request.get_json(silent=True) or {}
-    api_key = (payload.get("ai_api_key", "") or "").strip() or os.getenv("AI_API_KEY", "")
-    if not api_key:
-        api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    base_url = (payload.get("ai_base_url", "") or "").strip() or os.getenv("AI_BASE_URL", "")
-    base_url = base_url or DEFAULT_BASE_URL
-    model = (payload.get("ai_model", "") or "").strip() or os.getenv("AI_MODEL", DEFAULT_MODEL)
-    if not api_key or _is_placeholder(api_key):
-        return jsonify({"ok": False, "message": f"Paste your API key first (get one at {KEY_PORTAL_URL})."})
+    """Send one tiny request with the selected provider, key and model."""
+    ai = _ai_settings_from_request(request.get_json(silent=True) or {})
+    portal = PROVIDERS[ai["provider"]]["key_portal"]
+    if not ai["api_key"] or _is_placeholder(ai["api_key"]):
+        hint = f" (get one at {portal})" if portal else ""
+        return jsonify({"ok": False, "message": f"Paste your {ai['label']} API key first{hint}."})
+    if not ai["base_url"]:
+        return jsonify({"ok": False, "message": "Set the provider's base URL first."})
+    if not ai["model"]:
+        return jsonify({"ok": False, "message": "Pick a model first (use Load models)."})
+    client = CompatibleAIClient(ai["api_key"], ai["base_url"])
     try:
-        response = requests.post(
-            base_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-            json={"model": model, "max_tokens": 5,
-                  "messages": [{"role": "user", "content": "Reply with the single word: ok"}]},
-            timeout=25,
-        )
-    except Exception as exc:
-        return jsonify({"ok": False, "message": f"Could not reach the AI server at {base_url} ({exc})."})
-    if response.status_code == 200:
-        return jsonify({"ok": True, "message": f"AI key works — model '{model}' answered."})
-    if response.status_code in (401, 403):
-        return jsonify({"ok": False, "message": f"AI server rejected the key (401/403). Paste a fresh key from {KEY_PORTAL_URL}."})
-    if response.status_code == 404:
-        return jsonify({"ok": False, "message": f"Model '{model}' not found (404). Try another model from the dropdown."})
-    return jsonify({"ok": False, "message": f"AI server returned {response.status_code}: {response.text[:200]}"})
+        client.messages.create(model=ai["model"], max_tokens=20, system="Reply with one word.",
+                               messages=[{"role": "user", "content": "Say ok"}],
+                               max_attempts=1, temperature=0.0)
+    except RuntimeError as exc:
+        text = str(exc)
+        if "401" in text or "403" in text:
+            return jsonify({"ok": False, "message": f"{ai['label']} rejected the key (401/403)."})
+        if "404" in text:
+            return jsonify({"ok": False, "message": f"Model '{ai['model']}' not found on {ai['label']} "
+                                                    "(404). Use Load models to see valid ids."})
+        return jsonify({"ok": False, "message": f"{ai['label']} error: {text[:220]}"})
+    return jsonify({"ok": True, "message": f"Works — {ai['label']} answered with model '{ai['model']}'."})
 
 
 @app.post("/run")

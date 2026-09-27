@@ -6,6 +6,7 @@ or pick up the developer's real credentials — the previous smoke-test script
 did all three.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -35,7 +36,13 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(sender_worker, "ENV_PATH", env_path)
 
     db.init_db()
-    return tmp_path
+
+    # Saving settings calls load_dotenv(override=True), which writes straight
+    # into os.environ; restore it so one test's keys can't leak into the next.
+    saved_environ = dict(os.environ)
+    yield tmp_path
+    os.environ.clear()
+    os.environ.update(saved_environ)
 
 
 @pytest.fixture

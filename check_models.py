@@ -33,8 +33,7 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
 from ai_client import (  # noqa: E402
-    DEFAULT_BASE_URL, DEFAULT_MODEL, KEY_PORTAL_URL, SUPPORTED_MODELS,
-    CompatibleAIClient, RateLimiter,
+    PROVIDERS, CompatibleAIClient, RateLimiter, list_provider_models, resolve_ai_settings,
 )
 from agents import research_agent  # noqa: E402
 from agents.composer import compose_email  # noqa: E402
@@ -82,18 +81,10 @@ TEST_SITES = [
 
 
 def list_models(base_url: str, api_key: str) -> list:
-    url = base_url.rstrip("/") + "/models"
-    try:
-        response = requests.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=30)
-    except requests.RequestException as exc:
-        print(f"  could not reach {url}: {exc}")
-        return []
-    if response.status_code != 200:
-        print(f"  {url} -> HTTP {response.status_code}: {response.text[:300]}")
-        return []
-    payload = response.json()
-    items = payload.get("data", payload if isinstance(payload, list) else [])
-    return sorted(str(item.get("id", item)) for item in items)
+    models, error = list_provider_models(base_url, api_key)
+    if error:
+        print(f"  {error}")
+    return models
 
 
 def run_site(client, model: str, site: dict, areas: list) -> dict:
@@ -131,15 +122,16 @@ def main():
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env", override=True)
-    api_key = (os.getenv("AI_API_KEY") or "").strip()
-    base_url = (os.getenv("AI_BASE_URL") or DEFAULT_BASE_URL).strip()
-    configured = (os.getenv("AI_MODEL") or DEFAULT_MODEL).strip()
+    ai = resolve_ai_settings()
+    api_key, base_url, configured = ai["api_key"], ai["base_url"], ai["model"]
 
     if not api_key:
-        print(f"No AI_API_KEY in .env. Get one ({KEY_PORTAL_URL} for Groq) and add it,\n"
-              f"or set it in the dashboard's setup form.")
+        portal = PROVIDERS[ai["provider"]]["key_portal"]
+        print(f"No API key for {ai['label']} in .env{f' (get one at {portal})' if portal else ''}.\n"
+              f"Add it in the dashboard's setup form.")
         return 1
 
+    print(f"provider : {ai['label']}")
     print(f"endpoint : {base_url}")
     print(f"key      : {api_key[:6]}…{api_key[-4:]}\n")
 
@@ -157,7 +149,8 @@ def main():
     if args.models:
         models = [m.strip() for m in args.models.split(",") if m.strip()]
     elif args.all:
-        models = [m for m in SUPPORTED_MODELS if not available or m in available] or available[:6]
+        suggested = PROVIDERS[ai["provider"]]["suggested_models"]
+        models = [m for m in suggested if not available or m in available] or available[:6]
     else:
         models = [configured]
 

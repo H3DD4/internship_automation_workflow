@@ -37,7 +37,7 @@
     <li class="checklist-item checklist-item--{{ 'done' if setup.has_api_key else 'todo' }}">
       <span class="checklist-mark">{{ "✓" if setup.has_api_key else "1" }}</span>
       <span class="checklist-text">AI key for research + writing
-        {% if not setup.has_api_key %}<span class="checklist-note">Get one at console.groq.com/keys, then paste it below.</span>{% endif %}
+        {% if not setup.has_api_key %}<span class="checklist-note">Pick a provider (Groq, OpenCode, OpenRouter…) and paste its key below.</span>{% endif %}
       </span>
     </li>
     <li class="checklist-item checklist-item--{{ 'done' if setup.has_profile_and_files else 'todo' }}">
@@ -230,25 +230,45 @@
     </div>
   </div>
   <form class="setup-form" action="{{ url_for('setup') }}" method="post" enctype="multipart/form-data">
-    <div class="form-group form-group--wide">
-      <label for="ai-key">AI API key</label>
+    {# ── AI provider ── each provider keeps its own saved key #}
+    <div class="form-group">
+      <label for="ai-provider">AI provider</label>
+      <select id="ai-provider" name="ai_provider">
+        {% for pid, p in providers.items() %}<option value="{{ pid }}"
+          data-base-url="{{ p.base_url }}" data-portal="{{ p.key_portal }}"
+          data-default-model="{{ p.default_model }}"
+          data-suggested="{{ p.suggested_models | join(',') }}"
+          data-key-saved="{{ 'yes' if setup.saved_provider_keys.get(pid) else '' }}"
+          {% if setup.ai_provider == pid %} selected{% endif %}>{{ p.label }}{% if setup.saved_provider_keys.get(pid) %} · key saved{% endif %}</option>{% endfor %}
+      </select>
+      <span class="field-hint">Used only for company research — the emails themselves are built from your CV text.</span>
+    </div>
+    <div class="form-group">
+      <label for="ai-key">API key for this provider</label>
       <div class="input-row">
-        <input id="ai-key" name="ai_api_key" type="password" placeholder="{{ 'Saved locally — enter to replace' if setup.has_api_key else 'Paste your provider key' }}" autocomplete="off">
-        <button class="button button--ghost" type="button" id="validate-ai-btn">Validate</button>
+        <input id="ai-key" name="ai_api_key" type="password" autocomplete="off"
+               placeholder="{{ 'Saved — enter to replace' if setup.saved_provider_keys.get(setup.ai_provider) else 'Paste your key' }}">
+        <button class="button button--ghost" type="button" id="validate-ai-btn">Test</button>
       </div>
-      <span class="field-hint"><a href="{{ key_portal_url }}" target="_blank" rel="noreferrer">Open provider key portal</a>. {% if setup.has_api_key %}Saved locally.{% else %}Used only for company research — the emails themselves are built from your CV text.{% endif %}</span>
+      <span class="field-hint" id="ai-portal-hint">{% if providers[setup.ai_provider].key_portal %}<a href="{{ providers[setup.ai_provider].key_portal }}" target="_blank" rel="noreferrer">Get a key</a>. {% endif %}Stored only in your local <code>.env</code>.</span>
       <span class="field-hint validation-result" id="ai-validation-result" aria-live="polite"></span>
     </div>
     <div class="form-group">
-      <label for="ai-model">Agent model</label>
-      <select id="ai-model" name="ai_model">
-        {% for model in supported_models %}<option value="{{ model }}"{% if setup.ai_model == model %} selected{% endif %}>{{ model }}{% if loop.first %} — recommended{% endif %}</option>{% endfor %}
-      </select>
+      <label for="ai-model">Model</label>
+      <div class="input-row">
+        <input id="ai-model" name="ai_model" type="text" list="ai-model-options" autocomplete="off"
+               value="{{ setup.ai_model }}" placeholder="Load models, or type any model id">
+        <button class="button button--ghost" type="button" id="load-models-btn">Load models</button>
+      </div>
+      <datalist id="ai-model-options">
+        {% for m in providers[setup.ai_provider].suggested_models %}<option value="{{ m }}"></option>{% endfor %}
+      </datalist>
+      <span class="field-hint validation-result" id="models-result" aria-live="polite"></span>
     </div>
     <div class="form-group">
-      <label for="ai-base-url">AI API base URL</label>
-      <input id="ai-base-url" type="url" name="ai_base_url" value="{{ setup.ai_base_url }}" placeholder="https://api.groq.com/openai/v1">
-      <span class="field-hint">The key portal and the inference API are separate URLs.</span>
+      <label for="ai-base-url">API base URL</label>
+      <input id="ai-base-url" type="url" name="ai_base_url" value="{{ setup.ai_base_url }}" placeholder="https://…/v1">
+      <span class="field-hint">Prefilled for each provider. Only change it if your provider documents a different one.</span>
     </div>
 
     <div class="form-group form-group--wide gmail-section">

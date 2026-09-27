@@ -38,7 +38,7 @@ from utils import is_valid_email, extract_company_name, derive_website_from_emai
     _company_name_from_domain
 from pipeline import Pipeline, needs_preparation
 
-from ai_client import DEFAULT_BASE_URL, DEFAULT_MODEL
+from ai_client import resolve_ai_settings
 SETUP_URL = "http://127.0.0.1:5050"
 
 
@@ -52,11 +52,10 @@ def _dashboard_setup_needed(companies_arg: str = None) -> bool:
     actually needs.
     """
     load_dotenv(override=True)
-    # Accept the legacy ANTHROPIC_API_KEY as the AI key (older .env files).
-    if not os.getenv("AI_API_KEY") and os.getenv("ANTHROPIC_API_KEY"):
-        os.environ["AI_API_KEY"] = os.getenv("ANTHROPIC_API_KEY")
-    required = ("AI_API_KEY", "YOUR_NAME", "YOUR_TARGET_ROLE")
-    if not all(os.getenv(key) for key in required):
+    ai = resolve_ai_settings()
+    if not (ai["api_key"] and ai["base_url"] and ai["model"]):
+        return True
+    if not all(os.getenv(key) for key in ("YOUR_NAME", "YOUR_TARGET_ROLE")):
         return True
 
     companies_value = companies_arg or os.getenv("COMPANIES_FILE_PATH") or "companies.xlsx"
@@ -89,10 +88,14 @@ def load_config():
     so an AI-key-only setup (no Gmail connected yet) can still prepare drafts."""
     load_dotenv(override=True)
 
-    required = ["AI_API_KEY", "YOUR_NAME", "YOUR_TARGET_ROLE"]
-    if not os.getenv("AI_API_KEY") and os.getenv("ANTHROPIC_API_KEY"):
-        os.environ["AI_API_KEY"] = os.getenv("ANTHROPIC_API_KEY")
-    missing = [k for k in required if not os.getenv(k)]
+    ai = resolve_ai_settings()
+    missing = [k for k in ("YOUR_NAME", "YOUR_TARGET_ROLE") if not os.getenv(k)]
+    if not ai["api_key"]:
+        missing.append(f"an API key for {ai['label']}")
+    if not ai["base_url"]:
+        missing.append("the provider base URL")
+    if not ai["model"]:
+        missing.append("AI_MODEL")
     if missing:
         print(f"ERROR: missing required .env values: {', '.join(missing)}")
         print("Copy .env.example to .env and fill it in first.")
@@ -103,9 +106,9 @@ def load_config():
         specializations = json.load(f)
 
     return {
-        "ai_api_key": os.getenv("AI_API_KEY"),
-        "ai_base_url": os.getenv("AI_BASE_URL", DEFAULT_BASE_URL),
-        "ai_model": os.getenv("AI_MODEL", DEFAULT_MODEL),
+        "ai_api_key": ai["api_key"],
+        "ai_base_url": ai["base_url"],
+        "ai_model": ai["model"],
         "applicant_name": os.getenv("YOUR_NAME"),
         "target_role": os.getenv("YOUR_TARGET_ROLE"),
         "research_workers": int(os.getenv("RESEARCH_WORKERS", 3)),
