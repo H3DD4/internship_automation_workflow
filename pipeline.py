@@ -22,6 +22,7 @@ import cache_store
 from utils import build_greeting
 from agents.research_agent import get_company_context
 from agents.composer import compose_email
+from model_router import RoutingCancelled
 
 
 def _load_draft(email: str, app: dict | None) -> dict | None:
@@ -77,8 +78,13 @@ class Pipeline:
         # retire the watcher thread: this one means the user asked to stop.
         self._stop_requested = threading.Event()
         self._stop_file = os.getenv("PIPELINE_STOP_FILE")
+        # A router waiting for a model must hear "Stop" too, or a worker can
+        # sit in a long wait while the stop request goes unread.
+        if getattr(client, "is_router", False):
+            client.should_stop = self._should_stop
 
         self._lock = threading.Lock()
+        self._local = threading.local()
         self.total_companies = 0
         self.terminal_count = 0
         self.results = {"ready": 0, "failed": 0, "skipped": 0}
@@ -87,6 +93,41 @@ class Pipeline:
         with self._lock:
             self.results[outcome] = self.results.get(outcome, 0) + 1
             self.terminal_count += 1
+        # Lets _guard tell "this stage already accounted for its company"
+        # apart from "this stage died before it could". Thread-local because
+        # the two stages run in different pools and never nest.
+        self._local.recorded = True
+
+    def _guard(self, task, row_label: str, *args):
+        """Outermost net: a stage that dies must not take its company with it.
+
+        Nothing calls .result() on these futures, so an exception escaping a
+        task is swallowed by the executor — the company silently disappears
+        from the run: not researched, not written, not counted, no error
+        anywhere. That is exactly what happened to a company whose name held
+        a zero-width space: printing it raised UnicodeEncodeError, and the
+        stage's own `except` handler raised again printing the same name.
+
+        Only a raising stage is accounted for here. Research *succeeds* by
+        handing off to the writer pool without recording anything, so
+        "finished without recording" is the normal path, not a loss — and a
+        global counter can't tell the two apart while other threads are
+        recording concurrently.
+
+        This assumes nothing about being able to print, since a failing print
+        is the very thing it exists to survive.
+        """
+        self._local.recorded = False
+        try:
+            task(*args)
+        except BaseException as exc:  # noqa: BLE001 — last line of defence
+            try:
+                print(f"  [error] {row_label} crashed: {exc!r}".encode(
+                    "ascii", "replace").decode("ascii"))
+            except Exception:
+                pass
+            if not getattr(self._local, "recorded", False):
+                self._record("failed")
 
     def _should_stop(self) -> bool:
         return self._shutdown.is_set()
@@ -149,7 +190,8 @@ class Pipeline:
                              f"Scraping and analyzing {website or '(no website given)'}")
 
                 context = get_company_context(
-                    self.client, self.model, company_name, website, self.cfg["spec"]["areas"]
+                    self.client, self.model, company_name, website, self.cfg["spec"]["areas"],
+                    translation_model=self.cfg.get("ai_translation_model"),
                 )
                 cache_store.save_research(email, context)
 
@@ -163,18 +205,37 @@ class Pipeline:
                     matched_extra_mentions=json.dumps(context.get("areas", [])),
                     match_reasons=json.dumps(context.get("match_reasons", {})),
                     company_hook=context.get("company_hook") or None,
+                    hook_original=context.get("hook_original") or None,
                     hook_evidence=context.get("hook_evidence") or None,
                     hook_status=context.get("hook_status"),
                 )
                 db.log_event(
                     app_id, "research",
                     f"CV areas: {', '.join(context.get('areas') or []) or 'none'} · "
-                    f"hook: {context.get('company_hook') or context.get('hook_status')}",
+                    f"hook: {context.get('company_hook') or context.get('hook_status')}"
+                    # Which model did the research, so a draft is always
+                    # traceable to what wrote its company-specific line.
+                    + (f" · via {context['research_model']}" if context.get("research_model") else ""),
                     detail=context,
                 )
 
-            self.writer_pool.submit(self._writer_task, app_id, company_name, email, website,
+            self.writer_pool.submit(self._guard, self._writer_task,
+                                     f"writer stage for id={app_id}",
+                                     app_id, company_name, email, website,
                                      contact_name, context)
+
+        except RoutingCancelled:
+            # Stopped while waiting for a model. Put the company back exactly as
+            # it was — not "failed", and never a draft built from half a
+            # research — so the next run simply picks it up again.
+            try:
+                app_id = db.get_or_create_application(company_name, email, website, contact_name)
+                previous = (existing or {}).get("status") or "pending"
+                db.update_application(app_id, status="pending" if previous == "researching" else previous)
+            except Exception:
+                pass
+            print(f"  [stop] {company_name} — left for the next run.")
+            self._record("skipped")
 
         except Exception as e:
             print(f"  [error] research stage crashed for {company_name}: {e}")
@@ -251,7 +312,8 @@ class Pipeline:
         for row in companies_rows:
             if self._should_stop():
                 break
-            self.research_pool.submit(self._research_task, row)
+            self.research_pool.submit(self._guard, self._research_task,
+                                       f"research stage for <{row[1]}>", row)
 
         try:
             self.research_pool.shutdown(wait=True,

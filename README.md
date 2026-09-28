@@ -63,8 +63,9 @@ wording lives in `specializations.json`.
    ```
 
 3. **Pick an AI provider.** Any OpenAI-compatible endpoint works — Groq
-   (free tier, the default), OpenRouter, Together, a local Ollama. You only
-   ever set three values: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`.
+   (free tier, the default), OpenCode Zen, OpenRouter, Together, a local
+   Ollama. Pick one in **Settings**, paste its key, and choose a model;
+   each provider keeps its own key, so switching never loses one.
 
    Unsure which model, or on a provider not listed here? Let the repo tell you:
    ```bash
@@ -76,14 +77,15 @@ wording lives in `specializations.json`.
    login page, where the only right answer is "nothing here" — and the script
    recommends the most accurate model that invented nothing.
 
-4. **Start the dashboard and fill in the setup form:**
+4. **Start the dashboard and open Settings:**
    ```bash
    python dashboard/app.py
    ```
-   Open <http://127.0.0.1:5050> and complete "Workspace setup": your AI key,
-   your name and target role, your companies file, your CV, and your Gmail
-   connection. It writes everything to a local `.env` (you can also copy
-   `.env.example` to `.env` and edit it by hand).
+   Open <http://127.0.0.1:5050> and click **Settings** in the top right. Each
+   group is its own card — AI provider and model, your details, companies file
+   and CV, Gmail, sending pace, and advanced tuning — and the index down the
+   side marks in amber anything still missing. It writes everything to a local
+   `.env` (you can also copy `.env.example` to `.env` and edit it by hand).
 
    You only need the AI key, your profile, and the companies file to start
    **preparing** drafts. Gmail and the CV are needed only when you send.

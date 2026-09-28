@@ -37,6 +37,13 @@ def test_extracts_json_from_reasoning_content():
     assert json.loads(text) == {"subject": "Hello", "body": "Body text"}
 
 
+def test_extracts_json_from_groqs_reasoning_field():
+    """Groq names the field "reasoning", not "reasoning_content" — reading
+    only the latter made gpt-oss-120b look like it returned nothing at all."""
+    message = {"content": "", "reasoning": 'thinking...\n{"subject": "S", "body": "B"}'}
+    assert json.loads(_extract_message_text(message))["subject"] == "S"
+
+
 def test_extracts_research_shaped_json_too():
     """Not just subject/body — the research agent's schema must survive the
     same path (the old regex only matched subject+body objects)."""

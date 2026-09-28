@@ -33,6 +33,32 @@ BANNED_PHRASES = [
     "i read your recent blog",
 ]
 
+# Typographic look-alikes folded to their ASCII form before phrase matching.
+# Models (and websites) routinely write "cutting‑edge" with a non-breaking
+# hyphen (U+2011) or an en dash, which the plain "cutting-edge" never matched
+# — a banned phrase reached a live draft that way. Apostrophes fold too, so
+# "i’ve long admired" is caught like "i've long admired".
+_LOOKALIKES = str.maketrans({
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-",
+    "−": "-", "­": "",
+    "‘": "'", "’": "'", "ʼ": "'",
+    " ": " ", " ": " ", " ": " ",
+})
+
+
+def fold_for_matching(text: str) -> str:
+    """Lower-case `text` with look-alike punctuation reduced to ASCII and
+    runs of whitespace collapsed, so a phrase can't slip past a check by
+    being typed with a different hyphen, apostrophe or space."""
+    return re.sub(r"\s+", " ", (text or "").translate(_LOOKALIKES).lower())
+
+
+def find_banned_phrase(text: str) -> str | None:
+    """The first banned phrase in `text`, however it is typeset, or None."""
+    folded = fold_for_matching(text)
+    return next((phrase for phrase in BANNED_PHRASES if phrase in folded), None)
+
+
 # Numbers that legitimately appear as ordinary prose rather than a claim.
 _ALWAYS_ALLOWED_NUMBERS = {"1", "2", "24", "7"}
 
@@ -106,8 +132,9 @@ def check_draft(draft: dict, *, facts: dict, research: dict, company_name: str,
 
     # --- Unverifiable flattery and filler ---
     lowered = body.lower()
+    folded = fold_for_matching(body)
     for phrase in BANNED_PHRASES:
-        if phrase in lowered:
+        if phrase in folded:
             problems.append(
                 f"The phrase {phrase!r} is not supported by the research and must be removed."
             )

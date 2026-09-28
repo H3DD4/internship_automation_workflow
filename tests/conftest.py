@@ -16,12 +16,40 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
+# The developer's real credentials. A test once posted to /oauth/disconnect
+# with nothing isolating the Google token — and the suite deleted the real
+# token.json, silently signing Gmail out.
+REAL_SECRET_FILES = [ROOT / "token.json", ROOT / "credentials.json",
+                     *ROOT.glob("client_secret_*.json"), ROOT / ".env"]
+
+
+def _fingerprint(paths):
+    return {str(p): (p.stat().st_size, p.stat().st_mtime_ns) if p.exists() else None
+            for p in paths}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def real_credentials_are_never_touched():
+    """Tripwire: fail the whole run if any test created, changed or deleted
+    the real token, OAuth client file or .env."""
+    before = _fingerprint(REAL_SECRET_FILES)
+    yield
+    after = _fingerprint(REAL_SECRET_FILES)
+    changed = [path for path in before if before[path] != after[path]]
+    assert not changed, f"a test modified real credential files: {changed}"
+
+
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
-    """Point db, cache_store and the dashboard's .env at tmp_path."""
+    """Point db, cache_store, the dashboard's .env and the Google sign-in
+    files at tmp_path."""
     import cache_store
     import db
+    import google_auth_helper
     import sender_worker
+
+    monkeypatch.setattr(google_auth_helper, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(google_auth_helper, "TOKEN_PATH", tmp_path / "token.json")
 
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "applications.db")
     monkeypatch.setattr(db, "_initialized_path", None)

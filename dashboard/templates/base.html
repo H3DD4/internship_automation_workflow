@@ -5,10 +5,36 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Application Tracker{% endblock %}</title>
   {# Inline SVG favicon (a paper-plane mark) — no binary asset to ship. #}
-  <link rel="icon" href="data:image/svg+xml,{{ "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#12151A'/><path d='M6 16.5 26 7l-7 18-3.5-7.5L6 16.5Z' fill='#4FD1C5'/></svg>" | urlencode }}">
+  <link rel="icon" href="data:image/svg+xml,{{ "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#0D7C73'/><path d='M6 16.5 26 7l-7 18-3.5-7.5L6 16.5Z' fill='#FFFFFF'/></svg>" | urlencode }}">
+  <meta name="theme-color" content="#F5F7F9">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ asset('style.css') }}">
+  {# Start loading a page when the pointer rests on its link (~200ms before
+     the click lands), so moving around feels instant. Company pages are only
+     ever read, so they are fully pre-rendered — that is the Prev/Next walk.
+     Everything else is only prefetched. Never /oauth/*: preloading
+     /oauth/start would begin a Google sign-in. Browsers without support
+     ignore this block entirely. #}
+  <script type="speculationrules">
+  {
+    "prerender": [{
+      "where": {"href_matches": "/company/*"},
+      "eagerness": "moderate"
+    }],
+    "prefetch": [{
+      "where": {"and": [
+        {"href_matches": "/*"},
+        {"not": {"href_matches": "/company/*"}},
+        {"not": {"href_matches": "/oauth/*"}},
+        {"not": {"href_matches": "/api/*"}},
+        {"not": {"href_matches": "/static/*"}}
+      ]},
+      "eagerness": "moderate"
+    }]
+  }
+  </script>
 </head>
 <body>
   <div class="page">

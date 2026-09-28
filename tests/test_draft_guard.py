@@ -19,7 +19,7 @@ from agents.draft_guard import GuardRejection, check_draft
 from agents.research_agent import resolve_areas, verify_hook
 
 ROOT = Path(__file__).parent.parent
-SPEC = json.loads((ROOT / "specializations.json").read_text())
+SPEC = json.loads((ROOT / "specializations.json").read_text(encoding="utf-8"))
 AREAS = SPEC["areas"]
 NAME = "Mohamed Hedda"
 ROLE = "End-of-Study Internship"

@@ -112,8 +112,8 @@ def test_state_mismatch_is_rejected(oauth_client, isolated):
 def test_disconnect_button_is_not_nested_in_the_settings_form(oauth_client):
     """A <form> inside the settings <form> is dropped by browsers, so the
     Disconnect button used to submit the whole settings form instead."""
-    html = oauth_client.get("/").data.decode()
-    setup_form = html[html.index('class="setup-form"'):]
+    html = oauth_client.get("/settings").data.decode()
+    setup_form = html[html.index('class="settings-main"'):]
     setup_form = setup_form[:setup_form.index("</form>")]
     assert "<form" not in setup_form
     assert 'id="oauth-client-form"' in html

@@ -16,6 +16,9 @@
     <p class="subtitle cell-mono">{{ application.email }}{% if application.website %} · <a href="{{ application.website }}" target="_blank" rel="noreferrer">{{ application.website }}</a>{% endif %}</p>
   </div>
   <div class="detail-actions">
+    <button class="button button--ghost fav-toggle{% if application.favorite %} fav-toggle--on{% endif %}"
+            id="favorite-detail-btn" type="button" data-app-id="{{ application.id }}"
+            aria-pressed="{{ 'true' if application.favorite else 'false' }}">{{ "★ Favorite" if application.favorite else "☆ Add to favorites" }}</button>
     <span class="status-pill status-{{ application.status }} status-pill--lg">{{ application.status_label }}</span>
     {% if application.sendable %}
     <button class="button button--primary send-detail-btn" id="send-detail-btn"
@@ -75,6 +78,10 @@
             <span class="email-preview__key">Subject</span>
             <span class="email-preview__val email-preview__subject" id="preview-subject">{{ application.subject or "—" }}</span>
           </div>
+          {# The preview mirrors the editor as you type, so it can be showing
+             text that isn't saved yet. Say so rather than letting it pass for
+             the stored draft. #}
+          <p class="preview-dirty" id="preview-dirty" hidden>Showing unsaved edits — save them in the Edit tab to keep them.</p>
           <div class="email-preview__body" id="preview-body">{{ application.body or "No draft yet." }}</div>
           {% if cv_info %}
           <div class="attachment-chip">📎 {{ cv_info.name }} <span class="field-hint">{{ cv_info.size_kb }} KB</span></div>
@@ -87,12 +94,22 @@
       {# ── Edit ── #}
       <div class="detail-panel" id="panel-edit" role="tabpanel" hidden>
         {% if application.editable %}
-        <form class="email-editor" action="{{ url_for('edit_email', app_id=application.id) }}" method="post">
+        {# The action is a real POST so editing still works without JS;
+           detail.js intercepts it and saves through /api/update-draft
+           instead, which keeps your place on the page. #}
+        <form class="email-editor" id="email-editor"
+              action="{{ url_for('edit_email', app_id=application.id) }}" method="post"
+              data-app-id="{{ application.id }}" data-status="{{ application.status }}">
           <label for="subject">Subject</label>
           <input id="subject" type="text" name="subject" value="{{ application.subject or '' }}" required>
           <label for="body">Message</label>
-          <textarea id="body" name="body" rows="18" required>{{ application.body or '' }}</textarea>
-          <button class="button button--primary" type="submit">Save draft</button>
+          <textarea id="body" name="body" rows="18" required spellcheck="true">{{ application.body or '' }}</textarea>
+          <div class="editor-actions">
+            <button class="button button--primary" id="save-draft-btn" type="submit">Save draft</button>
+            <button class="button button--ghost" id="revert-draft-btn" type="button" hidden>Discard changes</button>
+            <span class="save-state" id="save-state" aria-live="polite"></span>
+            <span class="field-hint editor-hint">Ctrl+S saves. Sending always uses the saved version.</span>
+          </div>
         </form>
         {% else %}
         <p class="cell-empty">This email can't be edited while it's "{{ application.status_label }}".</p>
@@ -126,6 +143,9 @@
       <dl class="fact-list">
         <dt>Interest line</dt>
         <dd>{% if application.company_hook %}"…your work on <strong>{{ application.company_hook }}</strong>."{% else %}<span class="cell-empty">Standard wording — no phrase from their site could be verified{% if application.hook_status and application.hook_status not in ('grounded',) %} ({{ application.hook_status }}){% endif %}.</span>{% endif %}</dd>
+        {% if application.hook_original %}
+        <dt>Original hook</dt><dd class="reasoning-text">{{ application.hook_original }}</dd>
+        {% endif %}
         {% if application.hook_evidence %}
         <dt>From their site</dt><dd class="reasoning-text">“{{ application.hook_evidence }}”</dd>
         {% endif %}
@@ -143,12 +163,12 @@
   <div class="detail-col">
     <section class="panel">
       <h2>Timeline</h2>
-      <ol class="timeline">
-        {% for e in events %}
-        <li class="timeline-item timeline-item--{{ e.stage }}">
+      {% macro timeline_item(e) %}
+        <li class="timeline-item timeline-item--{{ e.stage }}{% if e.error_summary %} timeline-item--failed{% endif %}">
           <span class="timeline-stage">{{ e.stage }}</span>
           <span class="timeline-time cell-mono">{{ e.timestamp[:19].replace("T", " ") }}</span>
           <p class="timeline-message">{{ e.message }}</p>
+          {% if e.error_summary %}<p class="timeline-error">{{ e.error_summary }}</p>{% endif %}
           {% if e.detail_parsed %}
           <details class="timeline-detail">
             <summary class="timeline-detail-toggle">details</summary>
@@ -156,7 +176,23 @@
           </details>
           {% endif %}
         </li>
-        {% endfor %}
+      {% endmacro %}
+
+      {# Superseded history folds away: the draft above came from the latest
+         attempt, so older retries are context, not news. #}
+      {% if earlier_events %}
+      <details class="timeline-earlier">
+        <summary class="timeline-earlier__toggle">
+          Earlier history · {{ earlier_events | length }} event{{ "s" if earlier_events | length != 1 }}{% if earlier_failed %}, {{ earlier_failed }} failed attempt{{ "s" if earlier_failed != 1 }}{% endif %} — superseded by the current draft
+        </summary>
+        <ol class="timeline timeline--earlier">
+          {% for e in earlier_events %}{{ timeline_item(e) }}{% endfor %}
+        </ol>
+      </details>
+      {% endif %}
+
+      <ol class="timeline">
+        {% for e in current_events %}{{ timeline_item(e) }}{% endfor %}
         {% if not events %}
         <li class="timeline-item"><p class="timeline-message cell-empty">No events recorded yet.</p></li>
         {% endif %}
@@ -186,6 +222,9 @@
     <h3 id="confirm-title">Send this application?</h3>
     <p class="modal-copy" id="confirm-copy"></p>
     <ul class="modal-list" id="confirm-list"></ul>
+    {# Sending uses the SAVED draft, so unsaved edits would go nowhere — say it
+       here, where it is still possible to cancel. #}
+    <p class="modal-warn" id="confirm-warn" hidden></p>
     <div class="modal-actions">
       <button class="button button--ghost" id="confirm-cancel" type="button">Cancel</button>
       <button class="button button--primary" id="confirm-ok" type="button">Send now</button>
@@ -196,5 +235,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='detail.js') }}"></script>
+<script src="{{ asset('detail.js') }}"></script>
 {% endblock %}

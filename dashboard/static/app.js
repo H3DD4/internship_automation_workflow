@@ -219,8 +219,93 @@
     });
   }
 
+  // ── Favorites ────────────────────────────────────────────────────────────
+  const onFavoritesTab = new URLSearchParams(window.location.search).get("status") === "favorites";
+
+  function renderFavoriteCounts(total, sendable) {
+    const tabCount = document.querySelector("[data-favorites-count]");
+    if (tabCount) { tabCount.textContent = total; tabCount.hidden = !total; }
+    const totalEl = document.querySelector("[data-favorites-total]");
+    if (totalEl) totalEl.textContent = total;
+    const sendableEl = document.querySelector("[data-favorites-sendable]");
+    if (sendableEl) sendableEl.textContent = sendable;
+    const sendFavBtn = $("send-favorites-btn");
+    if (sendFavBtn && !state.sending) sendFavBtn.disabled = !sendable;
+  }
+
+  function paintStar(btn, on) {
+    const company = btn.closest("tr") ? btn.closest("tr").dataset.company : "";
+    btn.classList.toggle("fav-btn--on", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.textContent = on ? "★" : "☆";
+    btn.title = on ? "Remove from favorites" : "Add to favorites";
+    btn.setAttribute("aria-label", `${on ? "Remove" : "Add"} ${company} ${on ? "from" : "to"} favorites`);
+  }
+
+  async function setFavorite(ids, on) {
+    const data = await postJSON("/api/favorite", { app_ids: ids, favorite: on });
+    if (!data.ok) throw new Error(data.message);
+    renderFavoriteCounts(data.favorites_total, data.favorites_sendable);
+    return data;
+  }
+
+  const favoriteSelectedBtn = $("favorite-selected-btn");
+  if (favoriteSelectedBtn) {
+    favoriteSelectedBtn.addEventListener("click", async () => {
+      const ids = checkedIds();
+      if (!ids.length) return;
+      favoriteSelectedBtn.disabled = true;
+      try {
+        await setFavorite(ids, true);
+        ids.forEach((id) => {
+          const star = document.querySelector(`.fav-btn[data-app-id="${id}"]`);
+          if (star) paintStar(star, true);
+        });
+        showToast(`★ ${ids.length} added to favorites`, 1);
+        setTimeout(hideToast, 2500);
+      } catch (err) {
+        showToast(`✗ ${err.message}`, 0);
+        setTimeout(hideToast, 4000);
+      } finally {
+        favoriteSelectedBtn.disabled = false;
+      }
+    });
+  }
+
+  const sendFavoritesBtn = $("send-favorites-btn");
+  if (sendFavoritesBtn) {
+    sendFavoritesBtn.addEventListener("click", async () => {
+      sendFavoritesBtn.disabled = true;
+      try {
+        const response = await fetch("/api/favorites/sendable");
+        const data = await response.json();
+        const recipients = data.recipients || [];
+        if (!recipients.length) return;
+        // The same confirm dialog as every other send: lists who gets what
+        // and warns when today's cap is smaller than the batch.
+        if (!(await modal.open(recipients, state.capRemaining))) return;
+        createSendJob(recipients.map((r) => r.id));
+      } finally {
+        sendFavoritesBtn.disabled = false;
+      }
+    });
+  }
+
   // ── Per-row actions (delegated, so live-refreshed rows keep working) ─────
   document.addEventListener("click", async (e) => {
+    const favBtn = e.target.closest(".fav-btn");
+    if (favBtn) {
+      const on = !favBtn.classList.contains("fav-btn--on");
+      paintStar(favBtn, on);          // instant feedback; undone below on failure
+      try {
+        await setFavorite([+favBtn.dataset.appId], on);
+        if (onFavoritesTab && !on) refresh();   // it no longer belongs in this view
+      } catch (err) {
+        paintStar(favBtn, !on);
+      }
+      return;
+    }
+
     const sendBtn = e.target.closest(".send-one-btn");
     if (sendBtn) {
       const row = sendBtn.closest("tr");
@@ -295,6 +380,11 @@
     }
     state.capRemaining = data.cap_remaining;
 
+    // Favorites counts (a send or new drafts change how many are ready)
+    if (typeof data.favorites_total === "number") {
+      renderFavoriteCounts(data.favorites_total, data.favorites_sendable);
+    }
+
     // Undelivered emails: red alert + Problems card note
     renderUndelivered(data.bounced_count || 0);
     if (data.bounce_check) renderBounceCheck(data.bounce_check);
@@ -318,12 +408,35 @@
     if (liveDot) liveDot.classList.toggle("dot--pulse", data.in_progress_count > 0);
     if (liveNote) liveNote.classList.toggle("live-note--active", data.in_progress_count > 0);
 
+    // Run controls: reflect the real state of the preparation process, so a
+    // Stop shows "Stopping…" at once and "Start preparation" when it's done.
+    renderRunState(data.running, data.stop_requested);
+
     // Activity log, keeping it pinned to the bottom while it's already there
     const log = $("log-output");
     if (log && data.log_tail && log.textContent !== data.log_tail) {
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
       log.textContent = data.log_tail;
       if (atBottom) log.scrollTop = log.scrollHeight;
+    }
+  }
+
+  function renderRunState(running, stopRequested) {
+    const start = $("start-prep-btn");
+    const stop = $("stop-prep-btn");
+    const note = $("run-state-note");
+    if (start) {
+      start.disabled = running || !start.dataset.prepReady;
+      start.textContent = running ? "Preparing…" : "Start preparation";
+    }
+    if (stop) {
+      stop.hidden = !running;
+      stop.disabled = !!stopRequested;
+      stop.textContent = stopRequested ? "Stopping…" : "Stop safely";
+    }
+    if (note) {
+      note.textContent = running && stopRequested
+        ? "Finishing the companies already in progress, then stopping." : "";
     }
   }
 
@@ -537,6 +650,46 @@
         modelsResult.classList.add("validation-result--bad");
       } finally {
         loadModelsBtn.disabled = false;
+      }
+    });
+  }
+
+  // ── Model pool: live check of every model ────────────────────────────────
+  const poolBtn = $("check-pool-btn");
+  if (poolBtn) {
+    const poolResult = $("pool-result");
+    const LABELS = {
+      ok: "Working", busy: "Busy (rate-limited)", inactive: "Plan not active",
+      bad_key: "Key rejected", unavailable: "Not available", error: "Error",
+    };
+    poolBtn.addEventListener("click", async () => {
+      poolBtn.disabled = true;
+      poolBtn.textContent = "Checking…";
+      poolResult.textContent = "";
+      poolResult.classList.remove("validation-result--ok", "validation-result--bad");
+      try {
+        const data = await postJSON("/api/ai-health", {});
+        (data.rows || []).forEach((row) => {
+          const tr = document.querySelector(`[data-pool-name="${CSS.escape(row.name)}"]`);
+          if (!tr) return;
+          const cell = tr.querySelector(".pool-state");
+          cell.textContent = "";
+          const pill = document.createElement("span");
+          pill.className = `pool-pill pool-pill--${row.state}`;
+          pill.textContent = LABELS[row.state] || row.state;
+          const detail = document.createElement("span");
+          detail.className = "field-hint pool-detail";
+          detail.textContent = row.detail || "";
+          cell.append(pill, detail);
+        });
+        poolResult.textContent = (data.ok ? "✓ " : "✗ ") + data.message;
+        poolResult.classList.add(data.ok ? "validation-result--ok" : "validation-result--bad");
+      } catch (err) {
+        poolResult.textContent = "✗ Could not reach the dashboard server.";
+        poolResult.classList.add("validation-result--bad");
+      } finally {
+        poolBtn.disabled = false;
+        poolBtn.textContent = "Check all models";
       }
     });
   }

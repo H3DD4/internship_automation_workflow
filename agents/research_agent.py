@@ -26,7 +26,8 @@ from bs4 import BeautifulSoup
 
 from retry import with_retry
 from ai_client import extract_json_object, build_model_fallback_list
-from agents.draft_guard import BANNED_PHRASES
+from agents.draft_guard import BANNED_PHRASES, find_banned_phrase
+from model_router import RoutingCancelled
 
 # Transient network errors worth retrying a fetch for. Explicitly excludes
 # HTTP-status errors like 404 (raise_for_status -> HTTPError) since retrying
@@ -47,6 +48,13 @@ placed after the words "What interests me most about <Company> is your work on".
   good: "managed detection and response for mid-sized businesses"
   bad:  "innovative cutting-edge solutions"      (vague)
   bad:  "being the market leader with 500 clients" (not in the text)
+
+Answer in the WEBSITE'S OWN LANGUAGE. If the text is German, answer in German;
+if French, in French. Do NOT translate it into English. The phrase is checked
+word by word against the website text, so a translated phrase is thrown away
+even when it is perfectly accurate — it is translated later, after checking.
+  good: "soluzioni personalizzate per un'infrastruttura IT performante"
+  bad:  "custom solutions for high-performance IT" (translated, will be thrown away)
 Then copy, word for word, ONE sentence from the website that supports it,
 as "hook_evidence".
 If the text doesn't describe what they do (cookie banner, login page, error
@@ -70,6 +78,71 @@ _STOPWORDS = {
 _WORD_RE = re.compile(r"[a-z0-9][a-z0-9\-]*")
 _NUMBER_RE = re.compile(r"\b\d[\d,.]*\b")
 _FIRST_PERSON_RE = re.compile(r"\b(i|i'm|i've|my|me|we|we're|us)\b", re.IGNORECASE)
+
+
+def _parse_json_object(text: str) -> dict:
+    raw = (text or "").strip()
+    answer = json.loads(extract_json_object(raw) or raw)
+    if not isinstance(answer, dict):
+        raise ValueError("answer is not a JSON object")
+    return answer
+
+
+def ask_json(client, model: str, *, task: str, system: str, user: str, max_tokens: int,
+             label: str = "", validate=None, attempts: int = 3,
+             max_wait: float | None = None) -> tuple:
+    """Ask for a JSON object, moving to another model when an answer comes back
+    unusable. Returns (answer, "provider/model" or model id) — or ({}, None)
+    when no model produced a usable answer.
+
+    With a ModelRouter, availability is the router's job — rate limits,
+    outages, bad keys and daily quotas are handled across providers inside
+    complete() — so this only has to reject bad answers, excluding the model
+    that gave one. With a single client (tests, legacy callers) it walks the
+    provider's model fallback list as before."""
+    messages = [{"role": "user", "content": user}]
+
+    if getattr(client, "is_router", False):
+        tried: set = set()
+        for _ in range(attempts):
+            try:
+                result = client.complete(task=task, system=system, messages=messages,
+                                         max_tokens=max_tokens, temperature=0.0,
+                                         json_mode=True, reasoning_effort="low", avoid=tried,
+                                         max_wait=max_wait)
+            except RoutingCancelled:
+                raise  # a stop is not "no model": the pipeline puts the company back
+            except Exception as exc:  # AllModelsUnavailable: nothing left to try
+                print(f"    [research] {task} for {label}: {exc}")
+                return {}, None
+            try:
+                answer = _parse_json_object(result.text)
+                if validate:
+                    validate(answer)
+                return answer, result.deployment
+            except Exception as exc:
+                print(f"    [research] {result.deployment} gave an unusable {task} "
+                      f"answer for {label}: {exc}")
+                tried.add(result.deployment)
+        return {}, None
+
+    # Transport errors are retried inside CompatibleAIClient; here a model that
+    # answered with something unparsable falls through to the next one.
+    for attempt_model in build_model_fallback_list(model):
+        try:
+            response = client.messages.create(
+                model=attempt_model, max_tokens=max_tokens, system=system,
+                messages=messages, temperature=0.0, json_mode=True, reasoning_effort="low",
+            )
+            answer = _parse_json_object(response.content[0].text)
+            if validate:
+                validate(answer)
+            if attempt_model != model:
+                print(f"    [research] used fallback model {attempt_model} for {label}")
+            return answer, attempt_model
+        except Exception as exc:
+            print(f"    [research] model {attempt_model} failed for {label}: {exc}")
+    return {}, None
 
 
 def _build_areas_block(areas: list) -> str:
@@ -198,15 +271,228 @@ def _normalise_hook(hook: str, site_text: str) -> str:
     hook = (hook or "").strip().strip("\"'“”").rstrip(".").strip()
     hook = re.sub(r"^(your work on|work on|your work in)\s+", "", hook, flags=re.IGNORECASE)
     hook = re.sub(r"\b(their|our)\b", "your", hook, flags=re.IGNORECASE)
-    first = hook.split()[0] if hook else ""
+    # A model sometimes returns a sentence — "Factory 3D is a powerful software
+    # platform to …" — which reads as broken grammar after "your work on". A
+    # short named subject plus "is a/an/the" becomes an appositive: "Factory 3D,
+    # a powerful software platform to …". Same words, same claim.
+    appositive = re.match(r"^([A-Z0-9][^\s,]*(?:\s+[^\s,]+){0,3}?)\s+(?:is|are)\s+(an?|the)\s+(.+)$",
+                          hook)
+    if appositive:
+        subject, article, rest = appositive.groups()
+        # The subject of "X is a …" is the name of the thing, so its capital
+        # stays: "Factory 3D", never "factory 3D".
+        return f"{subject}, {article} {rest}"
+    # The French and Spanish "IA" is AI; left as-is it reads as a typo.
+    hook = re.sub(r"\bIA\b", "AI", hook)
+
+    words = hook.split()
+    first = words[0] if words else ""
+
+    def capitalised(word: str) -> bool:
+        return word[:1].isupper() and (word[1:] == "" or word[1:].islower())
+
+    def proper_noun_on_site(word: str) -> bool:
+        # Capitalised mid-sentence on their own site marks a name ("Kubernetes").
+        return bool(re.search(r"[a-z,;:]\s+" + re.escape(word) + r"\b", site_text or ""))
+
     # The hook continues a sentence, so a capitalised first word ("Continuous")
-    # is lowered — unless the site itself capitalises it mid-sentence, which
-    # marks a proper noun ("Kubernetes") — and acronyms ("AI-driven") are kept.
-    if first[:1].isupper() and first[1:].islower():
-        proper_noun = re.search(r"[a-z,;:]\s+" + re.escape(first) + r"\b", site_text or "")
-        if not proper_noun:
-            hook = first.lower() + hook[len(first):]
+    # is lowered — unless it is a proper noun — and acronyms ("AI-driven") are
+    # kept. A lone capital ("A no-code lab") counts as capitalised too.
+    if capitalised(first) and not proper_noun_on_site(first):
+        # A site heading comes back in Title Case — "Penetration Testing &
+        # Vulnerability Assessments" — and lowering only its first word left
+        # "penetration Testing & Vulnerability Assessments". When every content
+        # word is capitalised the whole thing is a heading, so it is lowered
+        # throughout, still sparing acronyms and names the site capitalises.
+        content = [w for w in words if w[:1].isalpha() and w.lower() not in _HEADING_SMALL_WORDS]
+        is_heading = len(content) >= 3 and all(w[:1].isupper() for w in content)
+        lowered = []
+        for index, word in enumerate(words):
+            if index == 0 or (is_heading and capitalised(word) and not proper_noun_on_site(word)):
+                word = word.lower()
+            lowered.append(word)
+        hook = " ".join(lowered)
     return hook
+
+
+_HEADING_SMALL_WORDS = {"a", "an", "and", "or", "of", "for", "the", "to", "in", "on",
+                        "with", "as", "at", "by", "&", "de", "du", "des", "et"}
+
+
+# A hook completes "What interests me most about <Company> is your work on …",
+# so it has to describe work. An offer ("free trial month for internet
+# subscriptions") or a bare quantity ("more than 26,000 references") can be
+# perfectly true and still read as nonsense there.
+# Deliberately narrow: "24/7 monitoring", "5G networks", "hands-free" and
+# "free software" are all fine and must not match.
+_NOT_WORK_RE = re.compile(
+    r"^(?:more than|over|up to|at least|nearly|almost)\s+\d"
+    r"|\bfree\s+(?:trial|month|months|shipping|delivery|demo|consultation|quote)\b"
+    r"|\btrial\s+(?:month|period)\b"
+    r"|\b(?:discount|coupon|voucher|promo|promotion)s?\b"
+    r"|\d+\s*%\s*off\b",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# Translation — runs only AFTER the hook is verified, never before
+# ---------------------------------------------------------------------------
+# Most of this list is European, so a hook copied from a company's own site is
+# often French, Italian or German. Quoting it verbatim kept the email truthful
+# but grafted a foreign clause into English prose, which reads like a bot:
+#   "...is your work on soluzioni personalizzate per un'infrastruttura IT..."
+#
+# The order here is the whole safety argument. The hook is verified against the
+# site in its ORIGINAL language first, so grounding is established on the
+# company's own words. Translation is a rendering step applied to an already-
+# trusted phrase — it can never introduce a claim, because a claim that wasn't
+# in the verified original is caught below and the original is kept instead.
+
+# Seconds a translation may wait for a free translation model before the email
+# falls back to standard wording.
+TRANSLATION_MAX_WAIT = 60.0
+
+TRANSLATE_SYSTEM_PROMPT = """You translate one short phrase into English.
+
+Keep every proper name exactly as written: company names, product names,
+brand names, technologies and acronyms (Frontier Engine, FinOps, Kubernetes,
+GPU, SaaS). Translate everything around them.
+
+Translate ONLY. Add nothing, drop nothing, explain nothing. Never add a
+number, client, award or date. If the phrase is already English, return it
+unchanged.
+
+The result continues the sentence "What interests me most about <Company> is
+your work on ...", so return a noun phrase, not a sentence, with no final
+full stop.
+
+Answer with ONLY this JSON object:
+{"english": ""}"""
+
+# Function words common enough that one of them means the phrase already reads
+# as English. Deliberately permissive: a needless translation call is cheap,
+# and translating an English phrase is a no-op, but MISSING a foreign phrase
+# is the bug being fixed.
+_ENGLISH_MARKERS = {
+    "the", "and", "that", "with", "your", "for", "from", "this", "their", "its",
+    "into", "across", "through", "over", "between", "without", "our", "you",
+    "who", "what", "which", "are", "is", "be", "of", "to", "in", "on", "by",
+    "as", "at", "all", "every", "more", "than", "using", "based", "built",
+}
+# Unambiguous non-English function words — none of these is also an English
+# word, so a single hit is a reliable signal.
+_NON_ENGLISH_MARKERS = {
+    # German
+    "die", "der", "das", "und", "für", "fur", "im", "ein", "eine", "von", "mit",
+    "zu", "den", "dem", "aus", "bei", "auf", "nicht", "sind", "werden", "unsere",
+    "ihre", "ihr", "wir", "sie", "sein", "seine", "durch", "oder",
+    # French
+    "les", "des", "pour", "avec", "sur", "dans", "aux", "leur", "nos", "vos",
+    "est", "sont", "chez", "sans", "vers", "notre", "votre", "qui", "que", "pas",
+    "ce", "cet", "cette", "ses", "ces", "nous", "vous", "leurs",
+    # Italian
+    "della", "delle", "dei", "degli", "che", "sono", "gli", "alla", "nel", "nella",
+    "nostro", "nostra", "suo", "sua", "una", "uno", "un", "il", "lo", "al", "nei", "sul",
+    # Spanish / Portuguese
+    "los", "las", "para", "por", "nuestra", "nuestro", "sus", "como", "não",
+    # Dutch
+    "voor", "van", "het", "onze", "wij", "een",
+}
+_ACCENTED_RE = re.compile(r"[àâäáãçèéêëìíîïñòóôöõùúûüýÿßœæ]", re.IGNORECASE)
+
+
+# A thousands-grouped number in any European convention — "26 000" (with a
+# plain, no-break, narrow no-break or thin space), "26.000", "26,000", "26'000"
+# — or a plain number with an optional decimal part.
+_LOCALE_NUMBER_RE = re.compile(
+    r"\d{1,3}(?:[    .,'’]\d{3})+(?!\d)|\d+(?:[.,]\d+)?"
+)
+
+
+def _number_values(text: str) -> set:
+    """The numbers in `text` as bare digit strings, so the same quantity
+    written under different conventions compares equal."""
+    return {re.sub(r"\D", "", match) for match in _LOCALE_NUMBER_RE.findall(text or "")}
+
+
+def _phrase_tokens(text: str) -> set:
+    return set(re.findall(r"[a-zà-ÿ]+", (text or "").lower()))
+
+
+def still_looks_foreign(text: str) -> bool:
+    """True when the phrase carries positive evidence of another language."""
+    return bool(_ACCENTED_RE.search(text or "")
+                or _phrase_tokens(text) & _NON_ENGLISH_MARKERS)
+
+
+def looks_already_english(hook: str) -> bool:
+    """True when the phrase plainly reads as English, so no call is needed.
+
+    Deciding to SKIP needs positive evidence of English, because the cost of
+    being wrong is a foreign phrase going out untranslated. Judging a finished
+    translation is the opposite question — see translate_hook.
+    """
+    if still_looks_foreign(hook):
+        return False
+    return bool(_phrase_tokens(hook) & _ENGLISH_MARKERS)
+
+
+def translate_hook(client, model: str, hook: str, site_text: str) -> tuple:
+    """(hook_in_english, note). Falls back to the verified original on any
+    doubt: it is truthful either way, so a failed translation must cost
+    readability, never accuracy."""
+    if not hook or looks_already_english(hook):
+        return hook, ""
+
+    def has_translation(answer: dict) -> None:
+        if not str(answer.get("english") or "").strip():
+            raise ValueError('no "english" in the answer')
+
+    # A short wait: translation has a safe fallback, and waiting the router's
+    # full 15 minutes for a translator held every research worker hostage —
+    # the whole run stalled until someone closed the dashboard.
+    answer, _ = ask_json(client, model, task="translation", system=TRANSLATE_SYSTEM_PROMPT,
+                         user=hook, max_tokens=300, label="translation",
+                         validate=has_translation, max_wait=TRANSLATION_MAX_WAIT)
+    english = _normalise_hook(str(answer.get("english") or "").strip(), site_text)
+    if not english:
+        # No translator free: the standard English wording beats a French or
+        # German clause grafted into an English email. (The other safeguards
+        # below still fall back to the verified original — those are cases
+        # where a translation came back and was worse, not missing.)
+        return "", "dropped: no translation model was available — standard wording"
+
+    # The translated phrase is re-checked as if it were new, because it is:
+    # only the ORIGINAL was verified against the site.
+    words = english.split()
+    if not 4 <= len(words) <= 25:
+        return hook, "kept in the original language (translation was the wrong length)"
+    if _FIRST_PERSON_RE.search(english):
+        return hook, "kept in the original language (translation used the first person)"
+    banned = find_banned_phrase(english)
+    if banned:
+        return hook, f"kept in the original language (translation added {banned!r})"
+    # A number absent from the verified original is an invented claim, which is
+    # exactly what the whole pipeline exists to prevent. Compared by value, not
+    # by formatting: French writes "26 000", English "26,000", and comparing the
+    # raw strings discarded a correct translation as if it had made one up.
+    if _number_values(english) - _number_values(hook):
+        return hook, "kept in the original language (translation invented a number)"
+    # "plus de 26 000 références" passes the English-only check on the
+    # original; only the translation shows it is a quantity, not their work.
+    # Keeping the French wouldn't help, so the hook is dropped entirely.
+    if _NOT_WORK_RE.search(english):
+        return "", "dropped: describes an offer or a quantity, not their work"
+    # Deliberately not looks_already_english(): a correct translation need not
+    # contain any of the function words that mark a phrase as English up front
+    # ("continuous FinOps optimisation, not a one-off audit" has none), and
+    # rejecting it for that put the French phrase back untranslated. What
+    # matters here is only that no trace of the source language is left.
+    if still_looks_foreign(english) or english.strip().lower() == hook.strip().lower():
+        return hook, "kept in the original language (translation did not reach English)"
+
+    return english, "translated into English"
 
 
 def verify_hook(hook: str, evidence: str, site_text: str) -> tuple:
@@ -220,10 +506,11 @@ def verify_hook(hook: str, evidence: str, site_text: str) -> tuple:
         return "", f"length {len(words)} words"
     if _FIRST_PERSON_RE.search(hook):
         return "", "written in the first person"
-    lowered = hook.lower()
-    for phrase in BANNED_PHRASES:
-        if phrase in lowered:
-            return "", f"unverifiable phrase {phrase!r}"
+    banned = find_banned_phrase(hook)
+    if banned:
+        return "", f"unverifiable phrase {banned!r}"
+    if _NOT_WORK_RE.search(hook):
+        return "", "describes an offer or a quantity, not their work"
 
     site_numbers = set(_NUMBER_RE.findall(site_text or ""))
     for number in _NUMBER_RE.findall(hook):
@@ -245,7 +532,7 @@ def verify_hook(hook: str, evidence: str, site_text: str) -> tuple:
 # ---------------------------------------------------------------------------
 
 def get_company_context(client, model: str, company_name: str, website_url: str,
-                         areas: list) -> dict:
+                         areas: list, translation_model: str | None = None) -> dict:
     """Research one company. Always returns a usable context: when the site
     can't be read or the model fails, `areas` comes from keywords alone (or
     is empty) and `company_hook` is "", and the email uses standard wording."""
@@ -255,6 +542,8 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
         "industry": "unknown",
         "mission_or_focus": "",
         "company_hook": "",
+        "hook_original": "",
+        "research_model": "",
         "hook_evidence": "",
         "hook_status": "no website text",
         "areas": [],
@@ -267,30 +556,9 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
     system_prompt = RESEARCH_SYSTEM_PROMPT_TEMPLATE.format(areas_block=_build_areas_block(areas))
     user_prompt = f"Company name: {company_name}\nWebsite text:\n\n{site_text}"
 
-    answer = {}
-    # Transport errors are retried inside CompatibleAIClient; here a model that
-    # answered with something unparsable falls through to the next one.
-    for attempt_model in build_model_fallback_list(model):
-        try:
-            response = client.messages.create(
-                model=attempt_model,
-                max_tokens=1500,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
-                temperature=0.0,
-                json_mode=True,
-                reasoning_effort="low",
-            )
-            raw = response.content[0].text.strip()
-            answer = json.loads(extract_json_object(raw) or raw)
-            if not isinstance(answer, dict):
-                raise ValueError("answer is not a JSON object")
-            if attempt_model != model:
-                print(f"    [research] used fallback model {attempt_model} for {company_name}")
-            break
-        except Exception as e:
-            print(f"    [research] model {attempt_model} failed for {company_name}: {e}")
-            answer = {}
+    answer, used_model = ask_json(client, model, task="research", system=system_prompt,
+                                  user=user_prompt, max_tokens=1500, label=company_name)
+    context["research_model"] = used_model or ""
 
     model_areas = answer.get("areas") or []
     if isinstance(model_areas, str):
@@ -299,7 +567,21 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
 
     hook, status = verify_hook(str(answer.get("hook") or ""),
                                str(answer.get("hook_evidence") or ""), site_text)
+
+    # Verified first, translated second — see TRANSLATE_SYSTEM_PROMPT above.
+    original = hook
+    if hook:
+        hook, note = translate_hook(client, translation_model or model, hook, site_text)
+        if note:
+            status = f"{status}, {note}"
+            if hook and hook != original:
+                print(f"    [research] hook for {company_name} translated into English")
+
     context["company_hook"] = hook
+    # The phrase actually found on the site, kept so the dashboard can show
+    # what was quoted and any translation stays auditable. Only alongside a
+    # hook that is used — a dropped hook has no translation to audit.
+    context["hook_original"] = original if hook and original != hook else ""
     context["hook_evidence"] = str(answer.get("hook_evidence") or "") if hook else ""
     context["hook_status"] = status if answer else "model gave no usable answer"
     if not hook and status != "none offered":

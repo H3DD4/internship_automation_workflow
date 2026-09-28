@@ -103,6 +103,9 @@ def _get_or_create_dashboard_secret() -> str:
 
 app = Flask(__name__)
 app.secret_key = _get_or_create_dashboard_secret()
+# Static assets are referenced through asset(), which stamps each URL with the
+# file's mtime, so they can be cached for a year without ever going stale.
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 60 * 60 * 24 * 365
 
 STATUS_LABELS = {
     "pending": "Pending",
@@ -133,6 +136,7 @@ EDITABLE_STATUSES = frozenset({"ready", "failed", "retry_wait"})
 # db.STATUS_GROUPS or a single status; "" means no filter.
 STATUS_TABS = [
     ("", "All"),
+    ("favorites", "★ Favorites"),
     ("to_prepare", "To prepare"),
     ("ready", "Ready"),
     ("sent", "Sent"),
@@ -145,7 +149,9 @@ def _preparation_config() -> dict:
     """What rebuilding a draft needs: the wording spec and the applicant's
     profile. No AI settings — drafts are assembled, not generated."""
     spec_path = ROOT_DIR / "specializations.json"
-    with open(spec_path) as f:
+    # See main.py's load_config: without encoding=, Windows reads this UTF-8
+    # file as cp1252 and every em-dash reaches the company as mojibake.
+    with open(spec_path, encoding="utf-8") as f:
         specializations = json.load(f)
     return {
         "applicant_name": os.getenv("YOUR_NAME", ""),
@@ -192,11 +198,80 @@ def _is_placeholder(value: str) -> bool:
     exact_placeholders = {
         "your_bai_api_key_here", "your_anthropic_api_key_here", "your_groq_api_key_here",
         "your_opencode_api_key_here", "your_openrouter_api_key_here",
+        "your_mistral_api_key_here", "your_gemini_api_key_here",
         "you@gmail.com", "your full name", "xxxx xxxx xxxx xxxx",
         "xxxxxxxxxxxxxxxx", "./my_cv.pdf", "my_cv.pdf",
         "companies.xlsx", "./companies.xlsx",
     }
     return lowered.strip("\"'") in exact_placeholders or compact.strip("\"'") in exact_placeholders
+
+
+# ---------------------------------------------------------------------------
+# Per-page-load work, cached
+# ---------------------------------------------------------------------------
+# The tracker and Settings pages render _setup_state() on every load. Two parts
+# of it were expensive for values that almost never change, which is what
+# made moving between pages feel slow:
+#   - the companies row count streamed the entire spreadsheet (22k rows), and
+#   - the Google sign-in check called Google to refresh an expired token —
+#     and when the refresh can't succeed (a Testing-mode token past its 7
+#     days), it failed over the network again on every single page load.
+# Both are now keyed on the underlying file, so they recompute the moment it
+# actually changes and otherwise cost a stat() call.
+
+_OAUTH_STATUS_TTL = 120  # seconds
+_oauth_cache = {"key": None, "at": 0.0, "value": None}
+_rows_cache: dict = {}
+_area_labels_cache = {"key": None, "value": {}}
+
+
+def _file_key(path) -> tuple | None:
+    """Identity of a file's current contents, cheap enough to check per request."""
+    try:
+        stat = Path(path).stat()
+    except (OSError, TypeError):
+        return None
+    return (str(path), stat.st_size, stat.st_mtime_ns)
+
+
+def _oauth_status() -> tuple:
+    """(configured, connected, email, expired) for Google sign-in.
+
+    Cached on token.json's identity plus a short TTL. A successful refresh, a
+    new sign-in and a disconnect all rewrite or delete token.json, so each is
+    picked up on the very next load. The TTL only bounds how often an
+    expired-and-unrefreshable token is retried against Google."""
+    import time
+    try:
+        from google_auth_helper import (
+            TOKEN_PATH, get_authorized_email, get_credentials, oauth_is_configured,
+            token_exists,
+        )
+    except ImportError:
+        return False, False, "", False
+
+    key = (_file_key(TOKEN_PATH), oauth_is_configured())
+    now = time.monotonic()
+    if _oauth_cache["key"] == key and now - _oauth_cache["at"] < _OAUTH_STATUS_TTL:
+        return _oauth_cache["value"]
+
+    configured, connected, email, expired = key[1], False, "", False
+    if token_exists():
+        if get_credentials() is not None:
+            connected, email = True, get_authorized_email() or ""
+        else:
+            # Testing-mode tokens die after 7 days; say so instead of silently
+            # falling back to "not connected".
+            expired = True
+    value = (configured, connected, email, expired)
+    # A refresh inside get_credentials() rewrites token.json, so store the key
+    # as it stands AFTER the check, or the next load would redo it for nothing.
+    _oauth_cache.update(key=(_file_key(TOKEN_PATH), configured), at=now, value=value)
+    return value
+
+
+def _invalidate_oauth_status():
+    _oauth_cache.update(key=None, value=None)
 
 
 def _setup_state():
@@ -216,25 +291,9 @@ def _setup_state():
     has_api_key = bool(ai_key) and not _is_placeholder(ai_key)
     has_profile = bool(your_name) and bool(target_role) and not _is_placeholder(your_name)
 
-    # OAuth status
-    oauth_connected = False
-    oauth_email = ""
-    oauth_configured = False
-    oauth_expired = False
-    try:
-        from google_auth_helper import (
-            token_exists, get_credentials, get_authorized_email, oauth_is_configured
-        )
-        oauth_configured = oauth_is_configured()
-        if token_exists() and get_credentials() is not None:
-            oauth_connected = True
-            oauth_email = get_authorized_email() or gmail_address
-        elif token_exists():
-            # Testing-mode tokens die after 7 days; say so instead of silently
-            # falling back to "not connected".
-            oauth_expired = True
-    except ImportError:
-        pass
+    oauth_configured, oauth_connected, oauth_email, oauth_expired = _oauth_status()
+    if oauth_connected and not oauth_email:
+        oauth_email = gmail_address
 
     # Gmail is "ready" if we have OAuth OR app-password credentials
     has_gmail_oauth = oauth_connected
@@ -258,6 +317,15 @@ def _setup_state():
         "min_delay": os.getenv("MIN_DELAY_SECONDS", "45"),
         "max_delay": os.getenv("MAX_DELAY_SECONDS", "120"),
         "max_per_day": os.getenv("MAX_EMAILS_PER_DAY", "20"),
+        # Tuning knobs that used to be .env-only — editable under
+        # Settings > Advanced so nobody has to hand-edit a dotfile.
+        "bounce_minutes": os.getenv("BOUNCE_CHECK_MINUTES", "30"),
+        "research_workers": os.getenv("RESEARCH_WORKERS", "3"),
+        "writer_workers": os.getenv("WRITER_WORKERS", "2"),
+        "ai_max_rpm": os.getenv("AI_MAX_RPM", "800"),
+        "ai_fallbacks": ", ".join(ai["fallbacks"]),
+        # Blank in the form means "same as the research model".
+        "ai_translation_model": (os.getenv("AI_TRANSLATION_MODEL", "") or "").strip(),
         "has_api_key": has_api_key,
         "has_gmail": has_gmail,
         "has_gmail_oauth": has_gmail_oauth,
@@ -284,7 +352,24 @@ def _setup_state():
 
 
 def _count_companies_rows(companies_path: Path) -> int:
-    """Best-effort row count for the setup banner. Never raises."""
+    """Best-effort row count for the setup banner. Never raises.
+
+    Counting streams the whole spreadsheet — seconds for a 22k-row file — and
+    this runs on every tracker and Settings load for a number that changes
+    only when a new file is uploaded. So it is cached on the file's size and
+    mtime: an upload is picked up immediately, anything else is a stat()."""
+    key = _file_key(companies_path)
+    if key is None:
+        return 0
+    if key in _rows_cache:
+        return _rows_cache[key]
+    count = _count_companies_rows_uncached(companies_path)
+    _rows_cache.clear()  # only the current file is ever worth remembering
+    _rows_cache[key] = count
+    return count
+
+
+def _count_companies_rows_uncached(companies_path: Path) -> int:
     try:
         suffix = companies_path.suffix.lower()
         if suffix in (".xlsx", ".xls"):
@@ -348,12 +433,38 @@ def _request_origin_ok() -> bool:
 @app.context_processor
 def _inject_area_labels():
     """Readable names for CV area ids ("soc_blue_team" -> "security operations
-    and threat detection") in every template, including the live-refresh rows."""
+    and threat detection") in every template, including the live-refresh rows.
+
+    Runs on every render — including each live-refresh tick — so the parsed
+    labels are kept until specializations.json itself changes."""
+    spec_path = ROOT_DIR / "specializations.json"
+    key = _file_key(spec_path)
+    if key is not None and key == _area_labels_cache["key"]:
+        return {"area_labels": _area_labels_cache["value"]}
     try:
-        spec = json.loads((ROOT_DIR / "specializations.json").read_text(encoding="utf-8"))
-        return {"area_labels": {area["id"]: area["label"] for area in spec.get("areas", [])}}
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        labels = {area["id"]: area["label"] for area in spec.get("areas", [])}
     except (OSError, ValueError, KeyError):
         return {"area_labels": {}}
+    _area_labels_cache.update(key=key, value=labels)
+    return {"area_labels": labels}
+
+
+@app.context_processor
+def _inject_asset_urls():
+    """asset('style.css') -> /static/style.css?v=<mtime>.
+
+    Static files are served with a one-year cache (below), so moving between
+    pages no longer re-requests the stylesheet and scripts every time. The
+    version stamp is the file's mtime, so an edited file gets a new URL and is
+    fetched fresh — long caching without ever serving a stale stylesheet."""
+    def asset(filename: str) -> str:
+        try:
+            version = int((Path(app.static_folder) / filename).stat().st_mtime)
+        except OSError:
+            version = 0
+        return url_for("static", filename=filename, v=version)
+    return {"asset": asset}
 
 
 @app.before_request
@@ -384,6 +495,7 @@ def _decorate_rows(applications: list) -> list:
             msg = msg.removeprefix("Not delivered — ")
         a["error_short"] = (msg[:80] + "…") if len(msg) > 80 else msg
         a["sendable"] = bool(a["status"] in db.SENDABLE_STATUSES and a.get("subject"))
+        a["favorite"] = bool(a.get("favorite"))
         # "09-27 20:22" — the year is always the current one and just crowded
         # the column until the whole timestamp truncated to "202…".
         a["updated_short"] = (a["updated_at"][5:16].replace("T", " ")
@@ -410,13 +522,17 @@ def _table_context(page: int, status_param: str, search_param: str, limit: int =
     """Shared table/stat payload for both the full page render and the JSON
     refresh endpoint, so the live-updating view can never drift from the
     server-rendered one."""
-    statuses = FILTER_GROUPS.get(status_param) if status_param else None
+    # "favorites" is a filter on the star, not a status.
+    favorite_only = status_param == "favorites"
+    statuses = FILTER_GROUPS.get(status_param) if status_param and not favorite_only else None
     applications, table_total = db.get_applications_paginated(
-        status=status_param if not statuses else None,
+        status=status_param if not statuses and not favorite_only else None,
         statuses=list(statuses) if statuses else None,
-        search=search_param, page=page, limit=limit,
+        search=search_param, page=page, limit=limit, favorite_only=favorite_only,
     )
     grouped = db.get_grouped_stats()
+    favorites = db.count_favorites()
+    grouped["favorites"] = favorites["total"]
     sent_today = db.count_sent_today()
     max_per_day = int(os.getenv("MAX_EMAILS_PER_DAY", 20))
     return {
@@ -440,6 +556,8 @@ def _table_context(page: int, status_param: str, search_param: str, limit: int =
         "cap_remaining": max(0, max_per_day - sent_today),
         "in_progress_count": sum(grouped["by_status"].get(s, 0) for s in IN_PROGRESS_STATUSES),
         "pending_prep": db.count_needing_preparation(),
+        "favorites_total": favorites["total"],
+        "favorites_sendable": favorites["sendable"],
         "filter_status": status_param or "",
         "filter_q": search_param or "",
     }
@@ -503,7 +621,10 @@ def api_overview():
         "bounced_count": context["bounced_count"],
         "failed_count": context["failed_count"],
         "bounce_check": context["bounce_check"],
+        "favorites_total": context["favorites_total"],
+        "favorites_sendable": context["favorites_sendable"],
         "running": run_state["running"],
+        "stop_requested": run_state["stop_requested"],
         "log_tail": run_state["log_tail"],
     })
 
@@ -534,6 +655,34 @@ def api_skip(app_id):
     db.update_application(app_id, status="skipped", error_message=None)
     db.log_event(app_id, "skip", "Skipped from dashboard.")
     return jsonify({"ok": True, "status": "skipped", "message": "Company skipped."})
+
+
+@app.post("/api/favorite")
+def api_favorite():
+    """Star or unstar one or many companies: {"app_ids": [..], "favorite": bool}."""
+    payload = request.get_json(silent=True) or {}
+    raw_ids = payload.get("app_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify({"ok": False, "message": "No companies given."}), 400
+    try:
+        app_ids = [int(i) for i in raw_ids]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Invalid company id."}), 400
+    favorite = bool(payload.get("favorite", True))
+    changed = db.set_favorite(app_ids, favorite)
+    counts = db.count_favorites()
+    return jsonify({"ok": True, "favorite": favorite, "changed": changed,
+                    "favorites_total": counts["total"],
+                    "favorites_sendable": counts["sendable"]})
+
+
+@app.get("/api/favorites/sendable")
+def api_sendable_favorites():
+    """Every starred company with a draft that can go out now — across all
+    pages, so "send favorites" isn't limited to the 50 rows on screen."""
+    rows = db.get_sendable_favorites()
+    return jsonify({"ok": True, "recipients": [
+        {"id": r["id"], "company": r["company_name"], "email": r["email"]} for r in rows]})
 
 
 @app.post("/api/regenerate/<int:app_id>")
@@ -580,6 +729,30 @@ def api_regenerate(app_id):
                  detail=draft)
     return jsonify({"ok": True, "subject": draft["subject"], "body": draft["body"],
                     "message": "Draft rebuilt."})
+
+
+def _setup_return_url() -> str:
+    """Where to land after a /setup POST. The settings form posts a hidden
+    `return_to`; anything unexpected falls back to the tracker, so this can
+    never be turned into an open redirect."""
+    if (request.form.get("return_to") or "").strip() == "settings":
+        return url_for("settings_page")
+    return url_for("index")
+
+
+@app.get("/settings")
+def settings_page():
+    """Every knob in one place, grouped into sections — the tracker page
+    stays about companies, not configuration."""
+    load_dotenv(ENV_PATH, override=True)
+    return render_template(
+        "settings.html",
+        setup=_setup_state(),
+        pool=_pool_rows(),
+        oauth_redirect_uri=_oauth_redirect_uri(),
+        bounce_check=_bounce_check_state(),
+        providers=PROVIDERS,
+    )
 
 
 @app.post("/setup")
@@ -630,10 +803,23 @@ def setup():
         ("MIN_DELAY_SECONDS", "min_delay", 0),
         ("MAX_DELAY_SECONDS", "max_delay", 0),
         ("MAX_EMAILS_PER_DAY", "max_per_day", 1),
+        ("BOUNCE_CHECK_MINUTES", "bounce_minutes", 0),
+        ("RESEARCH_WORKERS", "research_workers", 1),
+        ("WRITER_WORKERS", "writer_workers", 1),
+        ("AI_MAX_RPM", "ai_max_rpm", 1),
     ):
         raw = (request.form.get(form_name, "") or "").strip()
         if raw.isdigit() and int(raw) >= minimum:
             pacing_fields[key] = raw
+
+    # Fallback models are only meaningful for the provider they belong to, so
+    # a blank box means "use this provider's presets", not "no fallbacks".
+    if "ai_fallbacks" in request.form:
+        ai_fields["AI_FALLBACK_MODELS"] = ",".join(
+            m.strip() for m in (request.form.get("ai_fallbacks") or "").split(",") if m.strip())
+    # Blank is meaningful here too: it puts translation back on the research model.
+    if "ai_translation_model" in request.form:
+        ai_fields["AI_TRANSLATION_MODEL"] = (request.form.get("ai_translation_model") or "").strip()
 
     effective = resolve_ai_settings({**os.environ, **ai_fields})
     missing = [label for label, value in (
@@ -645,7 +831,7 @@ def setup():
     ) if not value]
     if missing:
         flash(f"Add every field before saving. Missing: {', '.join(missing)}.", "error")
-        return redirect(url_for("index"))
+        return redirect(_setup_return_url())
 
     companies = request.files.get("companies_file")
     cv = request.files.get("cv_file")
@@ -657,13 +843,13 @@ def setup():
         cv = None
     if companies and not companies.filename.lower().endswith((".csv", ".xlsx", ".xls")):
         flash("Upload a CSV or Excel companies file.", "error")
-        return redirect(url_for("index"))
+        return redirect(_setup_return_url())
     if cv and not cv.filename.lower().endswith((".pdf", ".doc", ".docx")):
         flash("Upload a PDF or Word CV file.", "error")
-        return redirect(url_for("index"))
+        return redirect(_setup_return_url())
     if not companies and (existing_companies is None or not existing_companies.is_file()):
         flash("Upload a CSV or Excel companies file.", "error")
-        return redirect(url_for("index"))
+        return redirect(_setup_return_url())
 
     companies_path = existing_companies
     cv_path = existing_cv
@@ -680,10 +866,10 @@ def setup():
     ok, message, companies_rows = _validate_companies_file(companies_path)
     if not ok:
         flash(f"Companies file problem: {message}", "error")
-        return redirect(url_for("index"))
+        return redirect(_setup_return_url())
     if cv and (not cv_path.is_file() or cv_path.stat().st_size == 0):
         flash("CV file is empty or unreadable — please re-upload it.", "error")
-        return redirect(url_for("index"))
+        return redirect(_setup_return_url())
 
     env_updates = {**ai_fields, **profile_fields, **optional_fields, **pacing_fields,
                     "COMPANIES_FILE_PATH": str(companies_path)}
@@ -693,9 +879,9 @@ def setup():
     load_dotenv(ENV_PATH, override=True)
 
     cv_note = f"CV attached as {cv_path.name}" if cv_path else "no CV yet — add one before sending"
-    flash(f"Workspace saved — {companies_rows} usable email(s) in {companies_path.name}, "
-          f"{cv_note}. You can start preparation below.", "success")
-    return redirect(url_for("index"))
+    flash(f"Settings saved — {companies_rows} usable email(s) in {companies_path.name}, "
+          f"{cv_note}.", "success")
+    return redirect(_setup_return_url())
 
 
 def _check_gmail_credentials(gmail_address: str, gmail_app_password: str) -> tuple[bool, str]:
@@ -759,7 +945,7 @@ def validate_gmail():
     password = request.form.get("gmail_app_password", "").strip() or os.getenv("GMAIL_APP_PASSWORD", "")
     ok, message = _check_gmail_credentials(address, password)
     flash(("Gmail OK — " if ok else "Gmail check failed — ") + message, "success" if ok else "error")
-    return redirect(url_for("index"))
+    return _to_gmail_settings()
 
 
 @app.post("/api/validate-gmail")
@@ -784,6 +970,13 @@ def api_validate_gmail():
 os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
 OAUTH_HOST = "127.0.0.1"
+
+
+def _to_gmail_settings():
+    """Where every Gmail/OAuth outcome lands. The Gmail controls live on the
+    Settings page now, so sending these back to the tracker showed the result
+    on a page with nothing to act on."""
+    return redirect(url_for("settings_page") + "#s-gmail")
 
 
 def _oauth_redirect_uri() -> str:
@@ -822,7 +1015,7 @@ def oauth_start():
     from google_auth_helper import oauth_is_configured
     if not oauth_is_configured():
         flash("Upload your Google OAuth client file first (Gmail account → Set up Google sign-in).", "error")
-        return redirect(url_for("index"))
+        return _to_gmail_settings()
     # The session cookie holding the state and PKCE verifier belongs to the
     # host it was set on; start on the same host Google will redirect back to.
     if request.host.split(":")[0] != OAUTH_HOST:
@@ -831,10 +1024,10 @@ def oauth_start():
         flow = _get_oauth_flow()
     except (ValueError, KeyError) as exc:
         flash(f"The Google OAuth client file is invalid ({exc}) — upload it again.", "error")
-        return redirect(url_for("index"))
+        return _to_gmail_settings()
     if not flow:
         flash("Could not build OAuth flow — credentials file may be invalid.", "error")
-        return redirect(url_for("index"))
+        return _to_gmail_settings()
     state = secrets.token_urlsafe(16)
     session["oauth_state"] = state
     params = {"access_type": "offline", "prompt": "consent", "state": state}
@@ -860,14 +1053,14 @@ def oauth_callback():
         hint = (" — if the app is in Testing mode, add your address as a test user on the "
                 "OAuth consent screen." if error == "access_denied" else "")
         flash(f"Google authorisation was denied: {error}{hint}", "error")
-        return redirect(url_for("index"))
+        return _to_gmail_settings()
 
     # State check (CSRF protection)
     state = request.args.get("state", "")
     code_verifier = session.pop("oauth_code_verifier", None)
     if not state or state != session.pop("oauth_state", None):
         flash("OAuth state mismatch — please try connecting again.", "error")
-        return redirect(url_for("index"))
+        return _to_gmail_settings()
 
     try:
         flow = _get_oauth_flow(code_verifier=code_verifier)
@@ -877,7 +1070,7 @@ def oauth_callback():
         if "https://www.googleapis.com/auth/gmail.send" in missing:
             flash("Google connected, but the “Send email on your behalf” permission was left "
                   "unticked — connect again and tick every box.", "error")
-            return redirect(url_for("index"))
+            return _to_gmail_settings()
         revoke_token()   # drop any previous account's token (and its stored email)
         _save_credentials(creds)
         email = get_oauth_email_address(creds)
@@ -896,7 +1089,8 @@ def oauth_callback():
         if "redirect_uri_mismatch" in text:
             text = f"redirect URI mismatch — add {_oauth_redirect_uri()} to the OAuth client's authorised redirect URIs"
         flash(f"Connecting Google failed: {text}", "error")
-    return redirect(url_for("index"))
+    _invalidate_oauth_status()
+    return _to_gmail_settings()
 
 
 @app.post("/oauth/client-secret")
@@ -906,15 +1100,16 @@ def oauth_client_secret():
     upload = request.files.get("client_secret")
     if not upload or not upload.filename:
         flash("Choose the OAuth client JSON file first.", "error")
-        return redirect(url_for("index"))
+        return _to_gmail_settings()
     raw = upload.read(64 * 1024)
     ok, detail = validate_client_secret(raw)
     if not ok:
         flash(detail, "error")
-        return redirect(url_for("index"))
+        return _to_gmail_settings()
     save_client_secret(raw)
+    _invalidate_oauth_status()
     flash("✓ Google OAuth client saved — now click “Sign in with Google”.", "success")
-    return redirect(url_for("index"))
+    return _to_gmail_settings()
 
 
 @app.post("/oauth/disconnect")
@@ -922,8 +1117,9 @@ def oauth_disconnect():
     """Delete token.json — user must re-authorise to use OAuth again."""
     from google_auth_helper import revoke_token
     revoke_token()
+    _invalidate_oauth_status()
     flash("Google account disconnected. You can reconnect any time or use an App Password instead.", "success")
-    return redirect(url_for("index"))
+    return _to_gmail_settings()
 
 
 @app.get("/api/gmail-status")
@@ -1009,6 +1205,77 @@ def api_validate_ai():
     return jsonify({"ok": True, "message": f"Works — {ai['label']} answered with model '{ai['model']}'."})
 
 
+def _pool_rows() -> list:
+    """The model pool as Settings shows it — built from .env, no network."""
+    from model_router import build_router
+    rows = []
+    for row in build_router().snapshot():
+        row["roles"] = ", ".join(f"{task} (tier {tier})" if tier else f"{task} (preferred)"
+                                 for task, tier in sorted(row["tiers"].items()))
+        rows.append(row)
+    return rows
+
+
+def _probe_deployment(d) -> dict:
+    """One tiny live request to a pooled model, reported in plain words."""
+    import time as _time
+    from ai_client import AIProviderError
+    started = _time.perf_counter()
+    try:
+        # Room for a reasoning model (gpt-oss) to think before it answers: at
+        # 16 tokens it spent the whole allowance reasoning and replied empty.
+        d.client.messages.create(
+            model=d.model, max_tokens=200, system="Reply with one word.",
+            messages=[{"role": "user", "content": "Say ok"}], max_attempts=1,
+            temperature=0.0, reasoning_effort="low" if d.reasoning else None,
+        )
+        return {"state": "ok",
+                "detail": f"Answered in {(_time.perf_counter() - started) * 1000:.0f} ms."}
+    except AIProviderError as error:
+        headers = error.headers or {}
+        if error.kind == "bad_response":
+            # A 200 proves the key and model work; only this probe's reply was odd.
+            return {"state": "ok", "detail": "Reachable (the probe's short reply came back empty)."}
+        if str(headers.get("x-ratelimit-limit-req-minute")) == "0":
+            return {"state": "inactive", "detail": "The account's plan allows 0 requests a minute. "
+                                                   "Activate a plan in the provider's console."}
+        if error.kind == "auth" and error.status == 401:
+            return {"state": "bad_key", "detail": "The API key was rejected."}
+        if error.kind == "auth":
+            return {"state": "unavailable", "detail": "Not available on this key's plan."}
+        if error.kind == "not_found":
+            return {"state": "unavailable", "detail": "This provider doesn't serve that model."}
+        if error.kind == "rate_limit":
+            return {"state": "busy", "detail": "Rate-limited right now; it's used again as soon "
+                                               "as it frees up."}
+        return {"state": "error", "detail": str(error)[:160]}
+    except Exception as error:  # a probe must never break the page
+        return {"state": "error", "detail": str(error)[:160]}
+
+
+@app.post("/api/ai-health")
+def api_ai_health():
+    """Probe every model in the pool at once. Costs one request per model, so
+    it runs only when asked — never on page load."""
+    from concurrent.futures import ThreadPoolExecutor
+    from model_router import build_router
+    load_dotenv(ENV_PATH, override=True)
+    router = build_router()
+    if not router.deployments:
+        return jsonify({"ok": False, "rows": [],
+                        "message": "No AI provider has a key yet. Add one above."})
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(_probe_deployment, router.deployments))
+    rows = [{"name": d.name, "tiers": d.tiers, **result}
+            for d, result in zip(router.deployments, results)]
+    working = lambda task: [r["name"] for r in rows  # noqa: E731
+                            if task in r["tiers"] and r["state"] in ("ok", "busy")]
+    gaps = [task for task in ("research", "translation") if not working(task)]
+    message = ("Every task has at least one working model." if not gaps else
+               f"No working model for: {', '.join(gaps)}. Fix a key or plan above.")
+    return jsonify({"ok": not gaps, "rows": rows, "message": message})
+
+
 @app.post("/run")
 def run_pipeline():
     global run_process
@@ -1029,9 +1296,15 @@ def run_pipeline():
         command.extend(["--limit", batch_limit])
     with RUN_LOG_PATH.open("a", encoding="utf-8") as log_file:
         log_file.write("\n--- Dashboard preparation run ---\n")
-        run_process = subprocess.Popen(command, cwd=ROOT_DIR, stdout=log_file,
-                           stderr=subprocess.STDOUT,
-                           env={**os.environ, "PIPELINE_STOP_FILE": str(STOP_FILE)})
+        run_process = subprocess.Popen(
+            command, cwd=ROOT_DIR, stdout=log_file, stderr=subprocess.STDOUT,
+            env={**os.environ, "PIPELINE_STOP_FILE": str(STOP_FILE),
+                 # Written to a file, Python buffers output in 8 KB blocks, so
+                 # the Activity log sat empty for most of a run.
+                 "PYTHONUNBUFFERED": "1",
+                 # The log is read as UTF-8; the child otherwise writes the
+                 # Windows code page and every "—" arrived as "�".
+                 "PYTHONIOENCODING": "utf-8"})
     flash("Preparation engine started. Emails appear here as ready — select and send when you're happy.", "success")
     return redirect(url_for("index"))
 
@@ -1102,6 +1375,60 @@ def edit_email(app_id):
     return redirect(url_for("company_detail", app_id=app_id))
 
 
+# Raw provider errors ("AI provider error 401: {"error":{"code":"",...") mean
+# nothing at a glance, so the timeline states the cause in plain words and
+# keeps the raw text one click away under "details".
+_ERROR_EXPLANATIONS = [
+    ("charmap", "Couldn't print a character in the company name to the console."),
+    ("codec can't encode", "Couldn't print a character in the company name to the console."),
+    ("invalid api_key", "The AI provider rejected the API key."),
+    (" 401", "The AI provider rejected the API key."),
+    (" 403", "The AI provider refused the request (403)."),
+    (" 429", "The AI provider's rate limit was hit."),
+    ("rate limit", "The AI provider's rate limit was hit."),
+    ("invalid json", "The AI returned an answer that wasn't usable."),
+    ("empty message content", "The AI returned an empty answer."),
+    ("empty response body", "The AI returned an empty answer."),
+    ("cannot schedule new futures", "The run was stopped before this step could start."),
+    ("unreachable", "Couldn't reach the AI provider."),
+]
+_FAILURE_MESSAGES = {"Writer agent failed", "Research stage crashed"}
+
+
+def _event_error_summary(event: dict) -> str:
+    """A one-line, plain-language reason for a failed event, or "" if it
+    didn't fail."""
+    detail = event.get("detail_parsed")
+    error = detail.get("error") if isinstance(detail, dict) else None
+    if not error and event.get("message") not in _FAILURE_MESSAGES:
+        return ""
+    text = str(error or "").lower()
+    for needle, explanation in _ERROR_EXPLANATIONS:
+        if needle in text:
+            return explanation
+    return (str(error)[:140] + "…") if error and len(str(error)) > 140 else (str(error) or "Failed.")
+
+
+def _starts_attempt(event: dict) -> bool:
+    message = event.get("message") or ""
+    return message.startswith(("Scraping and analyzing", "Re-researched"))
+
+
+def _split_superseded_events(events: list) -> tuple[list, list]:
+    """(earlier, current). "Current" starts at the most recent research
+    attempt that went on to produce a draft; everything before it has been
+    superseded by that draft. Months of retries against a dead API key used to
+    fill the page with "Writer agent failed" above a perfectly good email."""
+    produced_draft = [i for i, e in enumerate(events)
+                      if e["stage"] == "write" and not e["error_summary"]]
+    if not produced_draft:
+        return [], events
+    starts = [i for i, e in enumerate(events) if _starts_attempt(e) and i <= produced_draft[-1]]
+    if not starts or starts[-1] == 0:
+        return [], events
+    return events[:starts[-1]], events[starts[-1]:]
+
+
 @app.route("/company/<int:app_id>")
 def company_detail(app_id):
     db.init_db()
@@ -1118,6 +1445,8 @@ def company_detail(app_id):
                 e["detail_parsed"] = None
         else:
             e["detail_parsed"] = None
+        e["error_summary"] = _event_error_summary(e)
+    earlier_events, current_events = _split_superseded_events(events)
 
     try:
         talking_points = json.loads(application["talking_points"] or "[]")
@@ -1149,6 +1478,9 @@ def company_detail(app_id):
         "detail.html",
         application=application,
         events=events,
+        earlier_events=earlier_events,
+        current_events=current_events,
+        earlier_failed=sum(1 for e in earlier_events if e["error_summary"]),
         talking_points=talking_points,
         matched_extras=matched_extras,
         match_reasons=match_reasons,
@@ -1287,12 +1619,28 @@ def api_update_draft():
     import cache_store
     cache_store.save_draft(app["email"], {"subject": subject, "body": body})
 
-    return jsonify({"ok": True, "message": "Draft saved."})
+    # The new status matters to the caller: saving an edit on a failed draft
+    # moves it back to "ready", which changes the status pill and whether the
+    # Send button belongs on the page.
+    return jsonify({"ok": True, "message": "Draft saved.", "status": "ready",
+                    "previous_status": app["status"]})
+
+
+def _warm_caches():
+    """Pay the one-off costs (streaming the companies spreadsheet, checking
+    the Google token) in the background at startup, so the first page you
+    open isn't the slow one."""
+    try:
+        _setup_state()
+    except Exception:  # a cold cache is only slower, never wrong
+        pass
 
 
 if __name__ == "__main__":
     db.init_db()
     sender_worker.ensure_running()
+    import threading
+    threading.Thread(target=_warm_caches, daemon=True, name="warm-caches").start()
     print("Dashboard running at http://127.0.0.1:5050")
     print("Background sender worker started.")
     app.run(host="127.0.0.1", port=5050, debug=False)

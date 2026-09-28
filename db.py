@@ -113,6 +113,13 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_applications_status ON applications (status);
     CREATE INDEX IF NOT EXISTS idx_applications_updated_at ON applications (updated_at);
     CREATE INDEX IF NOT EXISTS idx_send_job_items_job_status ON send_job_items (job_id, status);
+    -- Every company page loads that company's timeline. Without this it is a
+    -- full scan of the events table, which grows by several rows per company
+    -- per run — thousands now, tens of thousands across the whole list.
+    CREATE INDEX IF NOT EXISTS idx_events_application ON events (application_id, timestamp);
+    -- count_sent_today() / count_sent_since() filter on sent_at on every
+    -- tracker load and live-refresh tick.
+    CREATE INDEX IF NOT EXISTS idx_applications_sent_at ON applications (sent_at);
 
     -- Small key/value store for app state that isn't per-company, such as
     -- when the inbox was last scanned for bounce notifications.
@@ -135,10 +142,15 @@ def init_db():
         ("company_hook", "TEXT"),
         ("hook_evidence", "TEXT"),
         ("hook_status", "TEXT"),
+        ("hook_original", "TEXT"),
+        ("favorite", "INTEGER NOT NULL DEFAULT 0"),
     ]:
         if col_name not in existing_cols:
             conn.execute(f"ALTER TABLE applications ADD COLUMN {col_name} {col_def}")
             conn.commit()
+    # After the migration above: on an older database the column only exists
+    # from here on, so this index can't live in the CREATE script.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_applications_favorite ON applications (favorite)")
 
     # One-time status renames for the review-and-send architecture
     conn.execute("UPDATE applications SET status = 'ready' WHERE status = 'drafted'")
@@ -189,6 +201,19 @@ def get_or_create_application(company_name: str, email: str, website: str, conta
     app_id = cur.lastrowid
     conn.close()
     return app_id
+
+
+def get_applications_by_email() -> dict:
+    """Every application keyed by its exact email, in one query.
+
+    Deciding which spreadsheet rows still need work used to call
+    get_application_by_email() once per row — 21,860 queries, each on a new
+    connection — which held a run for 2 m 41 s before the first company was
+    researched. Same exact-match semantics, one round trip."""
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM applications").fetchall()
+    conn.close()
+    return {row["email"]: dict(row) for row in rows}
 
 
 def get_application_by_email(email: str):
@@ -317,11 +342,16 @@ def count_sent_today() -> int:
     # doesn't change if a message we sent this morning is later found to
     # have bounced (status becomes 'bounced', sent_at is untouched) — it
     # still counts against today's quota either way.
-    today_prefix = datetime.now(timezone.utc).date().isoformat()
+    #
+    # A half-open range rather than LIKE 'YYYY-MM-DD%': the two match exactly
+    # the same ISO-8601 timestamps, but SQLite only serves LIKE from an index
+    # under a case-insensitive collation, while a range uses
+    # idx_applications_sent_at directly.
+    today = datetime.now(timezone.utc).date()
     conn = get_connection()
     row = conn.execute(
-        "SELECT COUNT(*) as c FROM applications WHERE sent_at LIKE ?",
-        (f"{today_prefix}%",),
+        "SELECT COUNT(*) as c FROM applications WHERE sent_at >= ? AND sent_at < ?",
+        (today.isoformat(), (today + timedelta(days=1)).isoformat()),
     ).fetchone()
     conn.close()
     return row["c"]
@@ -350,19 +380,68 @@ def get_adjacent_application_id(app_id: int, direction: str = "next") -> int | N
     return row["id"] if row else None
 
 
+def set_favorite(app_ids: list, favorite: bool) -> int:
+    """Star or unstar companies. Returns how many rows were changed.
+
+    Deliberately leaves updated_at alone: the table is ordered by it, and
+    starring a company isn't a change to the company — bumping it would make
+    rows jump around as you star down the list."""
+    ids = [int(i) for i in app_ids]
+    if not ids:
+        return 0
+    conn = get_connection()
+    cur = conn.execute(
+        f"UPDATE applications SET favorite = ? WHERE id IN ({','.join('?' * len(ids))})",
+        [1 if favorite else 0, *ids],
+    )
+    conn.commit()
+    conn.close()
+    return cur.rowcount
+
+
+def count_favorites() -> dict:
+    """{"total": starred companies, "sendable": those with a draft ready to send}."""
+    conn = get_connection()
+    total = conn.execute("SELECT COUNT(*) FROM applications WHERE favorite = 1").fetchone()[0]
+    sendable = conn.execute(
+        f"SELECT COUNT(*) FROM applications WHERE favorite = 1 "
+        f"AND status IN ({','.join('?' * len(SENDABLE_STATUSES))}) "
+        f"AND subject IS NOT NULL AND subject != ''",
+        tuple(SENDABLE_STATUSES),
+    ).fetchone()[0]
+    conn.close()
+    return {"total": total, "sendable": sendable}
+
+
+def get_sendable_favorites() -> list:
+    """Starred companies whose draft can be sent now, oldest star first."""
+    conn = get_connection()
+    rows = conn.execute(
+        f"SELECT id, company_name, email FROM applications WHERE favorite = 1 "
+        f"AND status IN ({','.join('?' * len(SENDABLE_STATUSES))}) "
+        f"AND subject IS NOT NULL AND subject != '' ORDER BY id",
+        tuple(SENDABLE_STATUSES),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_applications_paginated(status: str = None, statuses: list = None,
                                 search: str = None,
-                                page: int = 1, limit: int = 50) -> tuple[list, int]:
+                                page: int = 1, limit: int = 50,
+                                favorite_only: bool = False) -> tuple[list, int]:
     """Returns (rows, total_count) with pagination and optional filters.
 
     `status` matches one exact status; `statuses` matches any of several (used
     by the dashboard's grouped funnel/tab filters, e.g. "problems" covering
-    failed + retry_wait + bounced).
+    failed + retry_wait + bounced). `favorite_only` limits to starred rows.
     """
     conn = get_connection()
     conditions = []
     params = []
 
+    if favorite_only:
+        conditions.append("favorite = 1")
     if statuses:
         conditions.append(f"status IN ({','.join('?' * len(statuses))})")
         params.extend(statuses)
@@ -545,6 +624,7 @@ def research_context_from_application(app: dict) -> dict | None:
         "mission_or_focus": app.get("mission_or_focus") or "",
         "tone_of_voice": app.get("tone_of_voice") or "unknown",
         "company_hook": hook,
+        "hook_original": app.get("hook_original") or "",
         "hook_evidence": app.get("hook_evidence") or "",
         "hook_status": app.get("hook_status"),
         "areas": areas,

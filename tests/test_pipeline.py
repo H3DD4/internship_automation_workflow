@@ -15,7 +15,7 @@ def _pipeline():
     import json
     from pathlib import Path
     cfg = {
-        "spec": json.loads((Path(__file__).parent.parent / "specializations.json").read_text()),
+        "spec": json.loads((Path(__file__).parent.parent / "specializations.json").read_text(encoding="utf-8")),
         "applicant_name": "Me",
         "target_role": "Intern",
     }

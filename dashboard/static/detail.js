@@ -32,10 +32,39 @@
     });
   });
 
-  // ── Live word count + preview sync while editing ──────────────────────────
+  // ── Editing: live preview, word count, and saving in place ────────────────
   const bodyField = $("body");
   const subjectField = $("subject");
   const wordCountEl = $("word-count");
+  const editor = $("email-editor");
+  const saveBtn = $("save-draft-btn");
+  const revertBtn = $("revert-draft-btn");
+  const saveState = $("save-state");
+  const previewDirty = $("preview-dirty");
+
+  // What is currently stored server-side. Updated on every successful save, so
+  // "dirty" always means "differs from the saved draft" rather than "differs
+  // from whatever the page loaded with".
+  let saved = {
+    subject: subjectField ? subjectField.value : "",
+    body: bodyField ? bodyField.value : "",
+  };
+
+  const current = () => ({
+    subject: subjectField ? subjectField.value : "",
+    body: bodyField ? bodyField.value : "",
+  });
+  const isDirty = () => {
+    const now = current();
+    return now.subject !== saved.subject || now.body !== saved.body;
+  };
+
+  function setSaveState(text, kind) {
+    if (!saveState) return;
+    saveState.textContent = text;
+    saveState.className = "save-state" + (kind ? ` save-state--${kind}` : "");
+  }
+
   function syncFromEditor() {
     if (bodyField) {
       const words = bodyField.value.trim().split(/\s+/).filter(Boolean).length;
@@ -50,9 +79,75 @@
       const previewSubject = $("preview-subject");
       if (previewSubject) previewSubject.textContent = subjectField.value || "—";
     }
+    const dirty = isDirty();
+    if (previewDirty) previewDirty.hidden = !dirty;
+    if (revertBtn) revertBtn.hidden = !dirty;
+    if (dirty) setSaveState("Unsaved changes", "dirty");
+    else setSaveState("");
   }
   if (bodyField) bodyField.addEventListener("input", syncFromEditor);
   if (subjectField) subjectField.addEventListener("input", syncFromEditor);
+
+  async function saveDraft() {
+    if (!editor || !saveBtn) return;
+    const payload = current();
+    if (!payload.subject.trim() || !payload.body.trim()) {
+      setSaveState("Subject and message can't be empty", "bad");
+      return;
+    }
+    saveBtn.disabled = true;
+    setSaveState("Saving…");
+    try {
+      const data = await postJSON("/api/update-draft", {
+        app_id: parseInt(editor.dataset.appId, 10),
+        subject: payload.subject,
+        body: payload.body,
+      });
+      if (!data.ok) {
+        setSaveState(`✗ ${data.message}`, "bad");
+        return;
+      }
+      saved = payload;
+      syncFromEditor();
+      setSaveState("Saved ✓", "ok");
+      // Saving an edit also moves a failed draft back to "ready", so the
+      // status pill and the Send button on this page would be stale.
+      if (data.status && data.status !== editor.dataset.status) {
+        setSaveState("Saved ✓ — refreshing", "ok");
+        setTimeout(() => window.location.reload(), 700);
+      }
+    } catch (err) {
+      setSaveState("✗ Could not reach the dashboard — your text is still here", "bad");
+    } finally {
+      saveBtn.disabled = false;
+    }
+  }
+
+  if (editor) {
+    editor.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveDraft();
+    });
+  }
+  if (revertBtn) {
+    revertBtn.addEventListener("click", () => {
+      if (subjectField) subjectField.value = saved.subject;
+      if (bodyField) bodyField.value = saved.body;
+      syncFromEditor();
+      setSaveState("Reverted to the saved draft", "ok");
+    });
+  }
+  document.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && editor) {
+      event.preventDefault();
+      saveDraft();
+    }
+  });
+  // Closing the tab mid-edit is the one way to lose work that no amount of
+  // in-page state would recover.
+  window.addEventListener("beforeunload", (event) => {
+    if (isDirty()) event.preventDefault();
+  });
 
   // ── Confirm modal ────────────────────────────────────────────────────────
   function confirmSend(company, email) {
@@ -65,6 +160,18 @@
     const li = document.createElement("li");
     li.textContent = `${company} · ${email}`;
     list.appendChild(li);
+
+    // The send job reads the stored draft, so anything typed and not saved is
+    // not what goes out. Warn instead of quietly sending the older text.
+    const warn = $("confirm-warn");
+    if (warn) {
+      const dirty = isDirty();
+      warn.hidden = !dirty;
+      warn.textContent = dirty
+        ? "You have unsaved edits. This sends the last SAVED version — cancel and save first if you meant to send your changes."
+        : "";
+    }
+
     modal.hidden = false;
     $("confirm-ok").focus();
 
@@ -152,6 +259,27 @@
       } finally {
         regenBtn.disabled = false;
         regenBtn.textContent = original;
+      }
+    });
+  }
+
+  // ── Favorite ─────────────────────────────────────────────────────────────
+  const favBtn = $("favorite-detail-btn");
+  if (favBtn) {
+    const paint = (on) => {
+      favBtn.classList.toggle("fav-toggle--on", on);
+      favBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      favBtn.textContent = on ? "★ Favorite" : "☆ Add to favorites";
+    };
+    favBtn.addEventListener("click", async () => {
+      const on = favBtn.getAttribute("aria-pressed") !== "true";
+      paint(on);
+      try {
+        const data = await postJSON("/api/favorite", { app_ids: [+favBtn.dataset.appId], favorite: on });
+        if (!data.ok) throw new Error(data.message);
+      } catch (err) {
+        paint(!on);
+        setResult(`✗ ${err.message}`, false);
       }
     });
   }

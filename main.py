@@ -31,11 +31,11 @@ from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
-from ai_client import CompatibleAIClient
+from model_router import build_router
 
 import db
 from utils import is_valid_email, extract_company_name, derive_website_from_email, \
-    _company_name_from_domain
+    _company_name_from_domain, make_console_encoding_safe
 from pipeline import Pipeline, needs_preparation
 
 from ai_client import resolve_ai_settings
@@ -102,13 +102,17 @@ def load_config():
         sys.exit(1)
 
     spec_path = Path(__file__).parent / "specializations.json"
-    with open(spec_path) as f:
+    # encoding is explicit: Windows defaults open() to cp1252, which silently
+    # turns every UTF-8 em-dash in the wording spec into "a<euro>..." mojibake
+    # and mails it out to the company exactly like that.
+    with open(spec_path, encoding="utf-8") as f:
         specializations = json.load(f)
 
     return {
         "ai_api_key": ai["api_key"],
         "ai_base_url": ai["base_url"],
         "ai_model": ai["model"],
+        "ai_translation_model": ai["translation_model"],
         "applicant_name": os.getenv("YOUR_NAME"),
         "target_role": os.getenv("YOUR_TARGET_ROLE"),
         "research_workers": int(os.getenv("RESEARCH_WORKERS", 3)),
@@ -210,6 +214,8 @@ def load_companies(path: str) -> pd.DataFrame:
 
 
 def main():
+    # Before anything prints a scraped company name (see the helper's docstring).
+    make_console_encoding_safe()
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None,
                         help="Prepare at most N companies that still need work (skips finished rows)")
@@ -229,7 +235,16 @@ def main():
 
     db.init_db()
     cfg = load_config()
-    client = CompatibleAIClient(cfg["ai_api_key"], cfg["ai_base_url"])
+    # Every provider with a key joins one pool; the router spreads calls across
+    # them and fails over when one is rate-limited, out of quota or down.
+    client = build_router()
+    print("AI model pool (tier 1 = best; lower tiers only when every tier-1 model is unavailable):")
+    for row in client.snapshot():
+        tiers = ", ".join(f"{task} t{tier}" for task, tier in sorted(row["tiers"].items()))
+        print(f"  {row['name']:<40} {tiers}")
+    if not client.deployments:
+        print("  (none — add an AI provider key in Settings)")
+    print()
 
     companies_path = args.companies or os.getenv("COMPANIES_FILE_PATH", "companies.xlsx")
     df = load_companies(companies_path)
@@ -243,8 +258,9 @@ def main():
     else:
         candidate_rows = []
         skipped_done = 0
+        known = db.get_applications_by_email()  # one query, not one per row
         for row in all_rows:
-            existing = db.get_application_by_email(row[1])
+            existing = known.get(row[1])
             if not needs_preparation(existing):
                 skipped_done += 1
                 continue

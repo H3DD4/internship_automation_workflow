@@ -154,7 +154,7 @@ def main():
     else:
         models = [configured]
 
-    spec = json.loads((ROOT / "specializations.json").read_text())
+    spec = json.loads((ROOT / "specializations.json").read_text(encoding="utf-8"))
     client = CompatibleAIClient(api_key, base_url, rate_limiter=RateLimiter(60))
     print(f"Researching {len(TEST_SITES)} test websites with each model "
           f"(the last one is an empty login page — the right answer there is 'nothing').\n")
