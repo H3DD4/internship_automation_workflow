@@ -7,7 +7,7 @@ send → bounce), including the AI's reasoning (matched extras + why).
 
 import sqlite3
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "applications.db"
@@ -113,6 +113,13 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_applications_status ON applications (status);
     CREATE INDEX IF NOT EXISTS idx_applications_updated_at ON applications (updated_at);
     CREATE INDEX IF NOT EXISTS idx_send_job_items_job_status ON send_job_items (job_id, status);
+
+    -- Small key/value store for app state that isn't per-company, such as
+    -- when the inbox was last scanned for bounce notifications.
+    CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
     """)
     conn.commit()
 
@@ -263,6 +270,41 @@ def get_grouped_stats() -> dict:
     grouped["total"] = stats.get("total", 0)
     grouped["by_status"] = {k: v for k, v in stats.items() if k != "total"}
     return grouped
+
+
+def get_meta(key: str):
+    """JSON-decoded value stored under `key`, or None."""
+    conn = get_connection()
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        return json.loads(row["value"])
+    except (TypeError, ValueError):
+        return None
+
+
+def set_meta(key: str, value) -> None:
+    conn = get_connection()
+    conn.execute("INSERT INTO meta (key, value) VALUES (?, ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                 (key, json.dumps(value)))
+    conn.commit()
+    conn.close()
+
+
+def count_sent_since(days: int) -> int:
+    """Rows still marked sent whose send happened in the last `days` days —
+    the ones a bounce notification could still arrive for."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM applications WHERE status = 'sent' AND sent_at >= ?",
+        (since,),
+    ).fetchone()
+    conn.close()
+    return row["c"]
 
 
 def count_sent_today() -> int:

@@ -74,6 +74,24 @@ def _get_body_text(msg) -> str:
     return "\n".join(parts)
 
 
+DIAGNOSTIC_PATTERNS = [
+    re.compile(r"Diagnostic-Code:\s*smtp;\s*(.+)", re.IGNORECASE),
+    re.compile(r"(The email account that you tried to reach does not exist[^\n.]*)", re.IGNORECASE),
+    re.compile(r"(Address not found[^\n]*)", re.IGNORECASE),
+]
+
+
+def _bounce_reason(body_text: str) -> str | None:
+    """The receiving server's own explanation (e.g. "550 5.1.1 ... does not
+    exist"), shortened, so the dashboard can say why a send didn't arrive."""
+    for pattern in DIAGNOSTIC_PATTERNS:
+        match = pattern.search(body_text or "")
+        if match:
+            reason = " ".join(match.group(1).split())
+            return reason[:160] + ("…" if len(reason) > 160 else "")
+    return None
+
+
 def _record_bounce_if_sent(from_header: str, subject: str, body_text: str) -> bool:
     """Shared classify+match+update step for one candidate message, used by
     both the IMAP and Gmail-API paths. Returns True if a row was updated."""
@@ -99,8 +117,10 @@ def _record_bounce_if_sent(from_header: str, subject: str, body_text: str) -> bo
     if application["status"] != "sent":
         return False
 
+    reason = _bounce_reason(body_text)
     db.update_application(application["id"], status="bounced",
-                           error_message="Bounce notification detected in inbox.")
+                           error_message="Not delivered — " + (reason or "the recipient's mail server "
+                                                              "sent back a delivery failure notice."))
     db.log_event(application["id"], "bounce_check",
                  f"Detected bounce notification for {failed_email}",
                  detail={"bounce_subject": subject})
@@ -172,6 +192,37 @@ def _check_bounces_via_gmail_api(days_back: int) -> int:
             updated_count += 1
 
     return updated_count
+
+
+LAST_CHECK_KEY = "bounce_check"
+
+
+def credentials_available() -> bool:
+    """True when some way of reading the inbox is configured."""
+    import os
+    try:
+        from google_auth_helper import get_credentials, token_exists
+        if token_exists() and get_credentials() is not None:
+            return True
+    except ImportError:
+        pass
+    return bool(os.getenv("GMAIL_ADDRESS") and os.getenv("GMAIL_APP_PASSWORD"))
+
+
+def run_check(days_back: int = 3, trigger: str = "manual") -> dict:
+    """check_bounces() that never raises, and records when it ran and what
+    it found so the dashboard can show "last checked 5 min ago"."""
+    result = {"at": db.now(), "trigger": trigger, "updated": 0, "error": None}
+    try:
+        result["updated"] = check_bounces(days_back)
+    except Exception as exc:
+        result["error"] = str(exc)[:300]
+    db.set_meta(LAST_CHECK_KEY, result)
+    return result
+
+
+def last_check() -> dict | None:
+    return db.get_meta(LAST_CHECK_KEY)
 
 
 def check_bounces(days_back: int = 3) -> int:

@@ -1,7 +1,7 @@
 {# Table rows for the applications table. Rendered both by the full page and
    by /api/overview for live refresh, so the two can never drift apart. #}
 {% for a in applications %}
-<tr data-status="{{ a.status }}" data-app-id="{{ a.id }}" data-company="{{ a.company_name }}" data-email="{{ a.email }}">
+<tr class="{% if a.status in ('bounced', 'failed') %}row--problem{% endif %}" data-status="{{ a.status }}" data-app-id="{{ a.id }}" data-company="{{ a.company_name }}" data-email="{{ a.email }}">
   <td>
     {% if a.sendable %}
     <input type="checkbox" class="row-select-cb" data-app-id="{{ a.id }}"

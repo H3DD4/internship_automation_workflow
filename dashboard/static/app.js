@@ -295,6 +295,10 @@
     }
     state.capRemaining = data.cap_remaining;
 
+    // Undelivered emails: red alert + Problems card note
+    renderUndelivered(data.bounced_count || 0);
+    if (data.bounce_check) renderBounceCheck(data.bounce_check);
+
     // Preparation progress
     const prepared = data.total_count - data.pending_prep;
     const prepText = document.querySelector("[data-prep-progress]");
@@ -321,6 +325,52 @@
       log.textContent = data.log_tail;
       if (atBottom) log.scrollTop = log.scrollHeight;
     }
+  }
+
+  function renderUndelivered(count) {
+    const alert = $("delivery-alert");
+    if (alert) {
+      alert.hidden = count === 0;
+      const n = alert.querySelector("[data-undelivered-count]");
+      if (n) n.textContent = count;
+      const plural = alert.querySelector("[data-undelivered-plural]");
+      if (plural) plural.textContent = count === 1 ? "" : "s";
+    }
+    const note = document.querySelector("[data-undelivered-text]");
+    if (note) {
+      note.hidden = count === 0;
+      note.textContent = `${count} not delivered`;
+    }
+  }
+
+  function timeAgo(iso) {
+    const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+    if (!isFinite(minutes)) return "";
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.round(minutes / 60);
+    return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`;
+  }
+
+  function renderBounceCheck(check) {
+    const el = $("bounce-last-check");
+    if (!el) return;
+    el.textContent = "";
+    if (check.last_error) {
+      const span = document.createElement("span");
+      span.className = "text-danger";
+      span.textContent = `Last check failed: ${check.last_error}`;
+      el.appendChild(span);
+    } else if (check.last_at) {
+      el.textContent = `Last checked ${timeAgo(check.last_at)}`
+        + (check.last_trigger === "auto" ? " (automatic)" : "");
+    } else {
+      el.textContent = "Not checked yet.";
+    }
+  }
+  const lastCheckEl = $("bounce-last-check");
+  if (lastCheckEl && lastCheckEl.dataset.lastAt && !lastCheckEl.querySelector(".text-danger")) {
+    renderBounceCheck({ last_at: lastCheckEl.dataset.lastAt });
   }
 
   async function refresh() {
@@ -502,6 +552,7 @@
       try {
         const data = await postJSON("/api/check-bounces", {});
         result.textContent = (data.ok ? "" : "✗ ") + data.message;
+        if (data.bounce_check) renderBounceCheck(data.bounce_check);
         if (data.ok && data.updated) refresh();
       } catch (err) {
         result.textContent = `✗ Network error: ${err.message}`;

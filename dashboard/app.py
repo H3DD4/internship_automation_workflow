@@ -115,7 +115,7 @@ STATUS_LABELS = {
     "sent": "Sent",
     "failed": "Failed",
     "retry_wait": "Retry later",
-    "bounced": "Bounced",
+    "bounced": "Not delivered",
     "skipped": "Skipped",
 }
 
@@ -379,6 +379,9 @@ def _decorate_rows(applications: list) -> list:
         # Short inline error/retry reason for the list view, so a failed or
         # retry_wait row is understandable at a glance without a click-through.
         msg = a.get("error_message") or ""
+        if a["status"] == "bounced":
+            # The pill already says "Not delivered"; show just the reason.
+            msg = msg.removeprefix("Not delivered — ")
         a["error_short"] = (msg[:80] + "…") if len(msg) > 80 else msg
         a["sendable"] = bool(a["status"] in db.SENDABLE_STATUSES and a.get("subject"))
         # "09-27 20:22" — the year is always the current one and just crowded
@@ -427,6 +430,9 @@ def _table_context(page: int, status_param: str, search_param: str, limit: int =
             for key, label, filter_value in FUNNEL_CARDS
         ],
         "grouped": grouped,
+        "bounced_count": grouped.get("by_status", {}).get("bounced", 0),
+        "failed_count": grouped.get("by_status", {}).get("failed", 0),
+        "bounce_check": _bounce_check_state(),
         "total_count": grouped.get("total", 0),
         "skipped_count": grouped.get("skipped", 0),
         "sent_today": sent_today,
@@ -494,6 +500,9 @@ def api_overview():
         "sent_today": context["sent_today"],
         "max_per_day": context["max_per_day"],
         "cap_remaining": context["cap_remaining"],
+        "bounced_count": context["bounced_count"],
+        "failed_count": context["failed_count"],
+        "bounce_check": context["bounce_check"],
         "running": run_state["running"],
         "log_tail": run_state["log_tail"],
     })
@@ -1043,16 +1052,32 @@ def api_check_bounces():
     the next scheduled/manual `python bounce_checker.py` run."""
     load_dotenv(ENV_PATH, override=True)
     import bounce_checker
-    try:
-        updated = bounce_checker.check_bounces()
-    except Exception as exc:
-        return jsonify({"ok": False, "message": f"Bounce check failed: {exc}"}), 500
+    result = bounce_checker.run_check(sender_worker.BOUNCE_WINDOW_DAYS, trigger="manual")
+    if result["error"]:
+        return jsonify({"ok": False, "message": f"Bounce check failed: {result['error']}",
+                        "bounce_check": _bounce_check_state()}), 500
+    updated = result["updated"]
     return jsonify({
         "ok": True,
         "updated": updated,
-        "message": (f"{updated} email(s) marked as bounced." if updated
-                     else "No new bounce notifications found."),
+        "message": (f"{updated} email(s) were not delivered — marked in red." if updated
+                     else "No new delivery failures found."),
+        "bounce_check": _bounce_check_state(),
     })
+
+
+def _bounce_check_state() -> dict:
+    """What the dashboard shows about delivery tracking: when the inbox was
+    last scanned, whether that worked, and how often it runs on its own."""
+    import bounce_checker
+    last = bounce_checker.last_check() or {}
+    interval = sender_worker._env_int("BOUNCE_CHECK_MINUTES", 30)
+    return {
+        "last_at": last.get("at"),
+        "last_error": last.get("error"),
+        "last_trigger": last.get("trigger"),
+        "auto_minutes": interval if interval > 0 else 0,
+    }
 
 
 @app.post("/company/<int:app_id>/edit")

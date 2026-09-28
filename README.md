@@ -89,10 +89,21 @@ wording lives in `specializations.json`.
    **preparing** drafts. Gmail and the CV are needed only when you send.
 
 5. **Connect Gmail**, either way:
-   - **Sign in with Google (recommended).** Put your OAuth client file
-     (`client_secret_*.json` or `credentials.json`) in the project folder, then
-     click "Sign in with Google". No app password needed, and bounce checking
-     works through the same connection.
+   - **Sign in with Google (recommended).** One-time setup in
+     [Google Cloud Console](https://console.cloud.google.com/):
+     1. Create a project and enable the **Gmail API**.
+     2. On the **OAuth consent screen**, choose *External* and add your Gmail
+        address as a **test user**.
+     3. Under **Clients**, create a client of type **Web application** with the
+        authorised redirect URI `http://127.0.0.1:5050/oauth/callback`.
+     4. Download its JSON and upload it in the dashboard (Gmail account → Set up
+        Google sign-in), then click **Sign in with Google** and tick every
+        permission.
+
+     Your address is filled in automatically from the Google account. No app
+     password is needed, and bounce checking works through the same connection.
+     While the app is in *Testing* mode Google expires the sign-in after 7 days;
+     the dashboard then asks you to sign in again.
    - **App password.** Needs 2-Step Verification on your Google account; create
      one at <https://myaccount.google.com/apppasswords>.
 
@@ -168,15 +179,18 @@ being redone.
 ## Checking for bounces
 
 Gmail usually accepts a send even if the mailbox is dead; the rejection arrives
-later as a bounce email in your own inbox. Press **Check bounces now** in the
-dashboard, or run:
+later as a bounce email in your own inbox. While the dashboard is running it
+scans for these automatically every `BOUNCE_CHECK_MINUTES` (default 30) for
+three days after each send. Undelivered emails show as **Not delivered** in red,
+with the mail server's reason, and a red banner counts them. You can also press
+**Check bounces now**, or run:
 
 ```bash
 python bounce_checker.py
 ```
 
 It scans for delivery-failure notifications, matches the failed address back to
-the right company, and marks it `bounced`. Only companies you actually sent to
+the right company, and marks it `bounced` (shown as *Not delivered*). Only companies you actually sent to
 can be marked this way.
 
 ## Avoiding spam flags

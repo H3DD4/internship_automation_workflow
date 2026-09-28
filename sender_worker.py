@@ -12,6 +12,7 @@ import os
 import random
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ import db
 import mail_service
 
 ENV_PATH = Path(__file__).parent / ".env"
+BOUNCE_WINDOW_DAYS = 3
 
 
 def _env_int(name: str, default: int) -> int:
@@ -38,6 +40,7 @@ class SenderWorker:
         self._thread = None
         self._stop_event = threading.Event()
         self._poll_interval = 2  # seconds between job polls
+        self._next_bounce_probe = 0.0
 
     def _load_settings(self):
         """Re-read pacing/cap from .env on every job so a value changed in the
@@ -80,8 +83,42 @@ class SenderWorker:
             except Exception as e:
                 print(f"  [sender-worker] error in loop: {e}")
 
+            try:
+                self._maybe_check_bounces()
+            except Exception as e:
+                print(f"  [sender-worker] bounce check error: {e}")
+
             # Wait before next poll
             self._stop_event.wait(timeout=self._poll_interval)
+
+    def _maybe_check_bounces(self):
+        """Scan the inbox for bounce notices every BOUNCE_CHECK_MINUTES while
+        recent sends could still bounce, so an undelivered email turns red in
+        the dashboard without anyone clicking "Check bounces now". A dead
+        address usually bounces within minutes, occasionally within a day or
+        two, so only sends from the last BOUNCE_WINDOW_DAYS are worth it."""
+        if time.monotonic() < self._next_bounce_probe:
+            return
+        # Throttle the probe itself: reading settings and the token every
+        # 2-second poll would be wasteful.
+        self._next_bounce_probe = time.monotonic() + 60
+        interval = _env_int("BOUNCE_CHECK_MINUTES", 30)
+        if interval <= 0 or db.count_sent_since(BOUNCE_WINDOW_DAYS) == 0:
+            return
+        import bounce_checker
+        last = bounce_checker.last_check()
+        if last and last.get("at"):
+            try:
+                elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(last["at"])
+                if elapsed < timedelta(minutes=interval):
+                    return
+            except ValueError:
+                pass
+        if not bounce_checker.credentials_available():
+            return
+        result = bounce_checker.run_check(BOUNCE_WINDOW_DAYS, trigger="auto")
+        print(f"  [sender-worker] bounce check: {result['updated']} newly bounced"
+              + (f" (error: {result['error']})" if result["error"] else ""))
 
     def _process_job(self, job_id: int):
         """Process all queued items in a single send job."""

@@ -79,10 +79,19 @@
          style="width: {{ (100 * sent_today / max_per_day) if max_per_day else 0 }}%"></div></div>
     {% elif card.key == 'to_prepare' and card.value %}
     <div class="funnel-card__meta">{{ pending_prep }} still need a draft</div>
+    {% elif card.key == 'problems' %}
+    <div class="funnel-card__meta funnel-card__meta--danger" data-undelivered-text {% if not bounced_count %}hidden{% endif %}>{{ bounced_count }} not delivered</div>
     {% endif %}
   </a>
   {% endfor %}
 </section>
+
+{# Red alert whenever sent emails came back undelivered (bounce notices). #}
+<a class="delivery-alert" id="delivery-alert" href="{{ url_for('index', status='bounced') }}"
+   {% if not bounced_count %}hidden{% endif %}>
+  <span class="delivery-alert__icon" aria-hidden="true">!</span>
+  <span><strong data-undelivered-count>{{ bounced_count }}</strong> email<span data-undelivered-plural>{{ "s" if bounced_count != 1 else "" }}</span> not delivered — the address was rejected by the company's mail server. Click to see which.</span>
+</a>
 
 <section class="table-section">
   <nav class="status-tabs" id="status-tabs">
@@ -208,10 +217,15 @@
   <div>
     <span class="eyebrow">Background</span>
     <h2>Bounce check</h2>
-    <p class="section-copy">Gmail often accepts a send even for a dead mailbox, then reports it later as a bounce email. Scan your inbox and mark those companies bounced.</p>
+    <p class="section-copy">Gmail often accepts a send even for a dead mailbox, then reports it later as a bounce email. Those companies turn red as <strong class="text-danger">Not delivered</strong>.
+    {% if bounce_check.auto_minutes %}Your inbox is scanned automatically every {{ bounce_check.auto_minutes }} min for 3 days after each send.{% endif %}</p>
   </div>
   <div class="run-form">
     <button class="button button--primary" type="button" id="check-bounces-btn" {% if not setup.has_gmail %}disabled{% endif %}>Check bounces now</button>
+    <span class="field-hint" id="bounce-last-check" data-last-at="{{ bounce_check.last_at or '' }}">
+      {% if bounce_check.last_error %}<span class="text-danger">Last check failed: {{ bounce_check.last_error }}</span>
+      {% elif not bounce_check.last_at %}Not checked yet.{% endif %}
+    </span>
     <span class="field-hint" id="check-bounces-result" aria-live="polite"></span>
   </div>
 </section>

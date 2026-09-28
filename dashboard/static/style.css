@@ -30,7 +30,8 @@
   --st-sent: #4ADE80;       /* done             */
   --st-failed: #F87171;     /* needs attention  */
   --st-retry: #FB923C;      /* needs attention  */
-  --st-bounced: #FBBF24;    /* needs attention  */
+  --st-bounced: #EF4444;    /* not delivered    */
+  --warn: #FBBF24;
   --st-skipped: #545D6B;    /* intentionally out */
 
   --radius: 10px;
@@ -135,7 +136,7 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.01em
 /* Styled by exclusion rather than by listing each type: an input with no
    type attribute (or type=number/url/search) previously fell through every
    selector and rendered as a white browser-default box on this dark page. */
-input:not([type="checkbox"]):not([type="radio"]),
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
 select,
 textarea {
   width: 100%;
@@ -206,6 +207,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .search-box:focus, .status-filter:focus { outline: 2px solid #4FD1C5; outline-offset: 1px; }
 .visible-count { font-size: 12px; color: #8A93A3; white-space: nowrap; font-family: "JetBrains Mono", monospace; }
 
+/* Undelivered or failed sends: a red edge and tint so they stand out in the list. */
+tr.row--problem > td { background: rgba(239,68,68,.07); }
+tr.row--problem > td:first-child { box-shadow: inset 3px 0 0 var(--st-bounced); }
+tr.row--problem .row-error { color: #FCA5A5; }
+.status-pill.status-bounced { font-weight: 600; }
+
 .row-error {
   margin-top: 3px; font-size: 11.5px; color: #F87171;
   max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -249,6 +256,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 .funnel-card__label { font-size: 12.5px; color: var(--text-muted); margin-top: 4px; }
 .funnel-card__meta { font-size: 11px; color: var(--text-dim); margin-top: 6px; font-family: "JetBrains Mono", monospace; }
+.funnel-card__meta--danger { color: var(--st-bounced); font-weight: 600; }
 .funnel-card--to_prepare { --stage: var(--st-research); }
 .funnel-card--ready      { --stage: var(--st-ready); }
 .funnel-card--sending    { --stage: var(--st-sending); }
@@ -681,9 +689,10 @@ details[open] .smtp-fallback-toggle::before { transform: rotate(90deg); }
 }
 
 /* ── Row actions ── */
-.row-actions {
-  display: flex; align-items: center; gap: 8px; white-space: nowrap;
-}
+/* Not display:flex — a flex <td> stops being a table cell, so it lost the
+   row's height and background (visible as a gap in tinted problem rows). */
+td.row-actions { white-space: nowrap; }
+td.row-actions > * + * { margin-left: 8px; }
 
 /* ── Send toast ── */
 .send-toast {
@@ -773,7 +782,7 @@ details[open] .smtp-fallback-toggle::before { transform: rotate(90deg); }
   list-style: none;
 }
 .modal-list li { padding: 2px 0; }
-.modal-warn { color: var(--st-bounced); font-size: 12.5px; margin: 0 0 14px; }
+.modal-warn { color: var(--warn); font-size: 12.5px; margin: 0 0 14px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
 
 /* ── Activity log panel ── */
@@ -824,9 +833,9 @@ details[open] .smtp-fallback-toggle::before { transform: rotate(90deg); }
   background: var(--surface-3); border: 1px solid var(--border);
   border-radius: var(--radius-sm); font-size: 12.5px; color: var(--text-2);
 }
-.attachment-chip--missing { color: var(--st-bounced); border-color: rgba(251,191,36,.3); }
+.attachment-chip--missing { color: var(--warn); border-color: rgba(251,191,36,.3); }
 .word-count { font: 11.5px "JetBrains Mono", monospace; color: var(--text-dim); }
-.word-count--warn { color: var(--st-bounced); }
+.word-count--warn { color: var(--warn); }
 
 .detail-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .detail-nav { display: flex; gap: 8px; align-items: center; font-size: 12.5px; }
@@ -859,4 +868,32 @@ details[open] .smtp-fallback-toggle::before { transform: rotate(90deg); }
 @media (max-width: 720px) {
   .app-table .col-email { display: none; }
   .app-table th, .app-table td { padding: 11px 12px; }
+}
+
+/* ── Undelivered-email alert ── */
+.delivery-alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(239,68,68,.45);
+  background: rgba(239,68,68,.12);
+  color: #FECACA;
+  font-size: 13.5px;
+  text-decoration: none;
+}
+.delivery-alert:hover { background: rgba(239,68,68,.18); }
+.delivery-alert__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--st-bounced);
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
 }
