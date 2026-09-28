@@ -220,6 +220,7 @@ def _setup_state():
     oauth_connected = False
     oauth_email = ""
     oauth_configured = False
+    oauth_expired = False
     try:
         from google_auth_helper import (
             token_exists, get_credentials, get_authorized_email, oauth_is_configured
@@ -228,6 +229,10 @@ def _setup_state():
         if token_exists() and get_credentials() is not None:
             oauth_connected = True
             oauth_email = get_authorized_email() or gmail_address
+        elif token_exists():
+            # Testing-mode tokens die after 7 days; say so instead of silently
+            # falling back to "not connected".
+            oauth_expired = True
     except ImportError:
         pass
 
@@ -259,6 +264,7 @@ def _setup_state():
         "has_gmail_smtp": has_gmail_smtp,
         "oauth_configured": oauth_configured,
         "oauth_email": oauth_email,
+        "oauth_expired": oauth_expired,
         "gmail_address": "" if _is_placeholder(gmail_address) else gmail_address,
         "name": "" if _is_placeholder(your_name) else your_name,
         "target_role": target_role,
@@ -451,6 +457,7 @@ def index():
     return render_template(
         "index.html",
         setup=_setup_state(),
+        oauth_redirect_uri=_oauth_redirect_uri(),
         run_state=_run_state(),
         active_job=db.get_send_job(active_job["id"]) if active_job else None,
         status_tabs=STATUS_TABS,
@@ -761,6 +768,24 @@ def api_validate_gmail():
 # Google OAuth 2.0 routes
 # ---------------------------------------------------------------------------
 
+# Google may grant a slightly different scope list than requested (it adds
+# "openid"-style aliases, or leaves out a box the user unticked); without this
+# oauthlib raises "Scope has changed" and the whole connection fails. Which
+# scopes actually came back is checked explicitly in the callback instead.
+os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+
+OAUTH_HOST = "127.0.0.1"
+
+
+def _oauth_redirect_uri() -> str:
+    """Always http://127.0.0.1:<port>/oauth/callback, whatever address the
+    browser used. Google compares the redirect URI character for character
+    with the one registered on the OAuth client, so opening the dashboard as
+    "localhost" used to produce a redirect_uri_mismatch error."""
+    port = request.host.rsplit(":", 1)[1] if ":" in request.host else "80"
+    return f"http://{OAUTH_HOST}:{port}{url_for('oauth_callback')}"
+
+
 def _get_oauth_flow(redirect_uri: str = None, code_verifier: str = None):
     """Build a google_auth_oauthlib Flow from the client secret file.
 
@@ -776,7 +801,7 @@ def _get_oauth_flow(redirect_uri: str = None, code_verifier: str = None):
     flow = Flow.from_client_secrets_file(
         str(client_secret_path),
         scopes=SCOPES,
-        redirect_uri=redirect_uri or url_for("oauth_callback", _external=True),
+        redirect_uri=redirect_uri or _oauth_redirect_uri(),
         code_verifier=code_verifier,
     )
     return flow
@@ -787,61 +812,99 @@ def oauth_start():
     """Redirect the user to Google's OAuth consent screen."""
     from google_auth_helper import oauth_is_configured
     if not oauth_is_configured():
-        flash("Google OAuth credentials file not found — make sure client_secret_*.json is in the project folder.", "error")
+        flash("Upload your Google OAuth client file first (Gmail account → Set up Google sign-in).", "error")
         return redirect(url_for("index"))
-    flow = _get_oauth_flow()
+    # The session cookie holding the state and PKCE verifier belongs to the
+    # host it was set on; start on the same host Google will redirect back to.
+    if request.host.split(":")[0] != OAUTH_HOST:
+        return redirect(_oauth_redirect_uri().replace("/oauth/callback", url_for("oauth_start")))
+    try:
+        flow = _get_oauth_flow()
+    except (ValueError, KeyError) as exc:
+        flash(f"The Google OAuth client file is invalid ({exc}) — upload it again.", "error")
+        return redirect(url_for("index"))
     if not flow:
         flash("Could not build OAuth flow — credentials file may be invalid.", "error")
         return redirect(url_for("index"))
     state = secrets.token_urlsafe(16)
     session["oauth_state"] = state
-    # The Flow auto-generated a PKCE code_verifier when it was constructed
-    # above — it must be reused (not re-generated) by the callback's Flow
-    # when exchanging the code, or Google rejects the exchange because the
-    # verifier no longer matches the code_challenge sent here.
+    params = {"access_type": "offline", "prompt": "consent", "state": state}
+    # Pre-selects the account on Google's screen, so connecting is one click.
+    hint = (os.getenv("GMAIL_ADDRESS") or "").strip()
+    if "@" in hint:
+        params["login_hint"] = hint
+    auth_url, _ = flow.authorization_url(**params)
+    # authorization_url() is what generates the PKCE code_verifier (it is
+    # still None before that call). The callback's Flow must reuse it, or
+    # Google rejects the exchange with "Missing code verifier".
     session["oauth_code_verifier"] = flow.code_verifier
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-        state=state,
-    )
     return redirect(auth_url)
 
 
 @app.route("/oauth/callback")
 def oauth_callback():
     """Google redirects here after the user consents."""
-    from google_auth_helper import _save_credentials, get_oauth_email_address, save_authorized_email
+    from google_auth_helper import (_save_credentials, get_oauth_email_address,
+                                    missing_required_scopes, revoke_token, save_authorized_email)
     error = request.args.get("error")
     if error:
-        flash(f"Google authorisation was denied: {error}", "error")
+        hint = (" — if the app is in Testing mode, add your address as a test user on the "
+                "OAuth consent screen." if error == "access_denied" else "")
+        flash(f"Google authorisation was denied: {error}{hint}", "error")
         return redirect(url_for("index"))
 
     # State check (CSRF protection)
     state = request.args.get("state", "")
     code_verifier = session.pop("oauth_code_verifier", None)
-    if state != session.pop("oauth_state", None):
+    if not state or state != session.pop("oauth_state", None):
         flash("OAuth state mismatch — please try connecting again.", "error")
         return redirect(url_for("index"))
 
     try:
         flow = _get_oauth_flow(code_verifier=code_verifier)
-        flow.fetch_token(authorization_response=request.url)
+        flow.fetch_token(code=request.args.get("code", ""))
         creds = flow.credentials
+        missing = missing_required_scopes(creds)
+        if "https://www.googleapis.com/auth/gmail.send" in missing:
+            flash("Google connected, but the “Send email on your behalf” permission was left "
+                  "unticked — connect again and tick every box.", "error")
+            return redirect(url_for("index"))
+        revoke_token()   # drop any previous account's token (and its stored email)
         _save_credentials(creds)
-        # Fetch the actual email address and persist it in token.json
-        email = get_oauth_email_address()
+        email = get_oauth_email_address(creds)
         if email:
             save_authorized_email(email)
             # Also persist the email to .env so pipeline.py can read it
             _save_env({"GMAIL_ADDRESS": email})
             load_dotenv(ENV_PATH, override=True)
-            flash(f"✓ Connected as {email} — Google OAuth is active. Your emails will be sent from this account.", "success")
+            note = (" Bounce detection needs the “Read email” permission too — reconnect and tick it."
+                    if missing else "")
+            flash(f"✓ Connected as {email} — your emails will be sent from this account.{note}", "success")
         else:
             flash("✓ Google account connected! (Could not read email address — try reconnecting.)", "success")
     except Exception as exc:
-        flash(f"OAuth callback failed: {exc}", "error")
+        text = str(exc)
+        if "redirect_uri_mismatch" in text:
+            text = f"redirect URI mismatch — add {_oauth_redirect_uri()} to the OAuth client's authorised redirect URIs"
+        flash(f"Connecting Google failed: {text}", "error")
+    return redirect(url_for("index"))
+
+
+@app.post("/oauth/client-secret")
+def oauth_client_secret():
+    """Upload the OAuth client JSON downloaded from Google Cloud Console."""
+    from google_auth_helper import save_client_secret, validate_client_secret
+    upload = request.files.get("client_secret")
+    if not upload or not upload.filename:
+        flash("Choose the OAuth client JSON file first.", "error")
+        return redirect(url_for("index"))
+    raw = upload.read(64 * 1024)
+    ok, detail = validate_client_secret(raw)
+    if not ok:
+        flash(detail, "error")
+        return redirect(url_for("index"))
+    save_client_secret(raw)
+    flash("✓ Google OAuth client saved — now click “Sign in with Google”.", "success")
     return redirect(url_for("index"))
 
 

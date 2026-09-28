@@ -603,6 +603,32 @@ details[open] .smtp-fallback-toggle::before { transform: rotate(90deg); }
   margin-top: 6px;
 }
 
+/* ── Google OAuth one-time setup guide ── */
+.oauth-guide { margin-top: 12px; }
+.oauth-steps {
+  margin: 8px 0 8px;
+  padding-left: 20px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #A6ADB9;
+  border-left: 2px solid #262B34;
+}
+.oauth-steps li { margin-bottom: 6px; }
+.oauth-steps a { color: var(--accent); }
+.oauth-steps code.copyable {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: #11151B;
+  color: var(--accent);
+  user-select: all;
+  word-break: break-all;
+}
+.oauth-upload { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+.oauth-upload input[type=file] { font-size: 12px; color: #A6ADB9; max-width: 100%; }
+.text-danger { color: var(--st-failed); }
+
 /* ── Error shake animation (applied via JS on bad validation) ── */
 @keyframes shake {
   0%, 100% { transform: translateX(0); }

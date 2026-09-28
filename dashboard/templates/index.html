@@ -283,13 +283,12 @@
             <div class="google-connected-label">Connected via Google OAuth · sent through the Gmail API</div>
           </div>
         </div>
-        <form action="{{ url_for('oauth_disconnect') }}" method="post" style="margin:0;">
-          <button type="submit" class="button button--ghost button--sm" id="google-disconnect-btn">Disconnect</button>
-        </form>
+        <button type="submit" form="oauth-disconnect-form" class="button button--ghost button--sm" id="google-disconnect-btn">Disconnect</button>
       </div>
       {% else %}
       <div class="google-connect-card" id="google-connect-card">
         <div class="google-connect-desc">
+          {% if setup.oauth_expired %}<strong class="text-danger">Your Google sign-in expired — sign in again to keep sending.</strong><br>{% endif %}
           Sign in with Google to send from your Gmail — no app password needed.
           {% if setup.has_gmail_smtp %}<br><span style="color:var(--text-dim);font-size:11px;">An app password is also saved as a fallback.</span>{% endif %}
         </div>
@@ -299,9 +298,26 @@
           Sign in with Google
         </a>
         {% else %}
-        <span class="field-hint">To enable this, put your Google OAuth <code>client_secret_*.json</code> (or <code>credentials.json</code>) in the project folder. Until then, use an app password below.</span>
+        <span class="field-hint">One-time setup: create a Google OAuth client (steps below), upload its JSON, then sign in.</span>
         {% endif %}
       </div>
+
+      <details class="oauth-guide" id="oauth-guide" {% if not setup.oauth_configured %}open{% endif %}>
+        <summary class="smtp-fallback-toggle">{% if setup.oauth_configured %}Replace the Google OAuth client{% else %}Set up Google sign-in (once, ~5 minutes){% endif %}</summary>
+        <ol class="oauth-steps">
+          <li>In <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Google Cloud Console</a>, create a project and <strong>enable the Gmail API</strong>.</li>
+          <li>Open <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">OAuth consent screen</a>: choose <em>External</em>, fill in the app name and your email, and add <strong>your Gmail address as a test user</strong>.</li>
+          <li>Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Clients → Create client</a>, type <strong>Web application</strong>, and add this authorised redirect URI:<br><code class="copyable">{{ oauth_redirect_uri }}</code></li>
+          <li>Download the client JSON and upload it here:
+            <div class="oauth-upload">
+              <input type="file" name="client_secret" accept="application/json,.json" form="oauth-client-form" id="oauth-client-file">
+              <button type="submit" form="oauth-client-form" class="button button--ghost button--sm">Upload</button>
+            </div>
+          </li>
+          <li>Click <strong>Sign in with Google</strong> and tick every permission. Your address is filled in automatically.</li>
+        </ol>
+        <span class="field-hint">While the app stays in <em>Testing</em> mode, Google expires the sign-in after 7 days — the dashboard will ask you to reconnect.</span>
+      </details>
 
       <details class="smtp-fallback" {% if setup.has_gmail_smtp %}open{% endif %}>
         <summary class="smtp-fallback-toggle">Use an app password instead</summary>
@@ -358,6 +374,8 @@
       {% if run_state.running %}<span class="run-label"><span class="dot dot--pulse"></span> Preparation running</span>{% endif %}
     </div>
   </form>
+  <form id="oauth-disconnect-form" action="{{ url_for('oauth_disconnect') }}" method="post" hidden></form>
+  <form id="oauth-client-form" action="{{ url_for('oauth_client_secret') }}" method="post" enctype="multipart/form-data" hidden></form>
 </section>
 </details>
 

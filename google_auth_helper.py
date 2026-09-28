@@ -82,7 +82,17 @@ def get_credentials():
 
 
 def _save_credentials(creds) -> None:
-    TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+    """Persist the token, keeping the account email stored alongside it.
+
+    creds.to_json() knows nothing about that email, so writing it alone on
+    every token refresh (roughly hourly) silently dropped the address — and
+    later sends went out with no proper From address."""
+    import json
+    data = json.loads(creds.to_json())
+    email = get_authorized_email()
+    if email:
+        data["email"] = email
+    TOKEN_PATH.write_text(json.dumps(data), encoding="utf-8")
 
 
 def get_authorized_email() -> Optional[str]:
@@ -135,17 +145,73 @@ def _build_gmail_service(credentials=None):
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 
-def get_oauth_email_address() -> Optional[str]:
+def _email_from_id_token(credentials) -> Optional[str]:
+    """The account email from the OpenID id_token Google returns alongside the
+    access token. It came straight from Google's token endpoint over TLS, so
+    decoding its payload without re-verifying the signature is fine here."""
+    import json
+    token = getattr(credentials, "id_token", None)
+    if not token or token.count(".") != 2:
+        return None
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload)).get("email")
+    except (ValueError, TypeError):
+        return None
+
+
+def get_oauth_email_address(credentials=None) -> Optional[str]:
     """
-    Fetch the actual Gmail address from the API (used right after OAuth callback
-    to confirm which account was authorised).
+    The Gmail address that was just authorised: from the Gmail profile, or
+    failing that from the id_token Google issued with the access token.
     """
     try:
-        service = _build_gmail_service()
+        service = _build_gmail_service(credentials)
         profile = service.users().getProfile(userId="me").execute()
-        return profile.get("emailAddress")
+        if profile.get("emailAddress"):
+            return profile["emailAddress"]
     except Exception:
-        return None
+        pass
+    return _email_from_id_token(credentials) if credentials is not None else None
+
+
+REQUIRED_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+
+
+def missing_required_scopes(credentials) -> list:
+    """Google's consent screen lets people untick individual permissions.
+    Without gmail.send nothing can be sent, and without gmail.readonly bounces
+    can't be detected — report which of the two were left unticked."""
+    granted = set(getattr(credentials, "granted_scopes", None) or getattr(credentials, "scopes", None) or [])
+    if not granted:
+        return []
+    return [scope for scope in (REQUIRED_SEND_SCOPE, "https://www.googleapis.com/auth/gmail.readonly")
+            if scope not in granted]
+
+
+def validate_client_secret(raw: bytes) -> tuple:
+    """(ok, message) for an uploaded OAuth client JSON from Google Cloud."""
+    import json
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False, "That file isn't valid JSON — download it again from Google Cloud Console."
+    kind = "web" if "web" in data else "installed" if "installed" in data else None
+    if not kind:
+        return False, ("That JSON isn't an OAuth client file. In Google Cloud Console, open "
+                       "Credentials → your OAuth 2.0 Client ID → Download JSON.")
+    client = data[kind]
+    missing = [k for k in ("client_id", "client_secret", "auth_uri", "token_uri") if not client.get(k)]
+    if missing:
+        return False, f"The client file is missing {', '.join(missing)}."
+    return True, kind
+
+
+def save_client_secret(raw: bytes) -> Path:
+    path = ROOT_DIR / "credentials.json"
+    path.write_bytes(raw)
+    return path
 
 
 def send_email_via_gmail_api(
@@ -163,10 +229,14 @@ def send_email_via_gmail_api(
     these into Permanent/Transient/Authentication errors.
     The From address is the authorised account — no credentials needed beyond token.json.
     """
+    from email.utils import formataddr
     from_email = get_authorized_email() or "me"
+    display_name = (os.getenv("YOUR_NAME") or "").strip()
 
     msg = EmailMessage()
-    msg["From"] = from_email
+    # "Mohamed Hedda <address>" rather than a bare address: it's what the
+    # recipient's inbox shows as the sender.
+    msg["From"] = formataddr((display_name, from_email)) if display_name and "@" in from_email else from_email
     msg["To"] = to_email
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)

@@ -81,8 +81,11 @@ def _send_via_smtp(gmail_address: str, gmail_app_password: str, to_email: str,
                    reply_to: str = None) -> str:
     """Send via SMTP + App Password (legacy / fallback path). Returns the
     locally-generated Message-ID (SMTP itself has no server-assigned id)."""
+    from email.utils import formataddr
+    import os
+    display_name = (os.getenv("YOUR_NAME") or "").strip()
     msg = EmailMessage()
-    msg["From"] = gmail_address
+    msg["From"] = formataddr((display_name, gmail_address)) if display_name else gmail_address
     msg["To"] = to_email
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
