@@ -30,10 +30,10 @@ def test_sign_in_and_out(anon_client, make_user):
     make_user("me@example.com")
     response = _form(anon_client, "/login", email="Me@Example.com", password=PASSWORD)
     assert response.status_code == 302
-    assert anon_client.get("/").status_code == 200
-    csrf = anon_client.get("/").data.decode().split('name="csrf-token" content="', 1)[1].split('"', 1)[0]
+    assert anon_client.get("/settings").status_code == 200
+    csrf = anon_client.get("/settings").data.decode().split('name="csrf-token" content="', 1)[1].split('"', 1)[0]
     anon_client.post("/logout", data={"csrf_token": csrf}, headers={"Origin": "http://localhost"})
-    assert anon_client.get("/").status_code == 302
+    assert anon_client.get("/settings").status_code == 302
 
 
 def test_a_wrong_password_and_an_unknown_account_look_the_same(anon_client, make_user):
@@ -128,7 +128,7 @@ def test_changing_the_password_ends_other_sessions(client, user_id):
                                  "new_password": "a-brand-new-passphrase", "new_password_confirm": "a-brand-new-passphrase"})
     assert response.status_code == 302
     assert accounts.load_session(other_token) is None          # other device signed out
-    assert client.get("/").status_code == 200                  # this one kept
+    assert client.get("/settings").status_code == 200                  # this one kept
     assert accounts.authenticate("user@example.com", "a-brand-new-passphrase").ok
 
 
@@ -143,7 +143,7 @@ def test_a_temporary_password_must_be_replaced_first(login, make_user):
 
 def test_a_suspended_account_loses_its_session_at_once(client, user_id):
     accounts.update_user(user_id, status="suspended")
-    assert client.get("/").status_code == 302
+    assert client.get("/settings").status_code == 302
 
 
 def test_expired_sessions_are_rejected(client, user_id):
@@ -151,4 +151,4 @@ def test_expired_sessions_are_rejected(client, user_id):
     from sqlalchemy import update
     with database.tx() as conn:
         conn.execute(update(database.auth_sessions).values(expires_at="2000-01-01T00:00:00+00:00"))
-    assert client.get("/").status_code == 302
+    assert client.get("/settings").status_code == 302

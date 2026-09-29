@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% set bare = true %}
+{% from "_brand.html" import logo, mark with context %}
+{% block title %}Internix — internship applications that sound like you{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ asset('landing.css') }}">{% endblock %}
+{% block bare %}
+<header class="lp-nav">
+  <div class="lp-wrap lp-nav__inner">
+    <a href="{{ url_for('index') }}" aria-label="Internix home">{{ logo(26) }}</a>
+    <nav class="lp-nav__links" aria-label="Sections">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#languages">English &amp; French</a>
+      <a href="#security">Security</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="lp-nav__cta">
+      <a class="button button--ghost button--sm" href="{{ url_for('auth.login') }}">Sign in</a>
+      <a class="button button--primary button--sm" href="{{ url_for('auth.register') }}">Get started</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  {# ─────────────────────────────── Hero ─────────────────────────────── #}
+  <section class="lp-hero">
+    <svg class="lp-hero__shape lp-hero__shape--a" viewBox="0 0 100 100" aria-hidden="true"><polygon points="0,0 100,0 50,50" fill="#F4B544"/></svg>
+    <svg class="lp-hero__shape lp-hero__shape--b" viewBox="0 0 100 100" aria-hidden="true"><polygon points="50,50 100,100 0,100" fill="#666EFF"/></svg>
+    <div class="lp-wrap lp-hero__grid">
+      <div class="lp-hero__copy">
+        <span class="lp-pill"><span class="lp-pill__dot"></span>For students applying to internships</span>
+        <h1>Land your internship with emails that <span class="lp-mark">sound like you</span>.</h1>
+        <p class="lp-lead">Internix reads every company's website, matches what they do to your CV, and writes a personal application — in English or in French. You review each one, then send from your own Gmail.</p>
+        <div class="lp-hero__cta">
+          {% if google %}
+          <a class="button-google lp-google" href="{{ url_for('auth_google') }}">
+            <svg class="google-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+            Continue with Google
+          </a>
+          {% endif %}
+          <a class="button {{ 'button--ghost' if google else 'button--primary' }} button--lg" href="{{ url_for('auth.register') }}">Create an account</a>
+        </div>
+        <ul class="lp-checks">
+          <li>Nothing leaves without your review</li>
+          <li>Your own AI key and mailbox</li>
+          <li>English &amp; French</li>
+        </ul>
+      </div>
+
+      <div class="lp-hero__visual" aria-hidden="true">
+        <div class="lp-mock lp-mock--email">
+          <div class="lp-mock__bar"><span></span><span></span><span></span></div>
+          <dl class="lp-mail">
+            <dt>To</dt><dd>careers@northwind.io</dd>
+            <dt>Subject</dt><dd><strong>End-of-Study Internship — Security Operations</strong></dd>
+          </dl>
+          <div class="lp-mail__body">
+            <p>Dear Northwind Team,</p>
+            <p>I'm a final-year engineering student specialised in cybersecurity. What interests me most about Northwind is your work on <span class="lp-hl">managed detection and response for mid-sized banks</span>.</p>
+            <p class="lp-lines"><span></span><span></span><span class="short"></span></p>
+          </div>
+          <div class="lp-mail__foot">
+            <span class="lp-verified">✓ Quoted from their own website</span>
+            <span class="lp-attach">📎 CV.pdf</span>
+          </div>
+        </div>
+        <div class="lp-mock lp-mock--stats">
+          <div><strong>142</strong><span>ready to review</span></div>
+          <div><strong>38</strong><span>sent</span></div>
+          <div><strong class="lp-green">0</strong><span>invented claims</span></div>
+        </div>
+        <div class="lp-mock lp-mock--lang">
+          <span class="on">EN</span><span>FR</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {# ─────────────────────────── Proof strip ─────────────────────────── #}
+  <section class="lp-strip">
+    <div class="lp-wrap lp-strip__grid">
+      <div><strong>5</strong><span>writing styles, each in English and French</span></div>
+      <div><strong>1 click</strong><span>to sign in and connect your Gmail</span></div>
+      <div><strong>100%</strong><span>of your facts traced back to your CV</span></div>
+      <div><strong>0</strong><span>emails sent without your approval</span></div>
+    </div>
+  </section>
+
+  {# ───────────────────────────── Features ───────────────────────────── #}
+  <section class="lp-section" id="features">
+    <div class="lp-wrap">
+      <div class="lp-head">
+        <span class="lp-kicker">Features</span>
+        <h2>Everything a strong application needs — done for every company on your list</h2>
+        <p>Import a list of hundreds of companies. Internix prepares a tailored draft for each one while you do something else.</p>
+      </div>
+      <div class="lp-features">
+        <article class="lp-card">
+          <span class="lp-icon lp-icon--blue"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span>
+          <h3>Researches every company</h3>
+          <p>Reads each website and finds what the company actually does — then quotes it, word for word, so your interest is specific.</p>
+        </article>
+        <article class="lp-card">
+          <span class="lp-icon lp-icon--amber"><svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h4"/></svg></span>
+          <h3>Written from your CV</h3>
+          <p>Upload your CV once. Every sentence about you comes from it — your projects, your results, your experience.</p>
+        </article>
+        <article class="lp-card">
+          <span class="lp-icon lp-icon--navy"><svg viewBox="0 0 24 24"><path d="M12 3 4.5 6v6c0 4.6 3.2 7.9 7.5 9 4.3-1.1 7.5-4.4 7.5-9V6z"/><path d="m9 12 2 2 4-4"/></svg></span>
+          <h3>Never invents anything</h3>
+          <p>Numbers and names are checked against your CV and the company's site. What can't be verified simply isn't said.</p>
+        </article>
+        <article class="lp-card">
+          <span class="lp-icon lp-icon--blue"><svg viewBox="0 0 24 24"><path d="M4 5h9M8.5 3v2M6 5c0 4 2.5 7 6 8"/><path d="M11 5c0 3-2 6.5-6 8.5M13 21l4-9 4 9M14.5 18h5"/></svg></span>
+          <h3>English or French, automatically</h3>
+          <p>A company that presents itself in French gets a French email. Switch any single email with one click.</p>
+        </article>
+        <article class="lp-card">
+          <span class="lp-icon lp-icon--amber"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+          <h3>Paced, safe sending</h3>
+          <p>Emails leave from your own Gmail with a random gap and a daily cap — so your address keeps a good reputation.</p>
+        </article>
+        <article class="lp-card">
+          <span class="lp-icon lp-icon--navy"><svg viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg></span>
+          <h3>Knows what was delivered</h3>
+          <p>Bounced addresses are detected in your inbox and marked in red, so your follow-ups go where they count.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  {# ──────────────────────────── How it works ─────────────────────────── #}
+  <section class="lp-section lp-section--tint" id="how">
+    <div class="lp-wrap">
+      <div class="lp-head">
+        <span class="lp-kicker">How it works</span>
+        <h2>From CV to sent applications in four steps</h2>
+      </div>
+      <ol class="lp-steps">
+        <li><span class="lp-step__n">1</span><h3>Upload your CV</h3><p>Your profile is drafted from it in both languages. You check every sentence and choose a writing style.</p></li>
+        <li><span class="lp-step__n">2</span><h3>Import your companies</h3><p>A CSV or Excel file with an email column. Internix tells you exactly which rows need fixing.</p></li>
+        <li><span class="lp-step__n">3</span><h3>Review the drafts</h3><p>Each company gets its own email. Read it, edit it, switch language, or skip the company.</p></li>
+        <li><span class="lp-step__n">4</span><h3>Send, calmly</h3><p>Pick the ones you like and send. Internix paces them and tracks what was delivered.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  {# ─────────────────────── Nothing invented (dark) ─────────────────────── #}
+  <section class="lp-dark">
+    <div class="lp-wrap lp-dark__grid">
+      <div>
+        <span class="lp-kicker lp-kicker--amber">Grounded in your CV</span>
+        <h2>Recruiters notice invented claims. <span class="lp-amber">We make sure there are none.</span></h2>
+        <p>When your profile is drafted, every number and every name is compared with your CV. Anything that doesn't match is flagged until you fix it or confirm it's true — and each email is checked again before it's ready.</p>
+      </div>
+      <div class="lp-flagmock" aria-hidden="true">
+        <div class="lp-flagmock__row">
+          <span class="lp-flagmock__lang">EN</span>
+          <p>At KPMG I built a valuation model for 12 SMEs.</p>
+          <span class="lp-ok">Matches your CV</span>
+        </div>
+        <div class="lp-flagmock__row lp-flagmock__row--flag">
+          <span class="lp-flagmock__lang">EN</span>
+          <p>I led 45 analysts at a global bank.</p>
+          <span class="lp-flag">“45” isn't in your CV</span>
+        </div>
+        <div class="lp-flagmock__row">
+          <span class="lp-flagmock__lang">FR</span>
+          <p>Chez KPMG, j'ai construit un modèle d'évaluation pour 12 PME.</p>
+          <span class="lp-ok">Matches your CV</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {# ───────────────────────────── Languages ───────────────────────────── #}
+  <section class="lp-section" id="languages">
+    <div class="lp-wrap">
+      <div class="lp-head">
+        <span class="lp-kicker">English &amp; French</span>
+        <h2>The right language for every company</h2>
+        <p>Internix reads the language of each company's website. Paris gets French, Berlin gets English — and you can switch any email yourself.</p>
+      </div>
+      <div class="lp-langs">
+        <article class="lp-langcard">
+          <header><span class="lp-langtag">EN</span> careers@northwind.io</header>
+          <p><strong>Dear Northwind Team,</strong></p>
+          <p>What interests me most about Northwind is your work on <span class="lp-hl">managed detection and response for mid-sized banks</span>.</p>
+          <p class="lp-muted">Your focus on security operations is where my own experience is strongest…</p>
+        </article>
+        <article class="lp-langcard">
+          <header><span class="lp-langtag lp-langtag--fr">FR</span> rh@cyberlyon.fr</header>
+          <p><strong>Madame, Monsieur,</strong></p>
+          <p>Ce qui m'intéresse le plus chez CyberLyon, c'est votre travail sur <span class="lp-hl">les tests d'intrusion pour vos clients industriels</span>.</p>
+          <p class="lp-muted">Votre expertise en sécurité offensive correspond précisément…</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  {# ───────────────────────────── Security ───────────────────────────── #}
+  <section class="lp-section lp-section--tint" id="security">
+    <div class="lp-wrap lp-security">
+      <div class="lp-head lp-head--left">
+        <span class="lp-kicker">Security &amp; privacy</span>
+        <h2>Your data stays yours</h2>
+        <p>Internix is built for people trusting it with their CV, their keys and their mailbox.</p>
+      </div>
+      <ul class="lp-security__list">
+        <li><strong>Encrypted secrets</strong><span>API keys, mail passwords and Google tokens are encrypted at rest.</span></li>
+        <li><strong>Private by design</strong><span>Your drafts, CV and history are visible to you alone — not even the administrator sees them.</span></li>
+        <li><strong>Your own quotas</strong><span>You bring your AI key and send from your own mailbox: no shared limits, no shared reputation.</span></li>
+        <li><strong>Hardened sign-in</strong><span>Google sign-in, strong password hashing, lockout after repeated failures, revocable sessions.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  {# ──────────────────────────────── FAQ ──────────────────────────────── #}
+  <section class="lp-section" id="faq">
+    <div class="lp-wrap lp-faq">
+      <div class="lp-head">
+        <span class="lp-kicker">FAQ</span>
+        <h2>Questions, answered</h2>
+      </div>
+      <details><summary>Does Internix send emails without asking me?</summary><p>Never. Internix only prepares drafts. You read them, edit them if you want, and choose which ones to send.</p></details>
+      <details><summary>Will the emails all look the same?</summary><p>No. Each one quotes what that particular company does and matches it to the most relevant part of your experience. You also choose among five writing styles.</p></details>
+      <details><summary>Which AI do I need?</summary><p>Any OpenAI-compatible provider. Groq offers a free tier that works well. You paste your key once in Settings; it's stored encrypted and used only for your account.</p></details>
+      <details><summary>Can I use it if I'm not in computer science?</summary><p>Yes. Your profile is drafted from your own CV, whatever your field — finance, marketing, engineering, law or research.</p></details>
+      <details><summary>What if a company's website is in French?</summary><p>The email is written in French automatically, with French wording and a French greeting. You can switch any email to English with one click.</p></details>
+      <details><summary>Which email address are the applications sent from?</summary><p>Your own — through Google sign-in, a Gmail app password, or your university or company SMTP server. Replies come straight to you.</p></details>
+    </div>
+  </section>
+
+  {# ──────────────────────────────── CTA ──────────────────────────────── #}
+  <section class="lp-cta">
+    <div class="lp-wrap lp-cta__inner">
+      <div class="lp-cta__mark" aria-hidden="true">{{ mark(88, "cta") }}</div>
+      <h2>Your next internship starts with one good email.</h2>
+      <p>Set up in minutes. Review everything. Send when you're ready.</p>
+      <div class="lp-hero__cta lp-cta__buttons">
+        <a class="button button--amber button--lg" href="{{ url_for('auth.register') }}">Create your account</a>
+        <a class="button button--light button--lg" href="{{ url_for('auth.login') }}">Sign in</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="lp-footer">
+  <div class="lp-wrap lp-footer__inner">
+    <div>
+      {{ logo(24, dark=true) }}
+      <p>Internship applications that sound like you.</p>
+    </div>
+    <nav aria-label="Footer">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#security">Security</a>
+      <a href="{{ url_for('auth.login') }}">Sign in</a>
+    </nav>
+    <p class="lp-footer__copy">© {{ year }} Internix</p>
+  </div>
+</footer>
+{% endblock %}

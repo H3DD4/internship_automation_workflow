@@ -31,6 +31,9 @@ CSRF_FIELD = "csrf_token"
 # Endpoints reachable without signing in.
 PUBLIC_ENDPOINTS = {"static", "auth.login", "auth.register", "health", "auth.logout",
                     "auth_google", "oauth_callback"}
+# Endpoints that render a public page when nobody is signed in (and the normal
+# page, with every check, when someone is).
+LANDING_ENDPOINTS = {"index"}
 
 
 def client_ip() -> str:
@@ -114,6 +117,9 @@ def before_request():
     if request.endpoint in PUBLIC_ENDPOINTS or request.endpoint is None:
         return None
     if g.user is None:
+        # Signed-out visitors see the public landing page at "/".
+        if request.endpoint in LANDING_ENDPOINTS and request.method in ("GET", "HEAD"):
+            return None
         if is_api_request():
             return jsonify({"ok": False, "message": "Your session ended — sign in again.",
                             "login": url_for("auth.login")}), 401

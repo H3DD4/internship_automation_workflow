@@ -1,30 +1,22 @@
-{% extends "base.html" %}
-{% block title %}Sign in · Apply{% endblock %}
-{% block content %}
-<div class="auth-wrap">
-  <section class="auth-card">
-    <div class="auth-brand">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><path d="M6 16.5 26 7l-7 18-3.5-7.5L6 16.5Z" fill="#fff"/></svg>
-      <span>Apply</span>
-    </div>
-    <h1>Sign in</h1>
-    <p class="section-copy">Research every company, send applications that sound like you.</p>
-    {% include "_flashes.html" %}
-    {% set label = "Continue with Google" %}
-    {% include "auth/_google_button.html" %}
-    <form class="auth-form" method="post" action="{{ url_for('auth.login', next=request.args.get('next')) }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="form-group">
-        <label for="email">Email or username</label>
-        <input id="email" name="email" type="text" value="{{ email }}" autocomplete="username" required autofocus maxlength="320" autocapitalize="none" spellcheck="false">
-      </div>
-      <div class="form-group">
-        <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256">
-      </div>
-      <button class="button button--primary button--block" type="submit">Sign in</button>
-    </form>
-    <p class="auth-foot">No account yet? <a href="{{ url_for('auth.register') }}">Create one</a></p>
-  </section>
-</div>
+{% extends "auth/_layout.html" %}
+{% block title %}Sign in · Internix{% endblock %}
+{% block auth_card %}
+<h1>Welcome back</h1>
+<p class="section-copy">Sign in to pick up where you left off.</p>
+{% include "_flashes.html" %}
+{% set label = "Continue with Google" %}
+{% include "auth/_google_button.html" %}
+<form class="auth-form" method="post" action="{{ url_for('auth.login', next=request.args.get('next')) }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="form-group">
+    <label for="email">Email or username</label>
+    <input id="email" name="email" type="text" value="{{ email }}" autocomplete="username" required autofocus maxlength="320" autocapitalize="none" spellcheck="false">
+  </div>
+  <div class="form-group">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256">
+  </div>
+  <button class="button button--primary button--block" type="submit">Sign in</button>
+</form>
+<p class="auth-foot">New to Internix? <a href="{{ url_for('auth.register') }}">Create an account</a></p>
 {% endblock %}

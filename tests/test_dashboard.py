@@ -176,8 +176,16 @@ def test_another_users_company_is_a_404_everywhere(client, make_app, make_user):
     assert row["subject"] == "Subject" and row["status"] == "ready" and not row["favorite"]
 
 
+def test_signed_out_visitors_see_the_landing_page(anon_client):
+    page = anon_client.get("/")
+    assert page.status_code == 200
+    html = page.data.decode()
+    assert "Internix" in html and "/register" in html and 'class="shell"' not in html
+    assert anon_client.post("/", headers={"Origin": "http://localhost"}).status_code in (400, 403, 405)
+
+
 def test_signed_out_visitors_are_sent_to_sign_in(anon_client):
-    response = anon_client.get("/")
+    response = anon_client.get("/settings")
     assert response.status_code == 302 and "/login" in response.headers["Location"]
     assert anon_client.get("/api/overview").status_code == 401
     assert anon_client.get("/company/1").status_code == 302

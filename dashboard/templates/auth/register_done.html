@@ -1,16 +1,12 @@
-{% extends "base.html" %}
-{% block title %}Account requested · Apply{% endblock %}
-{% block content %}
-<div class="auth-wrap">
-  <section class="auth-card">
-    {% if pending %}
-    <h1>Almost there</h1>
-    <p class="section-copy">Your account request was received. An administrator approves new accounts — you can sign in as soon as yours is approved.</p>
-    {% else %}
-    <h1>Account created</h1>
-    <p class="section-copy">You can sign in now.</p>
-    {% endif %}
-    <p class="auth-foot"><a class="button button--primary" href="{{ url_for('auth.login') }}">Go to sign in</a></p>
-  </section>
-</div>
+{% extends "auth/_layout.html" %}
+{% block title %}Account requested · Internix{% endblock %}
+{% block auth_card %}
+{% if pending %}
+<h1>Almost there</h1>
+<p class="section-copy">Your account request was received. An administrator approves new accounts — you can sign in as soon as yours is approved.</p>
+{% else %}
+<h1>Account created</h1>
+<p class="section-copy">You can sign in now.</p>
+{% endif %}
+<p class="auth-foot"><a class="button button--primary" href="{{ url_for('auth.login') }}">Go to sign in</a></p>
 {% endblock %}

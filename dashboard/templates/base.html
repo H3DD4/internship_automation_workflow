@@ -1,16 +1,20 @@
+{% from "_brand.html" import logo, mark with context %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Application Tracker{% endblock %}</title>
+  <title>{% block title %}Internix{% endblock %}</title>
+  <meta name="description" content="Internix researches every company and writes internship applications from your own CV — in English or French — for you to review and send.">
   {% if current_user %}<meta name="csrf-token" content="{{ csrf_token() }}">{% endif %}
-  <link rel="icon" href="data:image/svg+xml,{{ "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#0D7C73'/><path d='M6 16.5 26 7l-7 18-3.5-7.5L6 16.5Z' fill='#FFFFFF'/></svg>" | urlencode }}">
-  <meta name="theme-color" content="#F5F7F9">
+  <link rel="icon" type="image/svg+xml" href="{{ asset('brand/icon.svg') }}">
+  <meta name="theme-color" content="#F5F2E9">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ asset('style.css') }}">
+  <link rel="stylesheet" href="{{ asset('internix.css') }}">
+  {% block head %}{% endblock %}
   {% if current_user %}
   {# Prefetch pages on hover so moving around feels instant. Company pages
      are only read, so they're pre-rendered (the Prev/Next walk). Never
@@ -23,6 +27,7 @@
         {"href_matches": "/*"},
         {"not": {"href_matches": "/company/*"}},
         {"not": {"href_matches": "/oauth/*"}},
+        {"not": {"href_matches": "/auth/*"}},
         {"not": {"href_matches": "/api/*"}},
         {"not": {"href_matches": "/settings/cv"}},
         {"not": {"href_matches": "/*.csv"}},
@@ -34,44 +39,77 @@
   </script>
   {% endif %}
 </head>
-<body>
-  {% if current_user %}
-  <nav class="appnav" aria-label="Main">
-    <div class="appnav__inner">
-      <a class="appnav__brand" href="{{ url_for('index') }}">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><path d="M6 16.5 26 7l-7 18-3.5-7.5L6 16.5Z" fill="#fff"/></svg>
-        <span>Apply</span>
-      </a>
-      <div class="appnav__links">
-        {% set ep = request.endpoint or '' %}
-        <a class="appnav__link{% if ep in ('index', 'company_detail') %} appnav__link--active{% endif %}" href="{{ url_for('index') }}">Tracker</a>
-        <a class="appnav__link{% if ep.startswith('profile.') %} appnav__link--active{% endif %}" href="{{ url_for('profile.page') }}">Profile</a>
-        <a class="appnav__link{% if ep == 'settings_page' %} appnav__link--active{% endif %}" href="{{ url_for('settings_page') }}">Settings</a>
+<body class="{% block body_class %}{% if current_user and not bare %}has-shell{% else %}is-bare{% endif %}{% endblock %}">
+  {% if current_user and not bare %}
+  {% set ep = request.endpoint or '' %}
+  <div class="shell">
+    <aside class="sidebar" aria-label="Main navigation">
+      <a class="sidebar__brand" href="{{ url_for('index') }}">{{ logo(24) }}</a>
+      <nav class="sidebar__nav">
+        <span class="sidebar__label">Workspace</span>
+        <a class="navlink{% if ep in ('index', 'company_detail') %} navlink--active{% endif %}" href="{{ url_for('index') }}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.5 2.5 10.8 13.2"/><path d="m21.5 2.5-6.8 19-3.9-8.3-8.3-3.9z"/></svg>
+          <span>Applications</span>
+        </a>
+        <a class="navlink{% if ep.startswith('profile.') %} navlink--active{% endif %}" href="{{ url_for('profile.page') }}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg>
+          <span>Profile &amp; style</span>
+        </a>
+        <a class="navlink{% if ep == 'settings_page' %} navlink--active{% endif %}" href="{{ url_for('settings_page') }}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+          <span>Settings</span>
+        </a>
         {% if current_user.role == 'admin' %}
-        <a class="appnav__link{% if ep.startswith('admin.') %} appnav__link--active{% endif %}" href="{{ url_for('admin.users') }}">Admin{% if pending_approvals %} <span class="appnav__badge" title="Accounts waiting for approval">{{ pending_approvals }}</span>{% endif %}</a>
+        <span class="sidebar__label">Administration</span>
+        <a class="navlink{% if ep == 'admin.users' %} navlink--active{% endif %}" href="{{ url_for('admin.users') }}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.5c0-2.2-1.8-4-4-4H7c-2.2 0-4 1.8-4 4V20"/><circle cx="9.5" cy="7.5" r="3.5"/><path d="M21 20v-1.5a4 4 0 0 0-3-3.9M16 4.1a3.5 3.5 0 0 1 0 6.8"/></svg>
+          <span>Users</span>
+          {% if pending_approvals %}<span class="navlink__badge" title="Waiting for approval">{{ pending_approvals }}</span>{% endif %}
+        </a>
+        <a class="navlink{% if ep == 'admin.platform' %} navlink--active{% endif %}" href="{{ url_for('admin.platform') }}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v6c0 4.6 3.2 7.9 7.5 9 4.3-1.1 7.5-4.4 7.5-9V6z"/><path d="m9 12 2 2 4-4"/></svg>
+          <span>Platform</span>
+        </a>
+        <a class="navlink{% if ep == 'admin.audit' %} navlink--active{% endif %}" href="{{ url_for('admin.audit') }}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h11a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H8"/><path d="M4 4h1v16H4zM9 9h7M9 13h7M9 17h4"/></svg>
+          <span>Audit log</span>
+        </a>
         {% endif %}
-      </div>
-      <details class="usermenu">
-        <summary class="usermenu__toggle" title="{{ current_user.email }}">
-          <span class="usermenu__avatar" aria-hidden="true">{{ (current_user.full_name or current_user.email)[:1] | upper }}</span>
-          <span class="usermenu__name">{{ current_user.full_name or current_user.email }}</span>
+      </nav>
+      <details class="sidebar__user">
+        <summary>
+          <span class="avatar" aria-hidden="true">{{ (current_user.full_name or current_user.username or current_user.email)[:1] | upper }}</span>
+          <span class="sidebar__who">
+            <strong>{{ current_user.full_name or current_user.username or current_user.email }}</strong>
+            <span>{{ "Administrator" if current_user.role == 'admin' else current_user.email }}</span>
+          </span>
+          <svg class="sidebar__chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
         </summary>
-        <div class="usermenu__panel">
-          <div class="usermenu__email">{{ current_user.email }}{% if current_user.role == 'admin' %} · admin{% endif %}</div>
-          <a href="{{ url_for('auth.change_password') }}">Change password</a>
-          <a href="{{ url_for('settings_page') }}#s-account">Sessions &amp; account</a>
+        <div class="sidebar__menu">
+          <a href="{{ url_for('auth.change_password') }}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.7-8.7M16.5 6.5l2.5 2.5"/></svg>Change password</a>
+          <a href="{{ url_for('settings_page') }}#s-account">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>Sessions &amp; account</a>
           <form action="{{ url_for('auth.logout') }}" method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit">Sign out</button>
+            <button type="submit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 12H4M8 8l-4 4 4 4"/><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/></svg>Sign out</button>
           </form>
         </div>
       </details>
-    </div>
-  </nav>
-  {% endif %}
-  <div class="page">
-    {% block content %}{% endblock %}
+    </aside>
+    <main class="main">
+      <div class="page">
+        {% block content %}{% endblock %}
+      </div>
+    </main>
   </div>
+  {% else %}
+  {% block bare %}
+  <div class="page page--bare">
+    {% block bare_content %}{{ self.content() }}{% endblock %}
+  </div>
+  {% endblock %}
+  {% endif %}
   {% block scripts %}{% endblock %}
 </body>
 </html>

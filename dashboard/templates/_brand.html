@@ -1,0 +1,23 @@
+{# The Internix brand, in one place.
+   mark()  the app icon (cream + amber on the blue gradient), inline SVG.
+   logo()  the full wordmark from static/brand (light or dark ground). #}
+{% macro mark(size=28, uid="m") -%}
+<svg class="brand-mark" width="{{ size }}" height="{{ size }}" viewBox="0 0 1024 1024" aria-hidden="true">
+  <defs>
+    <linearGradient id="ixg-{{ uid }}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6B79FE"/>
+      <stop offset="1" stop-color="#3B4ADB"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#ixg-{{ uid }})"/>
+  <polygon points="262,262 512,262 512,512" fill="#F5F2E9"/>
+  <polygon points="512,512 262,762 512,762" fill="#F5F2E9"/>
+  <polygon points="512,262 762,262 512,512" fill="#F4B544"/>
+  <polygon points="512,512 512,762 762,762" fill="#F4B544"/>
+</svg>
+{%- endmacro %}
+
+{% macro logo(height=26, dark=false) -%}
+<img class="brand-logo" src="{{ asset('brand/wordmark-on-dark.png' if dark else 'brand/wordmark.png') }}"
+     alt="Internix" height="{{ height }}" style="height: {{ height }}px; width: auto;">
+{%- endmacro %}

@@ -53,10 +53,10 @@ def test_creating_a_user_shows_the_temporary_password_once(admin_client):
 def test_suspending_signs_the_user_out_everywhere(admin_client, make_user, login):
     uid = make_user("student@example.com")
     student = login(uid)
-    assert student.get("/").status_code == 200
+    assert student.get("/settings").status_code == 200
     _post(admin_client, f"/admin/users/{uid}/suspend")
     assert accounts.get_user(uid)["status"] == "suspended"
-    assert student.get("/").status_code == 302
+    assert student.get("/settings").status_code == 302
     _post(admin_client, f"/admin/users/{uid}/activate")
     assert accounts.get_user(uid)["status"] == "active"
 

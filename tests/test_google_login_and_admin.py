@@ -137,7 +137,7 @@ def test_an_existing_user_signs_in_with_google_and_sending_is_connected(google, 
     c = app_module.app.test_client()
     response = _google_round_trip(c)
     assert response.status_code == 302 and response.headers["Location"] in ("/", f"{LOCAL}/")
-    assert c.get("/", base_url=LOCAL).status_code == 200      # signed in, no password page
+    assert c.get("/settings", base_url=LOCAL).status_code == 200      # signed in, no password page
     assert accounts.get_user(uid)["must_change_password"] == 0
     cfg = UserConfig(uid)
     assert cfg.get("MAIL_METHOD") == "oauth" and cfg.get("GMAIL_ADDRESS") == "student@gmail.com"
@@ -155,7 +155,7 @@ def test_open_sign_up_with_google_signs_in_at_once(google, app_module):
     accounts.set_system_setting("signup_mode", "open")
     c = app_module.app.test_client()
     assert _google_round_trip(c).status_code == 302
-    assert c.get("/", base_url=LOCAL).status_code == 200
+    assert c.get("/settings", base_url=LOCAL).status_code == 200
 
 
 def test_closed_sign_up_creates_nothing(google, app_module):
@@ -177,7 +177,7 @@ def test_an_unverified_google_email_is_refused(google, app_module, make_user):
     google["identity"]["email_verified"] = False
     c = app_module.app.test_client()
     _google_round_trip(c)
-    assert c.get("/", base_url=LOCAL).status_code == 302
+    assert c.get("/settings", base_url=LOCAL).status_code == 302
 
 
 def test_a_suspended_user_cannot_sign_in_with_google(google, app_module, make_user):
@@ -185,7 +185,7 @@ def test_a_suspended_user_cannot_sign_in_with_google(google, app_module, make_us
     accounts.update_user(uid, status="suspended")
     c = app_module.app.test_client()
     _google_round_trip(c)
-    assert c.get("/", base_url=LOCAL).status_code == 302
+    assert c.get("/settings", base_url=LOCAL).status_code == 302
 
 
 def test_a_returning_sign_in_keeps_the_stored_refresh_token(google, app_module, make_user):
@@ -201,7 +201,7 @@ def test_signing_in_without_the_send_permission_still_signs_in(google, app_modul
     google["state"]["scopes"] = ["openid"]
     c = app_module.app.test_client()
     _google_round_trip(c)
-    assert c.get("/", base_url=LOCAL).status_code == 200
+    assert c.get("/settings", base_url=LOCAL).status_code == 200
     assert UserConfig(uid).secret("GOOGLE_TOKEN") == ""
 
 
@@ -210,7 +210,7 @@ def test_a_forged_callback_is_refused(google, app_module, make_user):
     c = app_module.app.test_client()
     c.get("/auth/google", base_url=LOCAL)
     c.get("/oauth/callback?state=forged&code=c", base_url=LOCAL)
-    assert c.get("/", base_url=LOCAL).status_code == 302
+    assert c.get("/settings", base_url=LOCAL).status_code == 302
 
 
 def test_google_sign_in_starts_on_the_public_address(google, app_module):

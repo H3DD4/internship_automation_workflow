@@ -14,6 +14,7 @@ row is indistinguishable from one that doesn't exist.
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -342,7 +343,11 @@ def _table_context(page: int, status_param: str, search_param: str, limit: int =
 
 @app.route("/")
 def index():
-    page = max(1, request.args.get("page", 1, type=int))
+    if g.user is None:
+        import google_auth_helper
+        return render_template("landing.html", google=google_auth_helper.oauth_is_configured(),
+                               year=date.today().year)
+    page =max(1, request.args.get("page", 1, type=int))
     status_param = request.args.get("status", "").strip()[:40]
     search_param = request.args.get("q", "").strip()[:120]
     context = _table_context(page, status_param, search_param)
