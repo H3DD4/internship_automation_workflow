@@ -2,7 +2,9 @@
 
     python manage.py generate-keys                 fresh SECRET_KEY + ENCRYPTION_KEYS
     python manage.py init-db                       create every table
-    python manage.py create-admin --email a@b.c    first administrator (password prompted)
+    python manage.py ensure-admin                  create/update the admin from ADMIN_USERNAME/ADMIN_PASSWORD
+    python manage.py create-admin --email a@b.c    an extra administrator (password prompted)
+    python manage.py set-role --email a@b.c --role user|admin
     python manage.py set-password --email a@b.c    reset anyone's password (prompted)
     python manage.py import-legacy --email a@b.c   move a single-user install into an account
     python manage.py verify-golden --email a@b.c --baseline golden.json
@@ -63,6 +65,29 @@ def cmd_create_admin(args):
     print(f"Administrator {accounts.normalize_email(args.email)} created (id {uid}).")
 
 
+def cmd_ensure_admin(_args):
+    _boot()
+    import accounts
+    creds = config.admin_credentials()
+    if not creds:
+        print("ADMIN_USERNAME / ADMIN_PASSWORD not set — no administrator account managed.")
+        return
+    uid = accounts.ensure_admin(*creds)
+    print(f"Administrator '{creds[0]}' ready (id {uid}).")
+
+
+def cmd_set_role(args):
+    _boot()
+    import accounts
+    user = accounts.get_user_by_email(args.email)
+    if not user:
+        sys.exit("No such account.")
+    accounts.update_user(user["id"], role=args.role, must_change_password=0)
+    accounts.end_all_sessions(user["id"])
+    accounts.audit("cli_set_role", target=user["id"], detail={"role": args.role})
+    print(f"{user['email']} is now '{args.role}'.")
+
+
 def cmd_set_password(args):
     _boot()
     import accounts
@@ -87,9 +112,8 @@ def cmd_import_legacy(args):
     except migrate_legacy.MigrationError as exc:
         sys.exit(f"Import stopped: {exc}")
     print("\nImport complete.")
-    if result["generated_password"]:
-        print("\n  Temporary password (shown once — you'll choose your own at first sign-in):")
-        print(f"    {result['generated_password']}\n")
+    if not password:
+        print(f"  Sign in with Google as {args.email} (or set a password: manage.py set-password).")
 
 
 def cmd_verify_golden(args):
@@ -169,6 +193,11 @@ def main(argv=None):
     p.add_argument("--name", default="")
     p.add_argument("--password-stdin", action="store_true")
     p.set_defaults(func=cmd_create_admin)
+    sub.add_parser("ensure-admin").set_defaults(func=cmd_ensure_admin)
+    p = sub.add_parser("set-role")
+    p.add_argument("--email", required=True)
+    p.add_argument("--role", required=True, choices=["user", "admin"])
+    p.set_defaults(func=cmd_set_role)
     p = sub.add_parser("set-password")
     p.add_argument("--email", required=True)
     p.add_argument("--password-stdin", action="store_true")

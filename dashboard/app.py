@@ -39,7 +39,7 @@ from dashboard import security
 ROOT_DIR = Path(__file__).parent.parent
 
 vault.ensure_dev_keys()
-if not config.is_production():
+if not config.is_production() or config.local_http_base():
     # Google's OAuth library insists on https; a local run is http on loopback.
     os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 # Google may return a slightly different scope list than requested; which
@@ -53,8 +53,8 @@ app.config.update(
     MAX_CONTENT_LENGTH=max(config.MAX_CV_BYTES, config.MAX_COMPANIES_UPLOAD_BYTES) + 1024 * 1024,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=config.is_production(),
-    SESSION_COOKIE_NAME="__Host-flask" if config.is_production() else "flask",
+    SESSION_COOKIE_SECURE=config.served_over_https(),
+    SESSION_COOKIE_NAME="__Host-flask" if config.served_over_https() else "flask",
 )
 if config.bool_setting("TRUST_PROXY", config.is_production()):
     from werkzeug.middleware.proxy_fix import ProxyFix
@@ -92,6 +92,9 @@ def _before():
     global _started
     if not _started:
         database.init_schema()
+        admin = config.admin_credentials()
+        if admin:
+            accounts.ensure_admin(*admin)
         if config.embedded_worker() and not app.config.get("TESTING"):
             import worker
             worker.ensure_embedded()
@@ -946,10 +949,17 @@ def api_validate_gmail():
 
 
 # ---------------------------------------------------------------------------
-# Google sign-in (the platform's OAuth client, the user's own token)
+# Google: sign in / sign up, and connecting Gmail for sending
 # ---------------------------------------------------------------------------
+# One OAuth client for the platform, one callback (/oauth/callback, the URI
+# registered on Google's side) and two purposes kept in the session:
+#   login    "Continue with Google" on the sign-in / sign-up pages — proves who
+#            the visitor is (verified, signed ID token) and, in the same
+#            consent, lets the app send from their Gmail;
+#   connect  Settings → Email account, for a user who's already signed in.
 
 LOCAL_OAUTH_HOST = "127.0.0.1"
+LOGIN_EXTRA_SCOPES = ["https://www.googleapis.com/auth/userinfo.profile"]
 
 
 def oauth_redirect_uri() -> str:
@@ -962,36 +972,46 @@ def oauth_redirect_uri() -> str:
     return f"http://{LOCAL_OAUTH_HOST}:{port}{url_for('oauth_callback')}"
 
 
+def _canonical_host_redirect():
+    """The session cookie belongs to the host it was set on; start the Google
+    round trip on the host Google will send the browser back to."""
+    from urllib.parse import urlparse
+    expected = urlparse(oauth_redirect_uri()).netloc
+    if request.host != expected:
+        return redirect(f"{urlparse(oauth_redirect_uri()).scheme}://{expected}{request.full_path.rstrip('?')}")
+    return None
+
+
 def _to_mail_settings():
     return redirect(url_for("settings_page") + "#s-gmail")
 
 
-def _oauth_flow(code_verifier: str | None = None):
+def _oauth_flow(scopes: list, code_verifier: str | None = None):
     import google_auth_helper
     from google_auth_oauthlib.flow import Flow
     client = google_auth_helper.client_config()
     if not client:
         return None
-    return Flow.from_client_config(client, scopes=google_auth_helper.requested_scopes(),
-                                   redirect_uri=oauth_redirect_uri(), code_verifier=code_verifier)
+    return Flow.from_client_config(client, scopes=scopes, redirect_uri=oauth_redirect_uri(),
+                                   code_verifier=code_verifier)
 
 
-@app.route("/oauth/start")
-def oauth_start():
+def _start_google(purpose: str, hint: str = ""):
     import secrets as _secrets
-    if not config.public_base_url() and request.host.split(":")[0] != LOCAL_OAUTH_HOST:
-        return redirect(oauth_redirect_uri().replace("/oauth/callback", url_for("oauth_start")))
-    flow = _oauth_flow()
+    import google_auth_helper
+    scopes = google_auth_helper.requested_scopes() + (LOGIN_EXTRA_SCOPES if purpose == "login" else [])
+    flow = _oauth_flow(scopes)
     if not flow:
-        flash("Google sign-in isn't set up on this platform yet — ask the administrator, or use "
-              "an app password.", "error")
-        return _to_mail_settings()
+        return None
     state = _secrets.token_urlsafe(24)
     session["oauth_state"] = state
-    session["oauth_uid"] = g.user["id"]
-    params = {"access_type": "offline", "prompt": "consent", "state": state,
-              "include_granted_scopes": "false"}
-    hint = g.cfg.get("GMAIL_ADDRESS") or g.user["email"]
+    session["oauth_purpose"] = purpose
+    session["oauth_scopes"] = scopes
+    session["oauth_uid"] = g.user["id"] if g.get("user") else None
+    params = {"access_type": "offline", "state": state, "include_granted_scopes": "false",
+              # A connect needs a fresh refresh token; a returning sign-in
+              # only needs to pick the account.
+              "prompt": "consent" if purpose == "connect" else "select_account"}
     if "@" in hint:
         params["login_hint"] = hint
     auth_url, _ = flow.authorization_url(**params)
@@ -999,26 +1019,143 @@ def oauth_start():
     return redirect(auth_url)
 
 
+@app.route("/oauth/start")
+def oauth_start():
+    moved = _canonical_host_redirect()
+    if moved:
+        return moved
+    started = _start_google("connect", g.cfg.get("GMAIL_ADDRESS") or g.user["email"])
+    if started is None:
+        flash("Google sign-in isn't set up on this platform yet — ask the administrator, or use "
+              "an app password.", "error")
+        return _to_mail_settings()
+    return started
+
+
+@app.route("/auth/google")
+def auth_google():
+    """"Continue with Google" — signs in, or signs up, in one step."""
+    if g.get("user"):
+        return redirect(url_for("index"))
+    moved = _canonical_host_redirect()
+    if moved:
+        return moved
+    if security.rate_limited(f"google-login-ip:{security.client_ip()}", 30, 600):
+        flash("Too many attempts. Wait a few minutes and try again.", "error")
+        return redirect(url_for("auth.login"))
+    session["oauth_next"] = security.safe_next(request.args.get("next"))
+    started = _start_google("login")
+    if started is None:
+        flash("Google sign-in isn't available on this platform yet.", "error")
+        return redirect(url_for("auth.login"))
+    return started
+
+
+def _store_google_token(cfg, creds, email: str, granted: set) -> bool:
+    """Keep the Gmail token when sending was allowed. A returning sign-in may
+    come back without a refresh token; the one already stored is kept."""
+    import google_auth_helper
+    if google_auth_helper.SEND_SCOPE not in granted:
+        return False
+    if not creds.refresh_token:
+        previous = json.loads(cfg.secret("GOOGLE_TOKEN") or "{}")
+        if not previous.get("refresh_token"):
+            return False
+        data = json.loads(creds.to_json())
+        data["refresh_token"] = previous["refresh_token"]
+        data["email"] = email
+        cfg.set_secret("GOOGLE_TOKEN", json.dumps(data))
+    else:
+        google_auth_helper.save_credentials(cfg, creds, email)
+    updates = {"GMAIL_ADDRESS": email}
+    if cfg.get("MAIL_METHOD") in ("", "oauth"):
+        updates["MAIL_METHOD"] = "oauth"
+    cfg.set_many(updates)
+    return True
+
+
+def verify_google_identity(creds) -> dict:
+    """The signed ID token, verified against Google's keys and our client id.
+    Raises ValueError when it isn't valid."""
+    import google_auth_helper
+    from google.auth.transport.requests import Request as GoogleRequest
+    from google.oauth2 import id_token as google_id_token
+    client_id = google_auth_helper.client_config()["web"]["client_id"]
+    claims = google_id_token.verify_oauth2_token(creds.id_token, GoogleRequest(), client_id)
+    if not claims.get("email") or not claims.get("email_verified"):
+        raise ValueError("Google didn't confirm this email address.")
+    return claims
+
+
+def _finish_google_login(creds, granted: set):
+    from user_config import UserConfig
+    fail = lambda message: (flash(message, "error"), redirect(url_for("auth.login")))[1]  # noqa: E731
+    try:
+        claims = verify_google_identity(creds)
+    except Exception as exc:
+        accounts.audit("login_google_failed", detail={"error": str(exc)[:120]}, ip=security.client_ip())
+        return fail("Google sign-in couldn't be verified — please try again.")
+    email = accounts.normalize_email(claims["email"])
+    user = accounts.get_user_by_email(email)
+    if user and user["role"] == "admin":
+        return fail("The administrator account signs in with its username and password.")
+    if user is None:
+        mode = accounts.signup_mode()
+        if mode == "closed":
+            return fail("Sign-up is closed on this platform — ask the administrator for an account.")
+        import secrets as _secrets
+        uid = accounts.create_user(email, _secrets.token_urlsafe(32), full_name=claims.get("name") or "",
+                                   status="active" if mode == "open" else "pending")
+        accounts.audit("register_google", target=uid, ip=security.client_ip(),
+                       detail={"status": "active" if mode == "open" else "pending"})
+        user = accounts.get_user(uid)
+    cfg = UserConfig(user["id"], user["role"])
+    sending = _store_google_token(cfg, creds, email, granted)
+    if user["status"] == "pending":
+        return render_template("auth/register_done.html", pending=True)
+    if user["status"] != "active":
+        return fail("This account is suspended. Contact the administrator.")
+    # Signing in with Google proves the identity: a pending temporary
+    # password is no longer needed.
+    accounts.update_user(user["id"], failed_logins=0, locked_until=None, must_change_password=0,
+                         last_login_at=accounts._now())
+    token, _ = accounts.create_session(user["id"], security.client_ip(), request.headers.get("User-Agent", ""))
+    accounts.audit("login_google", actor=user["id"], ip=security.client_ip())
+    if not sending:
+        flash("Signed in. To send from this Gmail, connect it in Settings → Email account.", "success")
+    response = redirect(session.pop("oauth_next", None) or url_for("index"))
+    security.set_session_cookie(response, token)
+    return response
+
+
 @app.route("/oauth/callback")
 def oauth_callback():
     import google_auth_helper
+    purpose = session.pop("oauth_purpose", "connect")
+    back = (lambda: redirect(url_for("auth.login"))) if purpose == "login" else _to_mail_settings
     error = request.args.get("error")
     if error:
         hint = (" — while the platform's Google app is in Testing mode, only its listed test users "
                 "can sign in." if error == "access_denied" else "")
         flash(f"Google sign-in was cancelled or denied: {error[:60]}{hint}", "error")
-        return _to_mail_settings()
+        return back()
     state = request.args.get("state", "")
     expected = session.pop("oauth_state", None)
     owner = session.pop("oauth_uid", None)
     code_verifier = session.pop("oauth_code_verifier", None)
-    if not state or not expected or state != expected or owner != g.user["id"]:
+    scopes = session.pop("oauth_scopes", None) or google_auth_helper.requested_scopes()
+    current = g.user["id"] if g.get("user") else None
+    if not state or not expected or state != expected or owner != current or \
+            (purpose == "connect" and current is None):
         flash("Google sign-in couldn't be verified — please try again.", "error")
-        return _to_mail_settings()
+        return back()
     try:
-        flow = _oauth_flow(code_verifier=code_verifier)
+        flow = _oauth_flow(scopes, code_verifier=code_verifier)
         flow.fetch_token(code=request.args.get("code", ""))
         creds = flow.credentials
+        granted = set(getattr(creds, "granted_scopes", None) or creds.scopes or [])
+        if purpose == "login":
+            return _finish_google_login(creds, granted)
         missing = google_auth_helper.missing_required_scopes(creds)
         if google_auth_helper.SEND_SCOPE in missing:
             flash("Google connected, but the “Send email on your behalf” permission was left "
@@ -1036,7 +1173,8 @@ def oauth_callback():
         text = str(exc)
         if "redirect_uri_mismatch" in text:
             text = f"redirect URI mismatch — the platform's Google client must list {oauth_redirect_uri()}"
-        flash(f"Connecting Google failed: {text[:200]}", "error")
+        flash(f"Google sign-in failed: {text[:200]}", "error")
+        return back()
     return _to_mail_settings()
 
 

@@ -31,6 +31,9 @@ users = Table(
     "users", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("email", String(320), nullable=False, unique=True),
+    # Only the platform administrator signs in with a username; everyone else
+    # uses their email (or Google).
+    Column("username", String(64), unique=True),
     Column("password_hash", Text, nullable=False),
     Column("full_name", Text, nullable=False, server_default=""),
     Column("role", String(16), nullable=False, server_default="user"),        # admin | user
@@ -274,7 +277,7 @@ prep_runs = Table(
     Index("idx_prep_runs_user", "user_id", "id"),
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # Engine
@@ -363,8 +366,22 @@ def init_schema() -> None:
         existing = inspect(conn).get_table_names()
         if "schema_version" not in existing:
             conn.execute(text("CREATE TABLE schema_version (version INTEGER NOT NULL)"))
-            conn.execute(text("INSERT INTO schema_version (version) VALUES (:v)"), {"v": SCHEMA_VERSION})
+            conn.execute(text("INSERT INTO schema_version (version) VALUES (:v)"), {"v": 1})
+        _migrate(conn)
     _initialized.add(_engine_url)
+
+
+def _migrate(conn) -> None:
+    """Bring an existing database up to SCHEMA_VERSION, one step at a time.
+    create_all() only creates missing tables; columns added to an existing
+    table need an explicit step here."""
+    version = conn.execute(text("SELECT MAX(version) FROM schema_version")).scalar() or 1
+    if version < 2:
+        columns = {c["name"] for c in inspect(conn).get_columns("users")}
+        if "username" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN username VARCHAR(64)"))
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username ON users (username)"))
+        conn.execute(text("INSERT INTO schema_version (version) VALUES (2)"))
 
 
 def _dialect_insert(conn, table):

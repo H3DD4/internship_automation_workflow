@@ -71,6 +71,30 @@ def public_base_url() -> str:
     return get("PUBLIC_BASE_URL").rstrip("/")
 
 
+def served_over_https() -> bool:
+    """Whether browsers reach the app over HTTPS. Decides Secure cookies and
+    HSTS: on by default in production, off when PUBLIC_BASE_URL is plain
+    http (the one-command local stack at http://127.0.0.1:5050)."""
+    base = public_base_url()
+    if base:
+        return base.startswith("https://")
+    return is_production()
+
+
+def local_http_base() -> bool:
+    """PUBLIC_BASE_URL is http on this machine — the only case where Google's
+    OAuth library may be told to accept plain http."""
+    base = public_base_url()
+    return base.startswith(("http://127.0.0.1", "http://localhost"))
+
+
+def admin_credentials() -> tuple[str, str] | None:
+    """(username, password) of the platform administrator, from the
+    environment (ADMIN_USERNAME / ADMIN_PASSWORD), or None."""
+    username, password = get("ADMIN_USERNAME"), os.environ.get("ADMIN_PASSWORD", "")
+    return (username, password) if username and password else None
+
+
 def allow_private_urls() -> bool:
     """Whether the server may fetch private/loopback addresses (company
     websites, custom AI endpoints). Always off in production: a company list

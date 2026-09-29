@@ -1,0 +1,25 @@
+# Never ship data, credentials or local tooling in the image.
+# (Patterns with **/ apply at every depth.)
+.git
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.env
+.env.*
+!.env.example
+applications.db*
+data/
+cache/
+dashboard_uploads/
+dashboard_run.log
+dashboard_stop.flag
+token.json
+credentials.json
+client_secret_*.json
+**/*.pdf
+**/*.xlsx
+_diag_ai.py
+_check_db.py
+tests/

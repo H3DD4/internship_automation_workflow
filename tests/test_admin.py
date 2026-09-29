@@ -70,21 +70,16 @@ def test_an_admin_cannot_lock_themself_out(admin_client):
     assert user and user["role"] == "admin" and user["status"] == "active"
 
 
-def test_the_last_admin_cannot_be_removed(admin_client, make_user, login):
-    other_admin = make_user("second@example.com", role="admin")
-    second = login(other_admin)
-    _post(second, f"/admin/users/{admin_client.user_id}/role", role="user")  # allowed: two admins
-    assert accounts.get_user(admin_client.user_id)["role"] == "user"
-    # Now `second` is the only admin, and can't be demoted by... nobody else is admin.
-    assert accounts.count_admins() == 1
-
-
-def test_role_changes_take_effect_on_a_fresh_sign_in(admin_client, make_user, login):
+def test_there_is_no_way_to_promote_someone_to_admin(admin_client, make_user):
     uid = make_user("student@example.com")
-    student = login(uid)
-    _post(admin_client, f"/admin/users/{uid}/role", role="admin")
-    assert accounts.get_user(uid)["role"] == "admin"
-    assert student.get("/").status_code == 302        # old session ended
+    assert _post(admin_client, f"/admin/users/{uid}/role", role="admin").status_code == 404
+    assert "Make administrator" not in admin_client.get("/admin/").data.decode()
+    assert accounts.get_user(uid)["role"] == "user"
+
+
+def test_accounts_created_by_the_admin_are_regular_users(admin_client):
+    _post(admin_client, "/admin/users", email="new@example.com", full_name="New", role="admin")
+    assert accounts.get_user_by_email("new@example.com")["role"] == "user"
 
 
 def test_resetting_a_password_forces_a_change(admin_client, make_user):

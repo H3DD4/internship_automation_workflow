@@ -17,7 +17,7 @@ import sys
 import threading
 
 _local = threading.local()
-_installed = False
+
 _install_lock = threading.Lock()
 
 
@@ -54,13 +54,11 @@ class _Router(io.TextIOBase):
 
 def install() -> None:
     """Route sys.stdout through the per-thread sink. Idempotent."""
-    global _installed
+    # Checked against the live sys.stdout, not a flag: something else (a test
+    # runner, a debugger) may have replaced it since the last install.
     with _install_lock:
-        if _installed or isinstance(sys.stdout, _Router):
-            _installed = True
-            return
-        sys.stdout = _Router(sys.stdout)
-        _installed = True
+        if not isinstance(sys.stdout, _Router):
+            sys.stdout = _Router(sys.stdout)
 
 
 def current():

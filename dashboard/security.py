@@ -24,12 +24,13 @@ import accounts
 import config
 from user_config import UserConfig
 
-COOKIE_NAME = "__Host-sid" if config.is_production() else "sid"
+COOKIE_NAME = "__Host-sid" if config.served_over_https() else "sid"
 CSRF_HEADER = "X-CSRF-Token"
 CSRF_FIELD = "csrf_token"
 
 # Endpoints reachable without signing in.
-PUBLIC_ENDPOINTS = {"static", "auth.login", "auth.register", "health", "auth.logout"}
+PUBLIC_ENDPOINTS = {"static", "auth.login", "auth.register", "health", "auth.logout",
+                    "auth_google", "oauth_callback"}
 
 
 def client_ip() -> str:
@@ -57,11 +58,11 @@ def load_current_user() -> None:
 
 def set_session_cookie(response, token: str) -> None:
     response.set_cookie(COOKIE_NAME, token, max_age=config.SESSION_ABSOLUTE_DAYS * 86400,
-                        secure=config.is_production(), httponly=True, samesite="Lax", path="/")
+                        secure=config.served_over_https(), httponly=True, samesite="Lax", path="/")
 
 
 def clear_session_cookie(response) -> None:
-    response.delete_cookie(COOKIE_NAME, path="/", secure=config.is_production(),
+    response.delete_cookie(COOKIE_NAME, path="/", secure=config.served_over_https(),
                            httponly=True, samesite="Lax")
 
 
@@ -141,7 +142,7 @@ def after_request(response):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-    if config.is_production():
+    if config.served_over_https():
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
     # Pages holding personal data are never cached by the browser or a proxy.
     if request.endpoint != "static":

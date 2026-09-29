@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
-import string
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -63,20 +62,13 @@ def _resolve(root: Path, raw: str) -> Path | None:
     return path if path.is_absolute() else (root / path)
 
 
-def _temp_password() -> str:
-    alphabet = string.ascii_letters + string.digits
-    while True:
-        candidate = "-".join("".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4))
-        if accounts.password_problem(candidate) is None:
-            return candidate
-
-
 def _log(report: list, message: str) -> None:
     report.append(message)
     print("  " + message)
 
 
-def run(*, email: str, root: Path, password: str | None = None, log=print) -> dict:
+def run(*, email: str, root: Path, password: str | None = None, role: str = "user",
+        log=print) -> dict:
     root = Path(root)
     database.init_schema()
     report: list = []
@@ -85,20 +77,20 @@ def run(*, email: str, root: Path, password: str | None = None, log=print) -> di
     if not sqlite_path.exists():
         raise MigrationError(f"{sqlite_path} not found.")
 
-    # --- the account --------------------------------------------------------
+    # --- the account ------------------------------------------------------------
+    # A regular account (the platform administrator is a separate, username
+    # account). Without a chosen password it gets an unguessable one and
+    # signs in with Google — no temporary password to deal with.
     email = accounts.normalize_email(email)
     user = accounts.get_user_by_email(email)
-    generated_password = None
     if user is None:
-        generated_password = None if password else _temp_password()
-        uid = accounts.create_user(email, password or generated_password,
-                                   full_name=_real(env.get("YOUR_NAME")), role="admin", status="active",
-                                   must_change_password=password is None)
-        _log(report, f"created admin account {email} (id {uid})")
+        uid = accounts.create_user(email, password or secrets.token_urlsafe(32),
+                                   full_name=_real(env.get("YOUR_NAME")), role=role, status="active")
+        _log(report, f"created {role} account {email} (id {uid})")
     else:
         uid = user["id"]
-        if user["role"] != "admin" or user["status"] != "active":
-            accounts.update_user(uid, role="admin", status="active")
+        if user["status"] != "active":
+            accounts.update_user(uid, status="active")
         _log(report, f"using existing account {email} (id {uid})")
 
     with database.read() as conn:
@@ -108,7 +100,7 @@ def run(*, email: str, root: Path, password: str | None = None, log=print) -> di
         raise MigrationError(f"{email} already has {already} applications — the import already ran. "
                              "Nothing was changed.")
 
-    cfg = user_config.UserConfig(uid, "admin")
+    cfg = user_config.UserConfig(uid, role)
 
     # --- settings and secrets from .env ---------------------------------------
     settings = {key: _real(env.get(key)) for key in user_config.SETTING_DEFAULTS
@@ -252,5 +244,5 @@ def run(*, email: str, root: Path, password: str | None = None, log=print) -> di
         check.close()
     _log(report, "verified: every legacy row is present with its original id")
     accounts.audit("legacy_import", actor=uid, target=uid, detail={**counts, **cached, "listed": listed})
-    return {"user_id": uid, "generated_password": generated_password, "counts": counts,
+    return {"user_id": uid, "counts": counts,
             "cache": cached, "listed": listed, "report": report}

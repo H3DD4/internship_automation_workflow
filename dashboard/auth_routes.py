@@ -10,32 +10,42 @@ from dashboard import security
 bp = Blueprint("auth", __name__)
 
 
+def _google_enabled() -> bool:
+    import google_auth_helper
+    return google_auth_helper.oauth_is_configured()
+
+
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if g.get("user"):
         return redirect(url_for("index"))
-    email = ""
+    identifier = ""
+    google = _google_enabled()
     if request.method == "POST":
-        email = accounts.normalize_email(request.form.get("email", ""))[:320]
+        # An email (users) or a username (the administrator) — kept exactly as
+        # typed apart from surrounding spaces: usernames are case-sensitive.
+        identifier = (request.form.get("email") or "").strip()[:320]
         password = request.form.get("password", "")[:accounts.MAX_PASSWORD_LENGTH + 1]
         ip = security.client_ip()
         # Per IP and per account: slows both spraying many accounts from one
         # address and hammering one account from many.
         if security.rate_limited(f"login-ip:{ip}", 20, 600) or \
-                security.rate_limited(f"login-acct:{email}", 10, 600):
+                security.rate_limited(f"login-acct:{identifier.lower()}", 10, 600):
             flash("Too many sign-in attempts. Wait a few minutes and try again.", "error")
-            return render_template("auth/login.html", email=email), 429
-        result = accounts.authenticate(email, password)
+            return render_template("auth/login.html", email=identifier, google=google), 429
+        result = accounts.authenticate(identifier, password)
         if not result.ok:
-            accounts.audit("login_failed", detail={"email": email}, ip=ip)
+            accounts.audit("login_failed", detail={"login": identifier[:80]}, ip=ip)
             flash(result.reason, "error")
-            return render_template("auth/login.html", email=email), 401
+            return render_template("auth/login.html", email=identifier, google=google), 401
         token, _ = accounts.create_session(result.user["id"], ip, request.headers.get("User-Agent", ""))
         accounts.audit("login", actor=result.user["id"], ip=ip)
-        response = redirect(security.safe_next(request.args.get("next")))
+        default = url_for("admin.users") if result.user["role"] == "admin" else url_for("index")
+        target = request.args.get("next")
+        response = redirect(security.safe_next(target) if target else default)
         security.set_session_cookie(response, token)
         return response
-    return render_template("auth/login.html", email=email)
+    return render_template("auth/login.html", email=identifier, google=google)
 
 
 @bp.route("/register", methods=["GET", "POST"])
@@ -44,7 +54,7 @@ def register():
     if g.get("user"):
         return redirect(url_for("index"))
     if mode == "closed":
-        return render_template("auth/register.html", closed=True, form={})
+        return render_template("auth/register.html", closed=True, form={}, google=False)
     form = {"email": "", "full_name": ""}
     if request.method == "POST":
         form = {"email": accounts.normalize_email(request.form.get("email", ""))[:320],
@@ -52,13 +62,13 @@ def register():
         password = request.form.get("password", "")
         if security.rate_limited(f"register-ip:{security.client_ip()}", 5, 3600):
             flash("Too many sign-ups from this network. Try again later.", "error")
-            return render_template("auth/register.html", form=form), 429
+            return render_template("auth/register.html", form=form, google=_google_enabled()), 429
         if password != request.form.get("password_confirm", ""):
             flash("The two passwords don't match.", "error")
-            return render_template("auth/register.html", form=form), 400
+            return render_template("auth/register.html", form=form, google=_google_enabled()), 400
         if not form["full_name"]:
             flash("Enter your name.", "error")
-            return render_template("auth/register.html", form=form), 400
+            return render_template("auth/register.html", form=form, google=_google_enabled()), 400
         status = "active" if mode == "open" else "pending"
         try:
             user_id = accounts.create_user(form["email"], password, full_name=form["full_name"],
@@ -71,11 +81,11 @@ def register():
                                ip=security.client_ip())
                 return render_template("auth/register_done.html", pending=(mode != "open"))
             flash(str(exc), "error")
-            return render_template("auth/register.html", form=form), 400
+            return render_template("auth/register.html", form=form, google=_google_enabled()), 400
         accounts.audit("register", target=user_id, ip=security.client_ip(),
                        detail={"status": status})
         return render_template("auth/register_done.html", pending=(status == "pending"))
-    return render_template("auth/register.html", form=form)
+    return render_template("auth/register.html", form=form, google=_google_enabled())
 
 
 @bp.post("/logout")

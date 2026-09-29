@@ -1,9 +1,11 @@
 """Administration: accounts, platform settings, audit trail.
 
-Admins manage accounts, not their contents: they never see another user's
-API keys, mailbox credentials, drafts or CV — only counts. Every action is
-written to the audit log. Safety rails: an admin can't suspend, demote or
-delete themself, and the last active admin can't be removed.
+There is one administrator: the account named by ADMIN_USERNAME /
+ADMIN_PASSWORD in the environment, which signs in with its username. It
+manages accounts, not their contents: it never sees another user's API
+keys, mailbox credentials, drafts or CV — only counts. Every action is
+written to the audit log, and the administrator can't suspend or delete
+itself.
 """
 
 from __future__ import annotations
@@ -98,9 +100,7 @@ def users():
 def create_user():
     email = accounts.normalize_email(request.form.get("email", ""))
     full_name = (request.form.get("full_name") or "").strip()
-    role = request.form.get("role", "user")
-    if role not in accounts.ROLES:
-        role = "user"
+    role = "user"
     password = _temp_password()
     try:
         user_id = accounts.create_user(email, password, full_name=full_name, role=role,
@@ -147,24 +147,6 @@ def activate(user_id):
     accounts.update_user(user_id, status="active", failed_logins=0, locked_until=None)
     _audit("admin_activate", user_id)
     flash(f"{user['email']} is active again.", "success")
-    return redirect(url_for("admin.users"))
-
-
-@bp.post("/users/<int:user_id>/role")
-@security.admin_required
-def change_role(user_id):
-    user = _target(user_id)
-    role = request.form.get("role", "")
-    if role not in accounts.ROLES or role == user["role"]:
-        return redirect(url_for("admin.users"))
-    if role != "admin":
-        blocked = _guard_self(user, "demote") or _guard_last_admin(user)
-        if blocked:
-            return blocked
-    accounts.update_user(user_id, role=role)
-    accounts.end_all_sessions(user_id)   # new privileges take effect on a fresh sign-in
-    _audit("admin_change_role", user_id, role=role)
-    flash(f"{user['email']} is now {'an administrator' if role == 'admin' else 'a regular user'}.", "success")
     return redirect(url_for("admin.users"))
 
 

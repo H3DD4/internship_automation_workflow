@@ -112,13 +112,19 @@ class AccountError(ValueError):
     pass
 
 
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_.$@!#%&*+-]{3,64}$")
+
+
 def create_user(email: str, password: str, *, full_name: str = "", role: str = "user",
                 status: str = "pending", must_change_password: bool = False,
-                approved_by: int | None = None) -> int:
+                approved_by: int | None = None, username: str | None = None,
+                check_password: bool = True) -> int:
     email = normalize_email(email)
     if not valid_email(email):
         raise AccountError("Enter a valid email address.")
-    problem = password_problem(password, email)
+    if username is not None and not USERNAME_RE.match(username):
+        raise AccountError("A username is 3–64 letters, digits or symbols, without spaces.")
+    problem = password_problem(password, email) if check_password else None
     if problem:
         raise AccountError(problem)
     if role not in ROLES or status not in STATUSES:
@@ -127,7 +133,7 @@ def create_user(email: str, password: str, *, full_name: str = "", role: str = "
     try:
         with database.tx() as conn:
             return conn.execute(users.insert().values(
-                email=email, password_hash=hash_password(password),
+                email=email, username=username, password_hash=hash_password(password),
                 full_name=(full_name or "").strip()[:200], role=role, status=status,
                 must_change_password=1 if must_change_password else 0, created_at=now,
                 updated_at=now, approved_at=now if status == "active" else None,
@@ -145,6 +151,50 @@ def get_user(user_id: int) -> dict | None:
 def get_user_by_email(email: str) -> dict | None:
     with database.read() as conn:
         return _one(conn.execute(select(users).where(users.c.email == normalize_email(email))))
+
+
+def get_user_by_username(username: str) -> dict | None:
+    if not username:
+        return None
+    with database.read() as conn:
+        return _one(conn.execute(select(users).where(users.c.username == username)))
+
+
+def find_login(identifier: str) -> dict | None:
+    """An account by email (case-insensitive) or, without an @, by username
+    (exact)."""
+    identifier = (identifier or "").strip()
+    if "@" in identifier:
+        return get_user_by_email(identifier) if valid_email(normalize_email(identifier)) else None
+    return get_user_by_username(identifier)
+
+
+ADMIN_EMAIL_DOMAIN = "admin.invalid"
+
+
+def ensure_admin(username: str, password: str) -> int:
+    """The platform administrator: one account, signed in with a username,
+    kept in step with ADMIN_USERNAME / ADMIN_PASSWORD from the environment.
+    Its email is on a reserved ".invalid" domain, so no Google account can
+    ever match it."""
+    user = get_user_by_username(username)
+    if user is None:
+        return create_user(f"platform-admin@{ADMIN_EMAIL_DOMAIN}", password, full_name="Administrator",
+                           role="admin", status="active", username=username, check_password=False)
+    fields = {}
+    if user["role"] != "admin":
+        fields["role"] = "admin"
+    if user["status"] != "active":
+        fields["status"] = "active"
+    if fields:
+        update_user(user["id"], **fields)
+    if not _verify(user["password_hash"], password):
+        with database.tx() as conn:
+            conn.execute(update(users).where(users.c.id == user["id"]).values(
+                password_hash=hash_password(password), failed_logins=0, locked_until=None,
+                must_change_password=0, updated_at=_now()))
+            conn.execute(delete(auth_sessions).where(auth_sessions.c.user_id == user["id"]))
+    return user["id"]
 
 
 def list_users() -> list:
@@ -227,11 +277,10 @@ class LoginResult:
 GENERIC_LOGIN_ERROR = "Incorrect email or password."
 
 
-def authenticate(email: str, password: str) -> LoginResult:
-    """Check credentials. The error never says which of email or password was
-    wrong, and never whether an account exists."""
-    email = normalize_email(email)
-    user = get_user_by_email(email) if valid_email(email) else None
+def authenticate(identifier: str, password: str) -> LoginResult:
+    """Check credentials (email, or username for the administrator). The
+    error never says which part was wrong, nor whether an account exists."""
+    user = find_login(identifier)
     if not user:
         _verify(_DUMMY_HASH, password or "")
         return LoginResult(False, reason=GENERIC_LOGIN_ERROR)

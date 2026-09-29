@@ -1,0 +1,80 @@
+# Everything, with one command:
+#
+#   docker compose up -d --build          ->  http://127.0.0.1:5050
+#
+# Two containers: the database, and the app (web + background worker).
+# Settings come from .env next to this file (see .env.example): at least
+# POSTGRES_PASSWORD, SECRET_KEY, ENCRYPTION_KEYS, ADMIN_USERNAME, ADMIN_PASSWORD.
+#
+# On a server with a domain, add automatic HTTPS:
+#   DOMAIN=apply.example.com, PUBLIC_BASE_URL=https://apply.example.com, TRUST_PROXY=1 in .env
+#   docker compose --profile https up -d --build
+name: internship
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: internship_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: internship
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: internship
+    ports:
+      # Loopback only: reachable from this machine (tests, tools), never the network.
+      - "127.0.0.1:${DB_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U internship -d internship"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    image: internship-app
+    container_name: internship_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_PORT:-5050}:8000"
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://internship:${POSTGRES_PASSWORD}@db:5432/internship
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env (python manage.py generate-keys)}
+      ENCRYPTION_KEYS: ${ENCRYPTION_KEYS:?set ENCRYPTION_KEYS in .env (python manage.py generate-keys)}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:5050}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SIGNUP_MODE: ${SIGNUP_MODE:-approval}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      EMBEDDED_WORKER: "0"
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+    # PG_VOLUME lets an existing database volume be reused as-is.
+    name: ${PG_VOLUME:-internship_pgdata}
+  caddy_data:
+  caddy_config:

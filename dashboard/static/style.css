@@ -1347,3 +1347,10 @@ a.notice:hover { text-decoration: none; background: rgba(169,98,8,.11); }
 .sticky-actions { position: sticky; bottom: 0; background: color-mix(in srgb, var(--surface) 94%, transparent);
   padding: 12px 0; border-top: 1px solid var(--border-soft); margin-top: 18px; }
 .code-area { font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+
+/* ---- Google on the sign-in pages ---- */
+.button-google--block { width: 100%; justify-content: center; margin-top: 22px; }
+.auth-note { margin: 8px 0 0; font-size: 12px; color: var(--text-dim); text-align: center; }
+.auth-divider { display: flex; align-items: center; gap: 12px; margin: 20px 0 0; color: var(--text-dim); font-size: 12px; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.auth-divider + .auth-form { margin-top: 14px; }
