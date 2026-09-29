@@ -31,6 +31,10 @@ BANNED_PHRASES = [
     "i have used your", "i've used your", "i am a user of",
     "as a longtime follower", "i follow your blog", "i saw your job posting",
     "i read your recent blog",
+    # French: the same flattery and filler, for emails written in French.
+    "leader du marché", "leader mondial", "numéro un du marché", "de renommée mondiale",
+    "de classe mondiale", "à la pointe de l'innovation", "en pleine croissance",
+    "à qui de droit", "j'espère que ce message vous trouve", "levée de fonds",
 ]
 
 # Typographic look-alikes folded to their ASCII form before phrase matching.
@@ -95,7 +99,8 @@ def _allowed_numbers(facts: dict, research: dict) -> set:
 
 
 def check_draft(draft: dict, *, facts: dict, research: dict, company_name: str,
-                greeting: str, applicant_name: str) -> None:
+                greeting: str, applicant_name: str, min_words: int = 120,
+                max_words: int = 400) -> None:
     """Raise GuardRejection with a specific, actionable complaint, or return
     None if the draft is clean."""
     subject = (draft.get("subject") or "").strip()
@@ -125,10 +130,10 @@ def check_draft(draft: dict, *, facts: dict, research: dict, company_name: str,
 
     # --- Length ---
     word_count = len(body.split())
-    if word_count < 120:
-        problems.append(f"The body is only {word_count} words; it must be at least 120.")
-    elif word_count > 400:
-        problems.append(f"The body is {word_count} words; it must stay under 400.")
+    if word_count < min_words:
+        problems.append(f"The body is only {word_count} words; it must be at least {min_words}.")
+    elif word_count > max_words:
+        problems.append(f"The body is {word_count} words; it must stay under {max_words}.")
 
     # --- Unverifiable flattery and filler ---
     lowered = body.lower()
@@ -154,7 +159,9 @@ def check_draft(draft: dict, *, facts: dict, research: dict, company_name: str,
 
     # --- A claim of interest in their specific work needs a verified hook ---
     hook = (research.get("company_hook") or "").strip()
-    if not hook and f"interests me most about {company_name.lower()}" in lowered:
+    claims_interest = (f"interests me most about {company_name.lower()}" in lowered
+                       or f"m'intéresse le plus chez {company_name.lower()}" in folded)
+    if not hook and claims_interest:
         problems.append(
             "No verified phrase from the company's website was available, so the email "
             "must not claim a specific interest in their work."

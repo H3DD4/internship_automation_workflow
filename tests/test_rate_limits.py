@@ -162,7 +162,7 @@ def test_the_client_waits_out_a_429_exactly_as_long_as_the_provider_says(clock):
                                 rate_limiter=SimpleNamespace(wait=lambda: None))
     client.token_budget = TokenBudget(clock=clock, sleep=clock.sleep)
 
-    with patch("ai_client.requests.post", side_effect=responses) as post, \
+    with patch("ai_client._http_post", side_effect=responses) as post, \
          patch("ai_client.time.sleep") as blind_backoff:
         result = client.messages.create(model="openai/gpt-oss-120b", max_tokens=50,
                                         system="s", messages=[{"role": "user", "content": "hi"}])

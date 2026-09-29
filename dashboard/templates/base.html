@@ -4,39 +4,71 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Application Tracker{% endblock %}</title>
-  {# Inline SVG favicon (a paper-plane mark) — no binary asset to ship. #}
+  {% if current_user %}<meta name="csrf-token" content="{{ csrf_token() }}">{% endif %}
   <link rel="icon" href="data:image/svg+xml,{{ "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#0D7C73'/><path d='M6 16.5 26 7l-7 18-3.5-7.5L6 16.5Z' fill='#FFFFFF'/></svg>" | urlencode }}">
   <meta name="theme-color" content="#F5F7F9">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ asset('style.css') }}">
-  {# Start loading a page when the pointer rests on its link (~200ms before
-     the click lands), so moving around feels instant. Company pages are only
-     ever read, so they are fully pre-rendered — that is the Prev/Next walk.
-     Everything else is only prefetched. Never /oauth/*: preloading
-     /oauth/start would begin a Google sign-in. Browsers without support
-     ignore this block entirely. #}
-  <script type="speculationrules">
+  {% if current_user %}
+  {# Prefetch pages on hover so moving around feels instant. Company pages
+     are only read, so they're pre-rendered (the Prev/Next walk). Never
+     /oauth/* (it would start a Google sign-in) or downloads. #}
+  <script type="speculationrules" nonce="{{ csp_nonce }}">
   {
-    "prerender": [{
-      "where": {"href_matches": "/company/*"},
-      "eagerness": "moderate"
-    }],
+    "prerender": [{"where": {"href_matches": "/company/*"}, "eagerness": "moderate"}],
     "prefetch": [{
       "where": {"and": [
         {"href_matches": "/*"},
         {"not": {"href_matches": "/company/*"}},
         {"not": {"href_matches": "/oauth/*"}},
         {"not": {"href_matches": "/api/*"}},
+        {"not": {"href_matches": "/settings/cv"}},
+        {"not": {"href_matches": "/*.csv"}},
         {"not": {"href_matches": "/static/*"}}
       ]},
       "eagerness": "moderate"
     }]
   }
   </script>
+  {% endif %}
 </head>
 <body>
+  {% if current_user %}
+  <nav class="appnav" aria-label="Main">
+    <div class="appnav__inner">
+      <a class="appnav__brand" href="{{ url_for('index') }}">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><path d="M6 16.5 26 7l-7 18-3.5-7.5L6 16.5Z" fill="#fff"/></svg>
+        <span>Apply</span>
+      </a>
+      <div class="appnav__links">
+        {% set ep = request.endpoint or '' %}
+        <a class="appnav__link{% if ep in ('index', 'company_detail') %} appnav__link--active{% endif %}" href="{{ url_for('index') }}">Tracker</a>
+        <a class="appnav__link{% if ep.startswith('profile.') %} appnav__link--active{% endif %}" href="{{ url_for('profile.page') }}">Profile</a>
+        <a class="appnav__link{% if ep == 'settings_page' %} appnav__link--active{% endif %}" href="{{ url_for('settings_page') }}">Settings</a>
+        {% if current_user.role == 'admin' %}
+        <a class="appnav__link{% if ep.startswith('admin.') %} appnav__link--active{% endif %}" href="{{ url_for('admin.users') }}">Admin{% if pending_approvals %} <span class="appnav__badge" title="Accounts waiting for approval">{{ pending_approvals }}</span>{% endif %}</a>
+        {% endif %}
+      </div>
+      <details class="usermenu">
+        <summary class="usermenu__toggle" title="{{ current_user.email }}">
+          <span class="usermenu__avatar" aria-hidden="true">{{ (current_user.full_name or current_user.email)[:1] | upper }}</span>
+          <span class="usermenu__name">{{ current_user.full_name or current_user.email }}</span>
+        </summary>
+        <div class="usermenu__panel">
+          <div class="usermenu__email">{{ current_user.email }}{% if current_user.role == 'admin' %} · admin{% endif %}</div>
+          <a href="{{ url_for('auth.change_password') }}">Change password</a>
+          <a href="{{ url_for('settings_page') }}#s-account">Sessions &amp; account</a>
+          <form action="{{ url_for('auth.logout') }}" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit">Sign out</button>
+          </form>
+        </div>
+      </details>
+    </div>
+  </nav>
+  {% endif %}
   <div class="page">
     {% block content %}{% endblock %}
   </div>

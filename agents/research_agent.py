@@ -28,6 +28,8 @@ from retry import with_retry
 from ai_client import extract_json_object, build_model_fallback_list
 from agents.draft_guard import BANNED_PHRASES, find_banned_phrase
 from model_router import RoutingCancelled
+from language import detect_language
+import safe_http
 
 # Transient network errors worth retrying a fetch for. Explicitly excludes
 # HTTP-status errors like 404 (raise_for_status -> HTTPError) since retrying
@@ -159,13 +161,16 @@ def _fetch_page_text(url: str, timeout: int) -> str:
                       "+personal-use-application-assistant)"
     }
     try:
+        # safe_http refuses private/loopback/metadata addresses (the company
+        # list is user input on a shared server), caps the page size and
+        # re-checks every redirect.
         resp = with_retry(
-            lambda: requests.get(url, headers=headers, timeout=timeout),
+            lambda: safe_http.get(url, headers=headers, timeout=timeout),
             attempts=2, base_delay=1.0, retry_on=_FETCH_RETRY_ON,
             what=f"fetching {url}", quiet=True,
         )
         resp.raise_for_status()
-    except requests.RequestException as e:
+    except (requests.RequestException, safe_http.BlockedURL) as e:
         print(f"    [research] could not fetch {url}: {e}")
         return ""
 
@@ -230,20 +235,27 @@ def _keyword_present(keyword: str, text: str) -> bool:
     return re.search(pattern, text) is not None
 
 
-def keyword_hits(area: dict, site_text: str) -> int:
+def keyword_hits(area: dict, site_text: str, lang: str = "") -> int:
+    """How many of the area's keywords the site uses. On a French site the
+    area's French keywords count too ("test d'intrusion", "vulnérabilité"),
+    which the English list alone never matched."""
     text = (site_text or "").lower()
-    required = area.get("requires_any")
+    keywords = list(area.get("keywords", []))
+    required = list(area.get("requires_any") or [])
+    if lang == "fr":
+        keywords += area.get("keywords_fr", [])
+        required += area.get("requires_any_fr", []) if required else []
     if required and not any(term in text for term in required):
         return 0
-    return sum(1 for keyword in area.get("keywords", []) if _keyword_present(keyword, text))
+    return sum(1 for keyword in keywords if _keyword_present(keyword, text))
 
 
-def resolve_areas(model_areas: list, site_text: str, areas: list) -> tuple:
+def resolve_areas(model_areas: list, site_text: str, areas: list, lang: str = "") -> tuple:
     """Keep the model's area picks only when the site's own words back them
     up, topping up from keyword evidence alone when it's strong. Returns
     (area_ids, how_each_was_decided)."""
     by_id = {area["id"]: area for area in areas}
-    hits = {area["id"]: keyword_hits(area, site_text) for area in areas}
+    hits = {area["id"]: keyword_hits(area, site_text, lang) for area in areas}
 
     chosen, notes = [], []
     for area_id in model_areas or []:
@@ -549,6 +561,8 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
         "areas": [],
         "area_notes": [],
         "site_chars": len(site_text),
+        # en | fr | other | "" — decides which language the email is written in.
+        "site_language": detect_language(site_text),
     }
     if not site_text:
         return _with_display_fields(context)
@@ -563,7 +577,8 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
     model_areas = answer.get("areas") or []
     if isinstance(model_areas, str):
         model_areas = [model_areas]
-    context["areas"], context["area_notes"] = resolve_areas(model_areas, site_text, areas)
+    context["areas"], context["area_notes"] = resolve_areas(model_areas, site_text, areas,
+                                                            context["site_language"])
 
     hook, status = verify_hook(str(answer.get("hook") or ""),
                                str(answer.get("hook_evidence") or ""), site_text)

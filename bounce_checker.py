@@ -10,7 +10,8 @@ in your own inbox, not as an immediate error. This script reads those bounce
 notifications and updates the matching application's status to 'bounced' so
 the dashboard reflects reality.
 
-Reads the inbox via whichever credentials are available:
+Runs per user, on that user's own mailbox. Reads the inbox via whichever
+credentials the user has:
   - Google OAuth token (gmail.readonly scope) → Gmail API, no app password
     needed. Preferred when connected, since IMAP requires an app password
     that an OAuth-only user may not have set at all.
@@ -29,11 +30,8 @@ import imaplib
 import re
 from datetime import date, timedelta
 
-from dotenv import load_dotenv
-
 import db
-
-load_dotenv()
+from user_config import UserConfig
 
 IMAP_HOST = "imap.gmail.com"
 
@@ -92,7 +90,8 @@ def _bounce_reason(body_text: str) -> str | None:
     return None
 
 
-def _record_bounce_if_sent(from_header: str, subject: str, body_text: str) -> bool:
+
+def _record_bounce_if_sent(data, from_header: str, subject: str, body_text: str) -> bool:
     """Shared classify+match+update step for one candidate message, used by
     both the IMAP and Gmail-API paths. Returns True if a row was updated."""
     looks_like_bounce = (
@@ -107,150 +106,133 @@ def _record_bounce_if_sent(from_header: str, subject: str, body_text: str) -> bo
         return False
     failed_email = failed_email.strip().lower()
 
-    application = db.get_application_by_email(failed_email)
+    # Scoped to this user: a bounce in their inbox can only ever mark one of
+    # THEIR applications.
+    application = data.get_application_by_email(failed_email)
     if not application:
-        return False  # bounce for an address we didn't send to (or never sent)
+        return False
 
-    # Only a row we actually sent can be marked bounced by this. A bounce
-    # notification matching a row that's still 'ready'/'failed'/'pending'
-    # would otherwise silently overwrite a status we haven't earned yet.
+    # Only a row we actually sent can be marked bounced.
     if application["status"] != "sent":
         return False
 
     reason = _bounce_reason(body_text)
-    db.update_application(application["id"], status="bounced",
-                           error_message="Not delivered — " + (reason or "the recipient's mail server "
-                                                              "sent back a delivery failure notice."))
-    db.log_event(application["id"], "bounce_check",
-                 f"Detected bounce notification for {failed_email}",
-                 detail={"bounce_subject": subject})
+    data.update_application(application["id"], status="bounced",
+                            error_message="Not delivered — " + (reason or "the recipient's mail server "
+                                                               "sent back a delivery failure notice."))
+    data.log_event(application["id"], "bounce_check",
+                   f"Detected bounce notification for {failed_email}",
+                   detail={"bounce_subject": subject})
     print(f"  -> marked '{application['company_name']}' ({failed_email}) as bounced")
     return True
 
 
-def _check_bounces_via_imap(gmail_address: str, gmail_app_password: str, days_back: int) -> int:
-    print(f"Connecting to {IMAP_HOST} as {gmail_address} (IMAP) ...")
-    conn = imaplib.IMAP4_SSL(IMAP_HOST)
-    conn.login(gmail_address, gmail_app_password)
-    conn.select("INBOX")
-
-    since = (date.today() - timedelta(days=days_back)).strftime("%d-%b-%Y")
-    # Narrow the search server-side to likely bounce senders instead of
-    # downloading and inspecting every message in the inbox.
-    criteria = f'(SINCE "{since}") (OR (FROM "mailer-daemon") (FROM "postmaster"))'
-    status, data = conn.search(None, criteria)
-    if status != "OK":
-        print("IMAP search failed.")
-        conn.close()
-        conn.logout()
-        return 0
-
-    message_ids = data[0].split()
-    print(f"Scanning {len(message_ids)} candidate bounce message(s)...")
-
-    updated_count = 0
-    for msg_id in message_ids:
-        status, msg_data = conn.fetch(msg_id, "(RFC822)")
-        if status != "OK" or not msg_data or not msg_data[0]:
-            continue
-        msg = email.message_from_bytes(msg_data[0][1])
-        if _record_bounce_if_sent(msg.get("From") or "", msg.get("Subject") or "", _get_body_text(msg)):
-            updated_count += 1
-
-    conn.close()
-    conn.logout()
-    return updated_count
+def _check_bounces_via_imap(data, host: str, username: str, password: str, days_back: int) -> int:
+    import safe_http
+    safe_http.check_host(host, 993)
+    conn = imaplib.IMAP4_SSL(host, timeout=30)
+    try:
+        conn.login(username, password)
+        conn.select("INBOX", readonly=True)
+        since = (date.today() - timedelta(days=days_back)).strftime("%d-%b-%Y")
+        # Narrow the search server-side to likely bounce senders.
+        criteria = f'(SINCE "{since}") (OR (FROM "mailer-daemon") (FROM "postmaster"))'
+        status, found = conn.search(None, criteria)
+        if status != "OK":
+            return 0
+        updated = 0
+        for msg_id in found[0].split()[:500]:
+            status, msg_data = conn.fetch(msg_id, "(RFC822)")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                continue
+            msg = email.message_from_bytes(msg_data[0][1])
+            if _record_bounce_if_sent(data, msg.get("From") or "", msg.get("Subject") or "",
+                                      _get_body_text(msg)):
+                updated += 1
+        return updated
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
 
 
-def _check_bounces_via_gmail_api(days_back: int) -> int:
-    from google_auth_helper import get_credentials
+def _check_bounces_via_gmail_api(data, credentials, days_back: int) -> int:
     from googleapiclient.discovery import build
 
-    creds = get_credentials()
-    if not creds:
-        print("No valid OAuth token — cannot check bounces via Gmail API.")
-        return 0
-
-    print("Connecting to Gmail API (OAuth) ...")
-    service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+    service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
     query = f"(from:mailer-daemon OR from:postmaster) newer_than:{max(days_back, 1)}d"
     message_ids = []
     request = service.users().messages().list(userId="me", q=query)
-    while request is not None:
+    while request is not None and len(message_ids) < 500:
         response = request.execute()
         message_ids.extend(m["id"] for m in response.get("messages", []))
         request = service.users().messages().list_next(request, response)
 
-    print(f"Scanning {len(message_ids)} candidate bounce message(s)...")
-
-    updated_count = 0
-    for msg_id in message_ids:
+    updated = 0
+    for msg_id in message_ids[:500]:
         raw = service.users().messages().get(userId="me", id=msg_id, format="raw").execute()
-        raw_bytes = base64.urlsafe_b64decode(raw["raw"])
-        msg = email.message_from_bytes(raw_bytes)
-        if _record_bounce_if_sent(msg.get("From") or "", msg.get("Subject") or "", _get_body_text(msg)):
-            updated_count += 1
-
-    return updated_count
+        msg = email.message_from_bytes(base64.urlsafe_b64decode(raw["raw"]))
+        if _record_bounce_if_sent(data, msg.get("From") or "", msg.get("Subject") or "",
+                                  _get_body_text(msg)):
+            updated += 1
+    return updated
 
 
 LAST_CHECK_KEY = "bounce_check"
 
 
-def credentials_available() -> bool:
-    """True when some way of reading the inbox is configured."""
-    import os
-    try:
-        from google_auth_helper import get_credentials, token_exists
-        if token_exists() and get_credentials() is not None:
-            return True
-    except ImportError:
-        pass
-    return bool(os.getenv("GMAIL_ADDRESS") and os.getenv("GMAIL_APP_PASSWORD"))
+def _imap_login(cfg: UserConfig) -> tuple | None:
+    """(host, username, password) when the user saved a mailbox password."""
+    password = cfg.secret("GMAIL_APP_PASSWORD")
+    if not password:
+        return None
+    import mail_service
+    method = mail_service.sending_method(cfg)
+    if method == "smtp":
+        host = cfg.get("IMAP_HOST")
+        username = cfg.get("SMTP_USERNAME") or cfg.get("GMAIL_ADDRESS")
+        return (host, username, password) if host and username else None
+    address = cfg.get("GMAIL_ADDRESS")
+    return (IMAP_HOST, address, password.replace(" ", "")) if address else None
 
 
-def run_check(days_back: int = 3, trigger: str = "manual") -> dict:
-    """check_bounces() that never raises, and records when it ran and what
-    it found so the dashboard can show "last checked 5 min ago"."""
+def credentials_available(cfg: UserConfig) -> bool:
+    """True when this user's inbox can be read in some way."""
+    import google_auth_helper
+    if google_auth_helper.token_exists(cfg) and google_auth_helper.can_read_inbox(cfg):
+        return True
+    return _imap_login(cfg) is not None
+
+
+def check_bounces(cfg: UserConfig, days_back: int = 3) -> int:
+    """Scan this user's inbox, preferring Google sign-in when it has inbox
+    access, falling back to IMAP with the saved password."""
+    import google_auth_helper
+    data = db.for_user(cfg.user_id)
+    if google_auth_helper.token_exists(cfg) and google_auth_helper.can_read_inbox(cfg):
+        credentials = google_auth_helper.get_credentials(cfg)
+        if credentials is not None:
+            return _check_bounces_via_gmail_api(data, credentials, days_back)
+    login = _imap_login(cfg)
+    if login is None:
+        raise RuntimeError("No way to read your inbox: sign in with Google with inbox access, "
+                           "or save an app password.")
+    return _check_bounces_via_imap(data, *login, days_back)
+
+
+def run_check(cfg: UserConfig, days_back: int = 3, trigger: str = "manual") -> dict:
+    """check_bounces() that never raises, and records when it ran and what it
+    found so the dashboard can show "last checked 5 min ago"."""
+    data = db.for_user(cfg.user_id)
     result = {"at": db.now(), "trigger": trigger, "updated": 0, "error": None}
     try:
-        result["updated"] = check_bounces(days_back)
+        result["updated"] = check_bounces(cfg, days_back)
     except Exception as exc:
         result["error"] = str(exc)[:300]
-    db.set_meta(LAST_CHECK_KEY, result)
+    data.set_meta(LAST_CHECK_KEY, result)
     return result
 
 
-def last_check() -> dict | None:
-    return db.get_meta(LAST_CHECK_KEY)
-
-
-def check_bounces(days_back: int = 3) -> int:
-    """Checks for bounce notifications using whichever credentials are
-    available, preferring the connected Google OAuth account (no app
-    password required) and falling back to IMAP + app password."""
-    try:
-        from google_auth_helper import get_credentials, token_exists
-        if token_exists() and get_credentials() is not None:
-            updated = _check_bounces_via_gmail_api(days_back)
-            print(f"Done. {updated} application(s) updated to 'bounced'.")
-            return updated
-    except ImportError:
-        pass
-
-    import os
-    gmail_address = os.getenv("GMAIL_ADDRESS")
-    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
-    if not gmail_address or not gmail_app_password:
-        print("No Google OAuth connection and no GMAIL_ADDRESS/GMAIL_APP_PASSWORD in .env "
-              "— cannot check bounces.")
-        return 0
-
-    updated = _check_bounces_via_imap(gmail_address, gmail_app_password, days_back)
-    print(f"Done. {updated} application(s) updated to 'bounced'.")
-    return updated
-
-
-if __name__ == "__main__":
-    db.init_db()
-    check_bounces()
+def last_check(user_id: int) -> dict | None:
+    return db.for_user(user_id).get_meta(LAST_CHECK_KEY)

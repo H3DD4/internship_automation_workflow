@@ -434,8 +434,9 @@ def test_a_stop_is_not_mistaken_for_no_model_available(clock):
         ask_json(r, "m", task="research", system="s", user="u", max_tokens=5)
 
 
-def test_a_company_interrupted_by_stop_goes_back_untouched(isolated, monkeypatch):
+def test_a_company_interrupted_by_stop_goes_back_untouched(with_profile, monkeypatch):
     import db
+    import drafting
     import pipeline as pipeline_module
     from model_router import RoutingCancelled
 
@@ -448,12 +449,12 @@ def test_a_company_interrupted_by_stop_goes_back_untouched(isolated, monkeypatch
 
     monkeypatch.setattr("agents.research_agent.fetch_website_text",
                         lambda url: "We build detection engineering tooling for SOC teams.")
-    cfg = {"spec": {"areas": []}, "applicant_name": "Me", "target_role": "Intern"}
-    p = pipeline_module.Pipeline(StoppingRouter(), cfg, "m", research_workers=1, writer_workers=1)
+    p = pipeline_module.Pipeline(with_profile, StoppingRouter(), drafting.load_config(with_profile), "m",
+                                 research_workers=1, writer_workers=1)
     row = ("Acme", "jobs@acme.com", "https://acme.example", "")
     p._guard(p._research_task, "research stage for <jobs@acme.com>", row)
 
-    app = db.get_application_by_email("jobs@acme.com")
+    app = db.for_user(with_profile).get_application_by_email("jobs@acme.com")
     assert app["status"] == "pending"          # not "failed", not "researching"
     assert not app["subject"] and not app["body"]
     assert p.results["skipped"] == 1 and p.results["failed"] == 0

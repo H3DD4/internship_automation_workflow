@@ -175,7 +175,8 @@ class ModelRouter:
         budget = getattr(d.client, "token_budget", None)
         base_url = getattr(d.client, "base_url", None)
         if budget is not None and base_url is not None:
-            waits.append(budget.available_in((base_url, d.model), tokens))
+            waits.append(budget.available_in(
+                (base_url, d.model, getattr(d.client, "budget_scope", "")), tokens))
         return max(0.0, *waits)
 
     def _pick(self, task: str, tokens: int, exclude: set) -> tuple:
@@ -370,13 +371,17 @@ def _usable_key(value: str) -> bool:
     return bool(value) and "your_" not in value.lower() and "_here" not in value.lower()
 
 
-def build_router(env=None, **kwargs) -> ModelRouter:
+def build_router(env=None, rate_limiter=None, **kwargs) -> ModelRouter:
     """A router over every provider that has a key in the environment.
 
     The provider and model chosen in Settings go first on ties, so the
     existing "primary" choice still means something; AI_TRANSLATION_MODEL,
     when set, is preferred for translation. AI_POOL_EXCLUDE takes a
-    comma-separated list of "provider/model" names to leave out."""
+    comma-separated list of "provider/model" names to leave out.
+
+    `env` is one user's settings (user_config.UserConfig.ai_env()), and
+    `rate_limiter` that user's own request pacing, so accounts never share a
+    key, a quota or a queue."""
     env = os.environ if env is None else env
     settings = resolve_ai_settings(env)
     primary_provider, primary_model = settings["provider"], settings["model"]
@@ -394,7 +399,7 @@ def build_router(env=None, **kwargs) -> ModelRouter:
         base_url = (str(env.get(f"{pid.upper()}_BASE_URL") or "").strip() or preset["base_url"]).rstrip("/")
         if not _usable_key(key) or not base_url:
             continue
-        client = CompatibleAIClient(key, base_url)
+        client = CompatibleAIClient(key, base_url, rate_limiter=rate_limiter)
         entries = list(POOL.get(pid, []))
         known = {model for model, *_ in entries}
         if pid == primary_provider and primary_model and primary_model not in known:

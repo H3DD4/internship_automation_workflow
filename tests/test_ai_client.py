@@ -71,7 +71,7 @@ def test_retries_empty_body_then_succeeds():
             return FakeResponse(200, "")
         return FakeResponse(200, json.dumps({"choices": [{"message": {"content": "hello"}}]}))
 
-    with patch("ai_client.requests.post", side_effect=fake_post), \
+    with patch("ai_client._http_post", side_effect=fake_post), \
          patch("ai_client.time.sleep"), patch("builtins.print"):
         result = _client().messages.create("m", 10, "sys", [{"role": "user", "content": "hi"}])
 
@@ -87,7 +87,7 @@ def test_does_not_retry_auth_errors():
         calls["n"] += 1
         return FakeResponse(401, "unauthorized")
 
-    with patch("ai_client.requests.post", side_effect=fake_post), \
+    with patch("ai_client._http_post", side_effect=fake_post), \
          patch("ai_client.time.sleep"), patch("builtins.print"):
         try:
             _client().messages.create("m", 10, "sys", [{"role": "user", "content": "hi"}])

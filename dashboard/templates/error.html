@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} · Application Tracker{% endblock %}
+{% block content %}
+<section class="auth-card auth-card--center">
+  <span class="eyebrow">Error {{ code }}</span>
+  <h1>{{ message }}</h1>
+  <p class="section-copy"><a href="{{ url_for('index') }}">Back to the tracker</a></p>
+</section>
+{% endblock %}

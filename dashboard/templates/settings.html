@@ -1,74 +1,50 @@
 {% extends "base.html" %}
-{% block title %}Settings · Application Tracker{% endblock %}
+{% block title %}Settings · Apply{% endblock %}
 {% block content %}
 
 <header class="topbar">
   <div>
     <h1>Settings</h1>
-    <p class="subtitle">Everything the pipeline needs, in one place</p>
+    <p class="subtitle">Your keys, files and email account — private to your account</p>
   </div>
   <div class="topbar-right">
     <div class="setup-status{% if setup.send_ready %} setup-status--ready{% elif setup.prep_ready %} setup-status--partial{% endif %}">
       <span class="dot"></span>{{ "Ready to send" if setup.send_ready else ("Ready to prepare" if setup.prep_ready else "Setup incomplete") }}
     </div>
-    <a class="button button--ghost button--sm" href="{{ url_for('index') }}">← Back to tracker</a>
   </div>
 </header>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-{% if messages %}
-<div class="flash-stack" id="flash-stack">
-  {% for category, message in messages %}<div class="flash flash--{{ category }}">{{ message }}</div>{% endfor %}
-</div>
-{% endif %}
-{% endwith %}
+{% include "_flashes.html" %}
 
 <div class="settings-layout">
-
-  {# Sticky section index — the whole point of the page is that nothing is
-     buried, so every group is one click away and marks its own state. #}
   <nav class="settings-nav" id="settings-nav" aria-label="Settings sections">
-    <a class="settings-nav__link" href="#s-ai">
-      <span class="settings-nav__mark settings-nav__mark--{{ 'ok' if setup.has_api_key else 'todo' }}"></span>
-      AI provider &amp; model
-    </a>
-    <a class="settings-nav__link" href="#s-pool">
-      <span class="settings-nav__mark settings-nav__mark--{{ 'ok' if pool else 'todo' }}"></span>
-      Model pool
-    </a>
-    <a class="settings-nav__link" href="#s-profile">
-      <span class="settings-nav__mark settings-nav__mark--{{ 'ok' if setup.name and setup.target_role else 'todo' }}"></span>
-      Your details
-    </a>
-    <a class="settings-nav__link" href="#s-files">
-      <span class="settings-nav__mark settings-nav__mark--{{ 'ok' if setup.companies_name else 'todo' }}"></span>
-      Companies &amp; CV
-    </a>
-    <a class="settings-nav__link" href="#s-gmail">
-      <span class="settings-nav__mark settings-nav__mark--{{ 'ok' if setup.has_gmail else 'todo' }}"></span>
-      Gmail account
-    </a>
-    <a class="settings-nav__link" href="#s-sending">
-      <span class="settings-nav__mark settings-nav__mark--ok"></span>
-      Sending pace
-    </a>
-    <a class="settings-nav__link" href="#s-advanced">
-      <span class="settings-nav__mark settings-nav__mark--ok"></span>
-      Advanced
-    </a>
-    <p class="settings-nav__note">Saved to your local <code>.env</code>. Nothing leaves this machine.</p>
+    {% set nav = [
+      ("s-ai", "AI provider & model", setup.has_api_key),
+      ("s-files", "CV & companies", setup.cv_name and setup.has_companies),
+      ("s-gmail", "Email account", setup.has_gmail),
+      ("s-sending", "Sending pace", True),
+      ("s-advanced", "Advanced", True),
+      ("s-account", "Account & security", True)] %}
+    {% for anchor, label, ok in nav %}
+    <a class="settings-nav__link" href="#{{ anchor }}"><span class="settings-nav__mark settings-nav__mark--{{ 'ok' if ok else 'todo' }}"></span>{{ label }}</a>
+    {% if anchor == "s-files" and setup.profile_mode == "custom" %}
+    <a class="settings-nav__link" href="#s-details"><span class="settings-nav__mark settings-nav__mark--{{ 'ok' if setup.name else 'todo' }}"></span>Your details</a>
+    {% endif %}
+    {% endfor %}
+    <p class="settings-nav__note">Keys and passwords are encrypted and never shown again. Your wording lives on the <a href="{{ url_for('profile.page') }}">Profile</a> page.</p>
   </nav>
 
-  <form class="settings-main" action="{{ url_for('setup') }}" method="post" enctype="multipart/form-data">
-    <input type="hidden" name="return_to" value="settings">
+  <div class="settings-main">
 
     {# ── AI provider ───────────────────────────────────────────────────── #}
     <section class="settings-card" id="s-ai">
       <div class="settings-card__head">
         <h2>AI provider &amp; model</h2>
-        <p class="section-copy">Used only to research each company. The emails themselves are assembled from your CV text, not written by the model. Every provider keeps its own key, so switching never loses one.</p>
+        <p class="section-copy">Your own key, so your usage never competes with anyone else's. It researches each company and reads your CV — the emails themselves are assembled from your approved wording, not written by the model.</p>
       </div>
-      <div class="settings-grid">
+      <form class="setup-form settings-grid" action="{{ url_for('save_settings') }}" method="post" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="section" value="ai">
         <div class="form-group">
           <label for="ai-provider">Provider</label>
           <select id="ai-provider" name="ai_provider">
@@ -79,266 +55,301 @@
               data-key-saved="{{ 'yes' if setup.saved_provider_keys.get(pid) else '' }}"
               {% if setup.ai_provider == pid %} selected{% endif %}>{{ p.label }}{% if setup.saved_provider_keys.get(pid) %} · key saved{% endif %}</option>{% endfor %}
           </select>
-          <span class="field-hint">Any OpenAI-compatible endpoint works — pick <em>Custom</em> for one that isn't listed.</span>
+          <span class="field-hint">Groq has a free tier. Every provider with a key joins your pool.</span>
         </div>
-
         <div class="form-group">
           <label for="ai-key">API key for this provider</label>
           <div class="input-row">
-            <input id="ai-key" name="ai_api_key" type="password" autocomplete="off"
-                   placeholder="{{ 'Saved — enter to replace' if setup.saved_provider_keys.get(setup.ai_provider) else 'Paste your key' }}">
+            <input id="ai-key" name="ai_api_key" type="password" autocomplete="off" maxlength="500"
+                   placeholder="{{ 'Saved — type to replace' if setup.saved_provider_keys.get(setup.ai_provider) else 'Paste your key' }}">
             <button class="button button--ghost" type="button" id="validate-ai-btn">Test</button>
           </div>
-          <span class="field-hint" id="ai-portal-hint">{% if providers[setup.ai_provider].key_portal %}<a href="{{ providers[setup.ai_provider].key_portal }}" target="_blank" rel="noreferrer">Get a key</a>. {% endif %}Stored only in your local <code>.env</code>.</span>
+          <span class="field-hint" id="ai-portal-hint">{% if providers[setup.ai_provider].key_portal %}<a href="{{ providers[setup.ai_provider].key_portal }}" target="_blank" rel="noreferrer">Get a key</a>. {% endif %}Stored encrypted.</span>
           <span class="field-hint validation-result" id="ai-validation-result" aria-live="polite"></span>
         </div>
-
         <div class="form-group">
           <label for="ai-model">Model</label>
           <div class="input-row">
-            <input id="ai-model" name="ai_model" type="text" list="ai-model-options" autocomplete="off"
+            <input id="ai-model" name="ai_model" type="text" list="ai-model-options" autocomplete="off" maxlength="120"
                    value="{{ setup.ai_model }}" placeholder="Load models, or type any model id">
             <button class="button button--ghost" type="button" id="load-models-btn">Load models</button>
           </div>
           <datalist id="ai-model-options">
             {% for m in providers[setup.ai_provider].suggested_models %}<option value="{{ m }}"></option>{% endfor %}
           </datalist>
-          <span class="field-hint">Type any id your provider serves — the list is a shortcut, not a limit.</span>
           <span class="field-hint validation-result" id="models-result" aria-live="polite"></span>
         </div>
-
         <div class="form-group">
           <label for="ai-base-url">API base URL</label>
-          <input id="ai-base-url" type="url" name="ai_base_url" value="{{ setup.ai_base_url }}" placeholder="https://…/v1">
-          <span class="field-hint">Prefilled per provider. Change it only if yours documents a different one.</span>
+          <input id="ai-base-url" type="url" name="ai_base_url" value="{{ setup.ai_base_url }}" placeholder="https://…/v1" maxlength="300">
+          <span class="field-hint">Prefilled per provider. Change it only for a custom endpoint.</span>
         </div>
-      </div>
+        <div class="form-group form-group--wide">
+          <label for="ai-fallbacks">Fallback models</label>
+          <input id="ai-fallbacks" type="text" name="ai_fallbacks" value="{{ setup.ai_fallbacks }}" placeholder="model-a, model-b" autocomplete="off" maxlength="1000">
+          <span class="field-hint">Tried when the main model answers with something unusable. Empty = the provider's defaults.</span>
+        </div>
+        <div class="form-group form-group--wide">
+          <label for="ai-translation-model">Translation model</label>
+          <input id="ai-translation-model" type="text" name="ai_translation_model" list="ai-model-options" maxlength="120"
+                 value="{{ setup.ai_translation_model }}" placeholder="Same as the research model" autocomplete="off">
+        </div>
+        <div class="form-actions">
+          <button class="button button--primary" type="submit">Save AI settings</button>
+          {% if setup.saved_provider_keys.get(setup.ai_provider) %}
+          <label class="check-control"><input type="checkbox" name="remove_key" value="on"> Delete this provider's saved key</label>
+          {% endif %}
+        </div>
+      </form>
+
+      <details class="pool-details" {% if pool | length > 1 %}open{% endif %}>
+        <summary class="smtp-fallback-toggle">Model pool ({{ pool | length }} model{{ "s" if pool | length != 1 }})</summary>
+        <p class="section-copy">Calls go to the best model that's free right now and move to another when one is rate-limited, out of quota or down.</p>
+        <div class="table-scroll">
+          <table class="app-table pool-table" id="pool-table">
+            <thead><tr><th>Model</th><th>Used for</th><th>Live check</th></tr></thead>
+            <tbody>
+              {% for row in pool %}
+              <tr data-pool-name="{{ row.name }}"><td class="cell-mono">{{ row.name }}</td><td>{{ row.roles }}</td><td class="pool-state"><span class="field-hint">Not checked yet</span></td></tr>
+              {% endfor %}
+              {% if not pool %}<tr><td colspan="3" class="cell-empty">No provider has a key yet.</td></tr>{% endif %}
+            </tbody>
+          </table>
+        </div>
+        <div class="editor-actions">
+          <button class="button button--ghost" type="button" id="check-pool-btn" {% if not pool %}disabled{% endif %}>Check all models</button>
+          <span class="field-hint validation-result" id="pool-result" aria-live="polite"></span>
+          <span class="field-hint editor-hint">Uses one request per model.</span>
+        </div>
+      </details>
     </section>
 
-    {# ── Model pool ─────────────────────────────────────────────────────── #}
-    <section class="settings-card" id="s-pool">
-      <div class="settings-card__head">
-        <h2>Model pool</h2>
-        <p class="section-copy">Every provider with a key joins the pool. Calls go to the best model that's free right now and spread across providers. If one is rate-limited, out of its daily quota, down, or has a bad key, the work moves to another tier-1 model. A lower tier is used only when every tier-1 model is unavailable.</p>
-      </div>
-      <div class="table-scroll">
-        <table class="app-table pool-table" id="pool-table">
-          <thead><tr><th>Model</th><th>Used for</th><th>Live check</th></tr></thead>
-          <tbody>
-            {% for row in pool %}
-            <tr data-pool-name="{{ row.name }}">
-              <td class="cell-mono">{{ row.name }}</td>
-              <td>{{ row.roles }}</td>
-              <td class="pool-state"><span class="field-hint">Not checked yet</span></td>
-            </tr>
-            {% endfor %}
-            {% if not pool %}
-            <tr><td colspan="3" class="cell-empty">No provider has a key yet. Add one above.</td></tr>
-            {% endif %}
-          </tbody>
-        </table>
-      </div>
-      <div class="editor-actions">
-        <button class="button button--ghost" type="button" id="check-pool-btn" {% if not pool %}disabled{% endif %}>Check all models</button>
-        <span class="field-hint validation-result" id="pool-result" aria-live="polite"></span>
-        <span class="field-hint editor-hint">Uses one request per model.</span>
-      </div>
-    </section>
-
-    {# ── Profile ───────────────────────────────────────────────────────── #}
-    <section class="settings-card" id="s-profile">
-      <div class="settings-card__head">
-        <h2>Your details</h2>
-        <p class="section-copy">How you're introduced in every email.</p>
-      </div>
-      <div class="settings-grid">
-        <div class="form-group">
-          <label for="your-name">Your name</label>
-          <input id="your-name" type="text" name="your_name" value="{{ setup.name }}" placeholder="Your full name">
-        </div>
-        <div class="form-group">
-          <label for="target-role">Target role</label>
-          <input id="target-role" type="text" name="target_role" value="{{ setup.target_role }}" placeholder="End-of-study internship">
-        </div>
-      </div>
-    </section>
-
-    {# ── Files ─────────────────────────────────────────────────────────── #}
+    {# ── CV + companies ─────────────────────────────────────────────────── #}
     <section class="settings-card" id="s-files">
       <div class="settings-card__head">
-        <h2>Companies &amp; CV</h2>
-        <p class="section-copy">The list to work through, and the file attached to every application.</p>
+        <h2>CV &amp; companies</h2>
+        <p class="section-copy">The CV attached to every application, and the list of companies to work through.</p>
       </div>
-      <div class="settings-grid">
-        <div class="form-group">
-          <label for="companies-file">Companies CSV or Excel</label>
-          <input id="companies-file" name="companies_file" type="file" accept=".csv,.xlsx,.xls">
-          <span class="field-hint">{% if setup.companies_name %}Current: <strong>{{ setup.companies_name }}</strong>{% if setup.companies_rows %} — {{ setup.companies_rows }} row(s){% endif %}. Upload to replace.{% else %}Required column: <code>email</code>.{% endif %}</span>
+
+      <div class="file-row">
+        <div>
+          <h3 class="subhead">Your CV</h3>
+          {% if setup.cv_name %}
+          <p class="file-current">📎 <strong>{{ setup.cv_name }}</strong> <span class="field-hint">{{ setup.cv_size_kb }} KB</span> · <a href="{{ url_for('download_cv') }}">download</a></p>
+          {% else %}
+          <p class="field-hint">No CV yet. PDF or Word, up to 5 MB.</p>
+          {% endif %}
         </div>
-        <div class="form-group">
-          <label for="cv-file">CV attachment</label>
-          <input id="cv-file" name="cv_file" type="file" accept=".pdf,.doc,.docx">
-          <span class="field-hint">{% if setup.cv_name %}Current: <strong>{{ setup.cv_name }}</strong>{% if setup.cv_size_kb %} — {{ setup.cv_size_kb }} KB{% endif %}. Upload to replace.{% else %}Only needed to send, not to draft.{% endif %}</span>
+        <form class="oauth-upload" action="{{ url_for('upload_cv') }}" method="post" enctype="multipart/form-data">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="file" name="cv_file" accept=".pdf,.docx,.doc" required>
+          <button class="button button--ghost button--sm" type="submit">{{ "Replace CV" if setup.cv_name else "Upload CV" }}</button>
+        </form>
+      </div>
+
+      <div class="import-box" id="import-box">
+        <div class="panel-heading-row">
+          <h3 class="subhead">Companies list</h3>
+          <span class="field-hint"><strong id="companies-count">{{ setup.companies_rows }}</strong> in your list</span>
         </div>
+        <details class="format-help">
+          <summary class="smtp-fallback-toggle">What format does the file need?</summary>
+          <div class="format-help__body">
+            <p>A <strong>.csv</strong> or <strong>.xlsx</strong> file with a header row. Only <code>email</code> is required.</p>
+            <table class="format-table">
+              <thead><tr><th>Column</th><th></th><th>Also accepted</th></tr></thead>
+              <tbody>
+                <tr><td><code>email</code></td><td><span class="chip chip--accent">required</span></td><td class="field-hint">e-mail, mail, courriel, adresse email</td></tr>
+                <tr><td><code>company_name</code></td><td class="field-hint">optional</td><td class="field-hint">company, entreprise, société — guessed from the email domain if missing</td></tr>
+                <tr><td><code>website</code></td><td class="field-hint">optional</td><td class="field-hint">site, site web, url — guessed from the email domain if missing</td></tr>
+                <tr><td><code>contact_name</code></td><td class="field-hint">optional</td><td class="field-hint">name, contact, nom — used for “Dear Jane” / “Bonjour Jane”</td></tr>
+              </tbody>
+            </table>
+            <p class="field-hint">One address per row; duplicates and addresses already in your list are skipped automatically. <a href="{{ url_for('companies_template') }}">Download a template</a>.</p>
+          </div>
+        </details>
+        <form id="import-form" class="import-form" enctype="multipart/form-data">
+          <input type="file" id="companies-file" name="companies_file" accept=".csv,.xlsx" required>
+          <div class="segmented segmented--small" role="radiogroup" aria-label="Import mode">
+            <label class="segmented__item"><input type="radio" name="mode" value="append" checked> Add to my list</label>
+            <label class="segmented__item"><input type="radio" name="mode" value="replace"> Replace my list</label>
+          </div>
+          <button class="button button--ghost" type="button" id="import-preview-btn">Check file</button>
+        </form>
+        <div class="import-report" id="import-report" hidden></div>
+        {% if setup.has_companies %}
+        <button class="button button--ghost button--sm text-danger" type="button" id="clear-companies-btn">Clear my list</button>
+        <span class="field-hint">Clearing only forgets the list — drafts and sent history stay.</span>
+        {% endif %}
       </div>
     </section>
 
-    {# ── Gmail ─────────────────────────────────────────────────────────── #}
+    {% if setup.profile_mode == "custom" %}
+    <section class="settings-card" id="s-details">
+      <div class="settings-card__head">
+        <h2>Your details</h2>
+        <p class="section-copy">Used with your hand-written wording: your name signs every email and the role goes in the subject.</p>
+      </div>
+      <form class="setup-form settings-grid" action="{{ url_for('save_settings') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="section" value="details">
+        <div class="form-group"><label for="your-name">Your name</label><input id="your-name" type="text" name="your_name" value="{{ setup.name }}" maxlength="120"></div>
+        <div class="form-group"><label for="target-role">Target role</label><input id="target-role" type="text" name="target_role" value="{{ setup.target_role }}" maxlength="120"></div>
+        <div class="form-actions"><button class="button button--primary" type="submit">Save</button></div>
+      </form>
+    </section>
+    {% endif %}
+
+    {# ── Email account ─────────────────────────────────────────────────── #}
     <section class="settings-card" id="s-gmail">
       <div class="settings-card__head">
-        <h2>Gmail account</h2>
-        <p class="section-copy">Only needed to actually send — researching and drafting work without it.</p>
+        <h2>Email account</h2>
+        <p class="section-copy">Applications are sent from your own mailbox, so replies come straight to you.{% if setup.mail_label %} Currently: <strong>{{ setup.mail_label }}</strong>{% if setup.from_address %} as <strong>{{ setup.from_address }}</strong>{% endif %}.{% endif %}</p>
       </div>
-      <div class="form-group form-group--wide gmail-section">
-        {% if setup.has_gmail_oauth %}
-        <div class="google-connected-card" id="google-connected-card">
-          <div class="google-connected-left">
-            <svg class="google-icon-sm" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-            <div>
-              <div class="google-connected-email">{{ setup.oauth_email }}</div>
-              <div class="google-connected-label">Connected via Google OAuth · sent through the Gmail API</div>
-            </div>
-          </div>
-          <button type="submit" form="oauth-disconnect-form" class="button button--ghost button--sm" id="google-disconnect-btn">Disconnect</button>
+
+      <form class="setup-form" action="{{ url_for('save_settings') }}" method="post" autocomplete="off" id="mail-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="section" value="mail">
+        {% set method = setup.mail_method or ('oauth' if setup.oauth_configured else 'app_password') %}
+        <div class="method-picker" role="radiogroup" aria-label="How to send">
+          <label class="method-card"><input type="radio" name="mail_method" value="oauth" {% if method == 'oauth' %}checked{% endif %} {% if not setup.oauth_configured and not setup.oauth_connected %}disabled{% endif %}>
+            <span><strong>Sign in with Google</strong><span class="field-hint">{{ "One click, nothing to copy." if setup.oauth_configured else "Not enabled on this platform yet." }}</span></span></label>
+          <label class="method-card"><input type="radio" name="mail_method" value="app_password" {% if method == 'app_password' %}checked{% endif %}>
+            <span><strong>Gmail + app password</strong><span class="field-hint">Works for any Gmail with 2-Step Verification.</span></span></label>
+          <label class="method-card"><input type="radio" name="mail_method" value="smtp" {% if method == 'smtp' %}checked{% endif %}>
+            <span><strong>Other provider (SMTP)</strong><span class="field-hint">Outlook, university or company mail.</span></span></label>
         </div>
-        {% else %}
-        <div class="google-connect-card" id="google-connect-card">
-          <div class="google-connect-desc">
-            {% if setup.oauth_expired %}<strong class="text-danger">Your Google sign-in expired — sign in again to keep sending.</strong><br>{% endif %}
-            Sign in with Google to send from your Gmail — no app password needed.
-            {% if setup.has_gmail_smtp %}<br><span style="color:var(--text-dim);font-size:11px;">An app password is also saved as a fallback.</span>{% endif %}
+
+        <div class="method-panel" data-method="oauth" {% if method != 'oauth' %}hidden{% endif %}>
+          {% if setup.oauth_connected and not setup.oauth_expired %}
+          <div class="google-connected-card">
+            <div class="google-connected-left">
+              <svg class="google-icon-sm" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+              <div>
+                <div class="google-connected-email">{{ setup.oauth_email }}</div>
+                <div class="google-connected-label">Connected · sends through the Gmail API{% if setup.oauth_can_read_inbox %} · bounce detection on{% endif %}</div>
+              </div>
+            </div>
+            <button type="submit" form="oauth-disconnect-form" class="button button--ghost button--sm">Disconnect</button>
           </div>
-          {% if setup.oauth_configured %}
-          <a href="{{ url_for('oauth_start') }}" class="button-google" id="google-connect-btn">
-            <svg class="google-icon" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84z"/></svg>
-            Sign in with Google
-          </a>
           {% else %}
-          <span class="field-hint">One-time setup: create a Google OAuth client (steps below), upload its JSON, then sign in.</span>
+          <div class="google-connect-card">
+            <div class="google-connect-desc">
+              {% if setup.oauth_expired %}<strong class="text-danger">Your Google sign-in expired — sign in again to keep sending.</strong><br>{% endif %}
+              Send from your Gmail without any password to copy.
+            </div>
+            {% if setup.oauth_configured %}
+            <a href="{{ url_for('oauth_start') }}" class="button-google">
+              <svg class="google-icon" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+              Sign in with Google
+            </a>
+            {% else %}
+            <span class="field-hint">The administrator hasn't enabled Google sign-in yet — use an app password meanwhile.</span>
+            {% endif %}
+          </div>
           {% endif %}
         </div>
 
-        <details class="oauth-guide" id="oauth-guide" {% if not setup.oauth_configured %}open{% endif %}>
-          <summary class="smtp-fallback-toggle">{% if setup.oauth_configured %}Replace the Google OAuth client{% else %}Set up Google sign-in (once, ~5 minutes){% endif %}</summary>
-          <ol class="oauth-steps">
-            <li>In <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Google Cloud Console</a>, create a project and <strong>enable the Gmail API</strong>.</li>
-            <li>Open <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">OAuth consent screen</a>: choose <em>External</em>, fill in the app name and your email, and add <strong>your Gmail address as a test user</strong>.</li>
-            <li>Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Clients → Create client</a>, type <strong>Web application</strong>, and add this authorised redirect URI:<br><code class="copyable">{{ oauth_redirect_uri }}</code></li>
-            <li>Download the client JSON and upload it here:
-              <div class="oauth-upload">
-                <input type="file" name="client_secret" accept="application/json,.json" form="oauth-client-form" id="oauth-client-file">
-                <button type="submit" form="oauth-client-form" class="button button--ghost button--sm">Upload</button>
-              </div>
-            </li>
-            <li>Click <strong>Sign in with Google</strong> and tick every permission. Your address is filled in automatically.</li>
-          </ol>
-          <span class="field-hint">While the app stays in <em>Testing</em> mode, Google expires the sign-in after 7 days — the dashboard will ask you to reconnect.</span>
-        </details>
-
-        <details class="smtp-fallback" {% if setup.has_gmail_smtp %}open{% endif %}>
-          <summary class="smtp-fallback-toggle">Use an app password instead</summary>
-          <div class="smtp-fallback-body">
-            <div class="form-group" style="margin-top:10px;">
-              <label for="gmail-address">Gmail address</label>
-              <input id="gmail-address" name="gmail_address" type="email" value="{{ setup.gmail_address }}" placeholder="you@gmail.com" autocomplete="email">
+        <div class="method-panel settings-grid" data-method="app_password smtp" {% if method == 'oauth' %}hidden{% endif %}>
+          <div class="form-group">
+            <label for="gmail-address">Email address</label>
+            <input id="gmail-address" name="gmail_address" type="email" value="{{ setup.gmail_address }}" placeholder="you@gmail.com" autocomplete="email" maxlength="320">
+          </div>
+          <div class="form-group">
+            <label for="gmail-password"><span data-method-label="app_password">Gmail app password</span><span data-method-label="smtp" hidden>Mailbox password</span></label>
+            <div class="input-row">
+              <input id="gmail-password" name="gmail_app_password" type="password" maxlength="500"
+                     placeholder="{{ 'Saved — type to replace' if setup.has_mail_password else 'xxxx xxxx xxxx xxxx' }}" autocomplete="new-password">
+              <button class="button button--ghost" type="button" id="validate-gmail-btn">Test login</button>
             </div>
-            <div class="form-group" style="margin-top:8px;">
-              <label for="gmail-password">Gmail app password</label>
-              <div class="input-row">
-                <input id="gmail-password" name="gmail_app_password" type="password"
-                       placeholder="{{ 'Saved locally — enter to replace' if setup.has_gmail_smtp else 'xxxx xxxx xxxx xxxx' }}"
-                       autocomplete="new-password">
-                <button class="button button--ghost" type="button" id="validate-gmail-btn">Validate</button>
-              </div>
-              <span class="field-hint">Create at <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">myaccount.google.com/apppasswords</a> (needs 2-Step Verification).</span>
-              <span class="field-hint validation-result" id="gmail-validation-result" aria-live="polite"></span>
+            <span class="field-hint" data-method-label="app_password">Create one at <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">myaccount.google.com/apppasswords</a> (needs 2-Step Verification). Stored encrypted.</span>
+            <span class="field-hint validation-result" id="gmail-validation-result" aria-live="polite"></span>
+          </div>
+          <div class="form-group" data-method-only="smtp" hidden>
+            <label for="smtp-host">SMTP server</label>
+            <input id="smtp-host" name="smtp_host" type="text" value="{{ setup.smtp_host }}" placeholder="smtp.office365.com" maxlength="253">
+          </div>
+          <div class="form-group" data-method-only="smtp" hidden>
+            <label for="smtp-port">Port &amp; security</label>
+            <div class="input-row">
+              <input id="smtp-port" name="smtp_port" type="number" min="1" max="65535" value="{{ setup.smtp_port or '465' }}">
+              <select id="smtp-security" name="smtp_security">
+                <option value="ssl" {% if setup.smtp_security != 'starttls' %}selected{% endif %}>SSL/TLS (465)</option>
+                <option value="starttls" {% if setup.smtp_security == 'starttls' %}selected{% endif %}>STARTTLS (587)</option>
+              </select>
             </div>
           </div>
-        </details>
-        {% endif %}
-      </div>
+          <div class="form-group" data-method-only="smtp" hidden>
+            <label for="smtp-username">Login (if different from the address)</label>
+            <input id="smtp-username" name="smtp_username" type="text" value="{{ setup.smtp_username }}" maxlength="320">
+          </div>
+          <div class="form-group" data-method-only="smtp" hidden>
+            <label for="imap-host">IMAP server (optional, for bounce detection)</label>
+            <input id="imap-host" name="imap_host" type="text" value="{{ setup.imap_host }}" placeholder="outlook.office365.com" maxlength="253">
+          </div>
+        </div>
+        <div class="form-actions"><button class="button button--primary" type="submit">Save email settings</button></div>
+      </form>
     </section>
 
     {# ── Sending pace ──────────────────────────────────────────────────── #}
     <section class="settings-card" id="s-sending">
       <div class="settings-card__head">
         <h2>Sending pace</h2>
-        <p class="section-copy">Anti-spam pacing. Start around 10–15 a day on a fresh Gmail account and raise it gradually.</p>
+        <p class="section-copy">Anti-spam pacing. Start around 10–15 a day on a fresh account and raise it gradually.</p>
       </div>
-      <div class="settings-grid">
-        <div class="form-group">
-          <label for="min-delay">Minimum gap (seconds)</label>
-          <input id="min-delay" type="number" name="min_delay" min="0" value="{{ setup.min_delay }}">
-        </div>
-        <div class="form-group">
-          <label for="max-delay">Maximum gap (seconds)</label>
-          <input id="max-delay" type="number" name="max_delay" min="0" value="{{ setup.max_delay }}">
-          <span class="field-hint">Each wait is picked at random between the two.</span>
-        </div>
-        <div class="form-group">
-          <label for="max-per-day">Daily cap (emails)</label>
-          <input id="max-per-day" type="number" name="max_per_day" min="1" value="{{ setup.max_per_day }}">
-        </div>
-        <div class="form-group">
-          <label for="bounce-minutes">Bounce check (minutes)</label>
-          <input id="bounce-minutes" type="number" name="bounce_minutes" min="0" value="{{ setup.bounce_minutes }}">
-          <span class="field-hint">How often the inbox is scanned for bounce notices, for 3 days after each send. <code>0</code> turns it off.</span>
-        </div>
-      </div>
+      <form class="setup-form settings-grid" action="{{ url_for('save_settings') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="section" value="sending">
+        <div class="form-group"><label for="min-delay">Minimum gap (seconds)</label><input id="min-delay" type="number" name="min_delay" min="0" max="3600" value="{{ setup.min_delay }}"></div>
+        <div class="form-group"><label for="max-delay">Maximum gap (seconds)</label><input id="max-delay" type="number" name="max_delay" min="0" max="7200" value="{{ setup.max_delay }}"><span class="field-hint">Each wait is picked at random between the two.</span></div>
+        <div class="form-group"><label for="max-per-day">Daily cap (emails)</label><input id="max-per-day" type="number" name="max_per_day" min="1" max="{{ setup.user_max_per_day or 500 }}" value="{{ setup.max_per_day }}">{% if setup.user_max_per_day %}<span class="field-hint">Up to {{ setup.user_max_per_day }} on this platform.</span>{% endif %}</div>
+        <div class="form-group"><label for="bounce-minutes">Bounce check (minutes)</label><input id="bounce-minutes" type="number" name="bounce_minutes" min="0" max="1440" value="{{ setup.bounce_minutes }}"><span class="field-hint">How often your inbox is scanned for bounces, for 3 days after each send. <code>0</code> turns it off.</span></div>
+        <div class="form-actions"><button class="button button--primary" type="submit">Save pace</button></div>
+      </form>
     </section>
 
     {# ── Advanced ──────────────────────────────────────────────────────── #}
     <section class="settings-card" id="s-advanced">
       <div class="settings-card__head">
         <h2>Advanced</h2>
-        <p class="section-copy">Throughput and resilience. The defaults are fine — raise the worker counts only if your provider's rate limit can take it.</p>
+        <p class="section-copy">Throughput. The defaults are fine — raise them only if your provider's rate limit can take it.</p>
       </div>
-      <div class="settings-grid">
-        <div class="form-group">
-          <label for="research-workers">Research workers</label>
-          <input id="research-workers" type="number" name="research_workers" min="1" value="{{ setup.research_workers }}">
-          <span class="field-hint">Companies scraped and researched at once.</span>
-        </div>
-        <div class="form-group">
-          <label for="writer-workers">Writer workers</label>
-          <input id="writer-workers" type="number" name="writer_workers" min="1" value="{{ setup.writer_workers }}">
-          <span class="field-hint">Emails assembled at once.</span>
-        </div>
-        <div class="form-group">
-          <label for="ai-max-rpm">AI requests per minute</label>
-          <input id="ai-max-rpm" type="number" name="ai_max_rpm" min="1" value="{{ setup.ai_max_rpm }}">
-          <span class="field-hint">A shared ceiling across every worker thread.</span>
-        </div>
-        <div class="form-group form-group--wide">
-          <label for="ai-translation-model">Translation model</label>
-          <input id="ai-translation-model" type="text" name="ai_translation_model" list="ai-model-options"
-                 value="{{ setup.ai_translation_model }}" placeholder="Same as the research model" autocomplete="off">
-          <span class="field-hint">Renders a verified foreign-language hook into English. A separate model gets its own rate-limit budget, but on Groq's free tier the smaller models mistranslated and dropped product names, so leave this empty unless the model you pick translates well.</span>
-        </div>
-        <div class="form-group form-group--wide">
-          <label for="ai-fallbacks">Fallback models</label>
-          <input id="ai-fallbacks" type="text" name="ai_fallbacks" value="{{ setup.ai_fallbacks }}"
-                 placeholder="model-a, model-b" autocomplete="off">
-          <span class="field-hint">Tried in order when the main model returns something unusable. Must be ids <strong>this</strong> provider serves. Leave empty to use the provider's own defaults.</span>
-        </div>
-      </div>
+      <form class="setup-form settings-grid" action="{{ url_for('save_settings') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="section" value="advanced">
+        <div class="form-group"><label for="research-workers">Research workers</label><input id="research-workers" type="number" name="research_workers" min="1" max="{{ setup.user_max_workers or 16 }}" value="{{ setup.research_workers }}"><span class="field-hint">Companies researched at once{% if setup.user_max_workers %} (max {{ setup.user_max_workers }}){% endif %}.</span></div>
+        <div class="form-group"><label for="writer-workers">Writer workers</label><input id="writer-workers" type="number" name="writer_workers" min="1" max="{{ setup.user_max_workers or 16 }}" value="{{ setup.writer_workers }}"></div>
+        <div class="form-group"><label for="ai-max-rpm">AI requests per minute</label><input id="ai-max-rpm" type="number" name="ai_max_rpm" min="1" max="5000" value="{{ setup.ai_max_rpm }}"></div>
+        <div class="form-actions"><button class="button button--primary" type="submit">Save</button></div>
+      </form>
     </section>
 
-    <div class="settings-actions">
-      <button class="button button--primary" type="submit">Save settings</button>
-      <a class="button button--ghost" href="{{ url_for('index') }}">Cancel</a>
-      <span class="field-hint">A companies file must be uploaded at least once before settings can be saved.</span>
-    </div>
-  </form>
+    {# ── Account ───────────────────────────────────────────────────────── #}
+    <section class="settings-card" id="s-account">
+      <div class="settings-card__head">
+        <h2>Account &amp; security</h2>
+        <p class="section-copy">Signed in as <strong>{{ current_user.email }}</strong>. You have {{ sessions }} active session{{ "s" if sessions != 1 }}.</p>
+      </div>
+      <div class="form-actions">
+        <a class="button button--ghost" href="{{ url_for('auth.change_password') }}">Change password</a>
+        {% if sessions > 1 %}
+        <form action="{{ url_for('auth.end_other_sessions') }}" method="post" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="button button--ghost" type="submit">Sign out on every other device</button>
+        </form>
+        {% endif %}
+      </div>
+    </section>
+  </div>
 </div>
 
-<form id="oauth-disconnect-form" action="{{ url_for('oauth_disconnect') }}" method="post" hidden></form>
-<form id="oauth-client-form" action="{{ url_for('oauth_client_secret') }}" method="post" enctype="multipart/form-data" hidden></form>
-
+<form id="oauth-disconnect-form" action="{{ url_for('oauth_disconnect') }}" method="post" hidden>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+</form>
 {% endblock %}
 
 {% block scripts %}
-{# Same script as the tracker: the live-refresh half no-ops without the
-   tracker's toggle, and the provider/validation wiring is what's wanted. #}
 <script src="{{ asset('app.js') }}"></script>
+<script src="{{ asset('settings.js') }}"></script>
 {% endblock %}

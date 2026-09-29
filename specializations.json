@@ -1,137 +1,363 @@
 {
   "_readme": "agents/composer.py builds every email from this file. The AI never writes a sentence about you: it only picks up to two 'areas' from the list below and copies one short phrase describing the company from the company's own website — and code verifies both against the site text. Every sentence here comes from the CV. Edit freely, but any number you add must also be listed in verified_facts.allowed_numbers (a test enforces it). No tool names on purpose: the email talks about what you built, the CV lists the tools.",
-
   "verified_facts": {
     "school": "ENSIT",
     "level": "final-year Computer Engineering student (Bac+5)",
     "internship_start": "February 2027",
     "redbox_ctf_challenges": "60+",
     "production_vulnerabilities_reported": 3,
-    "employers": ["Forvis Mazars", "Talan", "TDS Global by Nomios"],
-    "allowed_numbers": ["60", "3", "2027", "97", "7", "50", "5"]
+    "employers": [
+      "Forvis Mazars",
+      "Talan",
+      "TDS Global by Nomios"
+    ],
+    "allowed_numbers": [
+      "60",
+      "3",
+      "2027",
+      "97",
+      "7",
+      "50",
+      "5"
+    ]
   },
-
   "email": {
     "subject": "{target_role} from February 2027 — {topic} | {applicant_name}",
     "default_topic": "Cybersecurity & AI Engineering",
-
     "intro_with_hook": "I'm a final-year Computer Engineering student at ENSIT in Tunis, specialised in cybersecurity and AI engineering. What interests me most about {company} is your work on {hook}.",
-
     "intro_standard_variants": [
       "I'm a final-year Computer Engineering student at ENSIT in Tunis, specialised in cybersecurity and AI engineering, and I'm really interested in becoming part of the team at {company}.",
       "I'm a final-year Computer Engineering student at ENSIT in Tunis, specialised in cybersecurity and AI engineering, and I'd genuinely like to join the team at {company}.",
       "I'm a final-year Computer Engineering student at ENSIT in Tunis, specialised in cybersecurity and AI engineering, and joining the {company} team is something I'm really interested in."
     ],
-
     "match_lead_one": "Your focus on {area_1} is where my own experience is strongest.",
     "match_lead_two": "Your focus on {area_1} and {area_2} maps directly onto my own experience.",
-
     "motivation": "My path into AI grew directly out of wanting to automate my own security methodologies.",
-
     "internship_ask": "I'm looking for an end-of-study internship starting February 2027, in the final year of my Bac+5 engineering degree, and I'm open to continuing with the team afterwards.",
-
     "closing_variants": [
       "My CV is attached with more detail. I'd be glad to discuss how I could contribute to {company}, and I look forward to hearing from you.",
       "My CV is attached with further detail. I'd be genuinely glad to bring this background to {company} and grow with the team — I look forward to hearing from you."
     ],
-
     "sign_off": "Best regards,\n{applicant_name}"
   },
-
   "areas": [
     {
       "id": "offensive_security",
       "label": "offensive security",
       "topic": "Offensive Security & Agentic AI",
       "match_description": "Penetration testing, red teaming, vulnerability assessment or research, application security, bug bounty, attack surface management.",
-      "keywords": ["penetration test", "pentest", "pen test", "red team", "red-team", "vulnerability", "vulnerabilities", "application security", "appsec", "bug bounty", "attack surface", "ethical hacking", "offensive security", "exploit"],
+      "keywords": [
+        "penetration test",
+        "pentest",
+        "pen test",
+        "red team",
+        "red-team",
+        "vulnerability",
+        "vulnerabilities",
+        "application security",
+        "appsec",
+        "bug bounty",
+        "attack surface",
+        "ethical hacking",
+        "offensive security",
+        "exploit"
+      ],
       "evidence": "I built RedBox, an autonomous AI red-teaming platform that finds vulnerabilities in live, deployed applications: it has solved 60+ CTF challenges automatically and reported 3 real vulnerabilities in production environments.",
-      "sources": ["redbox"],
+      "sources": [
+        "redbox"
+      ],
       "alt_evidence": "At Forvis Mazars, I built an LLM assistant that helps pentesters validate their findings and generate professional reports.",
-      "alt_sources": ["forvis"]
+      "alt_sources": [
+        "forvis"
+      ],
+      "keywords_fr": [
+        "test d'intrusion",
+        "tests d'intrusion",
+        "pentest",
+        "red team",
+        "vulnérabilité",
+        "vulnérabilités",
+        "sécurité applicative",
+        "bug bounty",
+        "surface d'attaque",
+        "hacking éthique",
+        "sécurité offensive",
+        "audit de sécurité",
+        "exploit"
+      ]
     },
     {
       "id": "ai_security",
       "label": "AI-driven security",
       "topic": "AI-Driven Security",
       "match_description": "A security company whose product or service is itself built on AI, machine learning or automation.",
-      "keywords": ["ai-driven", "ai-powered", "ai powered", "artificial intelligence", "machine learning", "security automation", "automated", "autonomous"],
-      "requires_any": ["security", "cyber", "threat", "vulnerab", "pentest", "penetration"],
+      "keywords": [
+        "ai-driven",
+        "ai-powered",
+        "ai powered",
+        "artificial intelligence",
+        "machine learning",
+        "security automation",
+        "automated",
+        "autonomous"
+      ],
+      "requires_any": [
+        "security",
+        "cyber",
+        "threat",
+        "vulnerab",
+        "pentest",
+        "penetration"
+      ],
       "evidence": "At Forvis Mazars, I built a RAG-based LLM assistant for pentesters that validates its findings against public vulnerability and attack-technique data, with a deterministic check that reduces hallucinations in the reports it generates.",
-      "sources": ["forvis"]
+      "sources": [
+        "forvis"
+      ],
+      "keywords_fr": [
+        "intelligence artificielle",
+        "ia",
+        "apprentissage automatique",
+        "automatisation de la sécurité",
+        "automatisé",
+        "automatisée",
+        "autonome"
+      ],
+      "requires_any_fr": [
+        "sécurité",
+        "cyber",
+        "menace",
+        "vulnérab",
+        "pentest",
+        "intrusion"
+      ]
     },
     {
       "id": "soc_blue_team",
       "label": "security operations and threat detection",
       "topic": "Security Operations & Threat Detection",
       "match_description": "SOC, SIEM, threat detection and response, MDR/XDR/EDR, security monitoring, incident response, blue team, threat intelligence, managed security.",
-      "keywords": ["soc", "siem", "security operations", "threat detection", "detection and response", "mdr", "xdr", "edr", "security monitoring", "incident response", "blue team", "managed security", "threat hunting", "threat intelligence"],
+      "keywords": [
+        "soc",
+        "siem",
+        "security operations",
+        "threat detection",
+        "detection and response",
+        "mdr",
+        "xdr",
+        "edr",
+        "security monitoring",
+        "incident response",
+        "blue team",
+        "managed security",
+        "threat hunting",
+        "threat intelligence"
+      ],
       "evidence": "At TDS Global by Nomios, I helped build an AI-powered SOC, including network anomaly detection that reached 97% accuracy on the CICIDS dataset and a malware scanning and monitoring component.",
-      "sources": ["tds"]
+      "sources": [
+        "tds"
+      ],
+      "keywords_fr": [
+        "soc",
+        "siem",
+        "centre des opérations de sécurité",
+        "détection des menaces",
+        "détection et réponse",
+        "mdr",
+        "xdr",
+        "edr",
+        "supervision de la sécurité",
+        "réponse aux incidents",
+        "blue team",
+        "sécurité managée",
+        "threat hunting",
+        "renseignement sur les menaces"
+      ]
     },
     {
       "id": "malware_reverse",
       "label": "malware analysis and reverse engineering",
       "topic": "Reverse Engineering & Forensics",
       "match_description": "Malware analysis, reverse engineering, binary or firmware analysis, digital forensics, DFIR.",
-      "keywords": ["malware", "reverse engineering", "reverse-engineering", "binary analysis", "firmware", "forensic", "dfir"],
+      "keywords": [
+        "malware",
+        "reverse engineering",
+        "reverse-engineering",
+        "binary analysis",
+        "firmware",
+        "forensic",
+        "dfir"
+      ],
       "evidence": "Reverse engineering and digital forensics are the CTF categories I compete in, and the ones I design challenges for as President of Securinets ENSIT.",
-      "sources": ["ctf"]
+      "sources": [
+        "ctf"
+      ],
+      "keywords_fr": [
+        "malware",
+        "logiciel malveillant",
+        "logiciels malveillants",
+        "rétro-ingénierie",
+        "reverse engineering",
+        "analyse binaire",
+        "firmware",
+        "forensique",
+        "investigation numérique",
+        "dfir"
+      ]
     },
     {
       "id": "agentic_ai",
       "label": "agentic AI",
       "topic": "Agentic AI Engineering",
       "match_description": "LLMs, generative AI, AI agents, multi-agent systems, RAG, copilots, autonomous agents.",
-      "keywords": ["llm", "large language model", "generative ai", "genai", "ai agent", "agentic", "autonomous agent", "multi-agent", "rag", "retrieval-augmented", "copilot"],
+      "keywords": [
+        "llm",
+        "large language model",
+        "generative ai",
+        "genai",
+        "ai agent",
+        "agentic",
+        "autonomous agent",
+        "multi-agent",
+        "rag",
+        "retrieval-augmented",
+        "copilot"
+      ],
       "evidence": "I design agentic systems end to end: my Carthage Connect platform coordinates 7 specialised AI agents with retrieval and document processing, and at Talan I worked on multi-agent orchestration for an applied-AI pipeline.",
-      "sources": ["carthage", "talan"]
+      "sources": [
+        "carthage",
+        "talan"
+      ],
+      "keywords_fr": [
+        "llm",
+        "grand modèle de langage",
+        "ia générative",
+        "agent ia",
+        "agents ia",
+        "agentique",
+        "multi-agents",
+        "rag",
+        "copilote"
+      ]
     },
     {
       "id": "machine_learning",
       "label": "machine learning",
       "topic": "Machine Learning & Security Data",
       "match_description": "Machine learning, data science, predictive modelling, anomaly detection, analytics.",
-      "keywords": ["machine learning", "data science", "predictive", "anomaly detection", "deep learning", "analytics", "ml model"],
+      "keywords": [
+        "machine learning",
+        "data science",
+        "predictive",
+        "anomaly detection",
+        "deep learning",
+        "analytics",
+        "ml model"
+      ],
       "evidence": "My machine learning work includes a network anomaly-detection model that reached 97% accuracy on the CICIDS dataset during my internship at TDS Global by Nomios.",
-      "sources": ["tds"],
+      "sources": [
+        "tds"
+      ],
       "alt_evidence": "I also hold NVIDIA's certificate in Applications of AI for Predictive Maintenance.",
-      "alt_sources": ["nvidia"]
+      "alt_sources": [
+        "nvidia"
+      ],
+      "keywords_fr": [
+        "apprentissage automatique",
+        "machine learning",
+        "science des données",
+        "data science",
+        "prédictif",
+        "détection d'anomalies",
+        "deep learning",
+        "apprentissage profond",
+        "analyse de données"
+      ]
     },
     {
       "id": "cloud",
       "label": "cloud infrastructure",
       "topic": "Cloud Security & Engineering",
       "match_description": "Cloud platforms, cloud security, DevOps, DevSecOps, infrastructure, Kubernetes.",
-      "keywords": ["aws", "azure", "gcp", "google cloud", "cloud security", "kubernetes", "devops", "devsecops", "cloud infrastructure", "cloud-native"],
+      "keywords": [
+        "aws",
+        "azure",
+        "gcp",
+        "google cloud",
+        "cloud security",
+        "kubernetes",
+        "devops",
+        "devsecops",
+        "cloud infrastructure",
+        "cloud-native"
+      ],
       "evidence": "I've deployed and operated production workloads on AWS, configured their security groups, and I'm currently completing the AWS Solutions Architect – Associate certification.",
-      "sources": ["aws"]
+      "sources": [
+        "aws"
+      ],
+      "keywords_fr": [
+        "aws",
+        "azure",
+        "gcp",
+        "google cloud",
+        "sécurité cloud",
+        "kubernetes",
+        "devops",
+        "devsecops",
+        "infrastructure cloud",
+        "cloud natif"
+      ]
     },
     {
       "id": "software",
       "label": "software engineering",
       "topic": "Software & AI Engineering",
       "match_description": "General software, SaaS, web or mobile products, digital agencies, IT services with no explicit security or AI focus.",
-      "keywords": ["saas", "software development", "web application", "mobile app", "full-stack", "full stack", "product development", "software engineering"],
+      "keywords": [
+        "saas",
+        "software development",
+        "web application",
+        "mobile app",
+        "full-stack",
+        "full stack",
+        "product development",
+        "software engineering"
+      ],
       "evidence": "I build complete products rather than prototypes: Carthage Connect, for example, is a 50+ page web application with 7 AI agents behind it.",
-      "sources": ["carthage"]
+      "sources": [
+        "carthage"
+      ],
+      "keywords_fr": [
+        "saas",
+        "développement logiciel",
+        "application web",
+        "application mobile",
+        "full-stack",
+        "full stack",
+        "développement produit",
+        "génie logiciel"
+      ]
     }
   ],
-
   "strengths": [
     {
       "id": "redbox",
-      "sources": ["redbox"],
+      "sources": [
+        "redbox"
+      ],
       "text": "My flagship project is RedBox, an autonomous AI red-teaming platform that has solved 60+ CTF challenges automatically and reported 3 real vulnerabilities in production environments."
     },
     {
       "id": "internships",
-      "sources": ["internships"],
+      "sources": [
+        "internships"
+      ],
       "text": "I've completed three internships — at Forvis Mazars, Talan and TDS Global by Nomios — building AI systems for security teams and applied-AI projects."
     },
     {
       "id": "ctf",
-      "sources": ["ctf"],
+      "sources": [
+        "ctf"
+      ],
       "text": "I've won several national and international CTF competitions, and as President of Securinets ENSIT I organise competitions and mentor younger students."
     }
   ]

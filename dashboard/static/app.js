@@ -7,12 +7,21 @@
   const $ = (id) => document.getElementById(id);
   const val = (id) => ($(id) || {}).value || "";
 
+  // Every state-changing request carries the session's CSRF token; a
+  // session that ended (401) sends the user back to sign in.
+  const csrfToken = () => (document.querySelector('meta[name="csrf-token"]') || {}).content || "";
+
   async function postJSON(url, body) {
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+      credentials: "same-origin",
       body: JSON.stringify(body || {}),
     });
+    if (response.status === 401) {
+      window.location.href = "/login?next=" + encodeURIComponent(window.location.pathname);
+      return { ok: false, message: "Your session ended — sign in again." };
+    }
     return response.json();
   }
 
@@ -490,6 +499,10 @@
     const params = new URLSearchParams(window.location.search);
     try {
       const response = await fetch(`/api/overview?${params.toString()}`);
+      if (response.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
       const data = await response.json();
       if (data.ok) applyOverview(data);
     } catch (err) {
@@ -572,8 +585,13 @@
   }
 
   wireValidate("validate-gmail-btn", "gmail-validation-result", "/api/validate-gmail", () => ({
+    mail_method: (document.querySelector('input[name="mail_method"]:checked') || {}).value || "",
     gmail_address: val("gmail-address").trim(),
     gmail_app_password: val("gmail-password").trim(),
+    smtp_host: val("smtp-host").trim(),
+    smtp_port: val("smtp-port").trim(),
+    smtp_security: val("smtp-security").trim(),
+    smtp_username: val("smtp-username").trim(),
   }), gmailFields);
 
   const aiPayload = () => ({

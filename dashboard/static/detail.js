@@ -4,12 +4,21 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // Every state-changing request carries the session's CSRF token; a
+  // session that ended (401) sends the user back to sign in.
+  const csrfToken = () => (document.querySelector('meta[name="csrf-token"]') || {}).content || "";
+
   async function postJSON(url, body) {
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+      credentials: "same-origin",
       body: JSON.stringify(body || {}),
     });
+    if (response.status === 401) {
+      window.location.href = "/login?next=" + encodeURIComponent(window.location.pathname);
+      return { ok: false, message: "Your session ended — sign in again." };
+    }
     return response.json();
   }
 
@@ -259,6 +268,39 @@
       } finally {
         regenBtn.disabled = false;
         regenBtn.textContent = original;
+      }
+    });
+  }
+
+  // ── EN | FR switch ───────────────────────────────────────────────────────
+  // Rewrites this company's email in the other language from the approved
+  // wording (instant, no AI). A hand edit would be replaced, so ask first.
+  const langSwitch = $("lang-switch");
+  if (langSwitch) {
+    langSwitch.addEventListener("click", async (event) => {
+      const option = event.target.closest(".lang-switch__option");
+      if (!option || option.classList.contains("lang-switch__option--active")) return;
+      if (!langSwitch.dataset.editable) {
+        setResult("✗ This email can't be changed any more.", false);
+        return;
+      }
+      const lang = option.dataset.lang;
+      const label = lang === "fr" ? "French" : "English";
+      if (!window.confirm(`Rewrite this email in ${label}? Any edits you made by hand to this draft will be replaced.`)) return;
+      langSwitch.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+      setResult(`Rewriting in ${label}…`);
+      try {
+        const data = await postJSON(`/api/language/${langSwitch.dataset.appId}`, { language: lang });
+        if (!data.ok) {
+          setResult(`✗ ${data.message}`, false);
+          return;
+        }
+        setResult(`✓ Now in ${label}`, true);
+        setTimeout(() => window.location.reload(), 500);
+      } catch (err) {
+        setResult(`✗ ${err.message}`, false);
+      } finally {
+        langSwitch.querySelectorAll("button").forEach((b) => { b.disabled = false; });
       }
     });
   }

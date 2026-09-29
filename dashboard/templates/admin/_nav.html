@@ -1,0 +1,13 @@
+<header class="topbar">
+  <div>
+    <span class="eyebrow">Administration</span>
+    <h1>{{ admin_title }}</h1>
+    <p class="subtitle">{{ admin_subtitle }}</p>
+  </div>
+  <nav class="segmented" aria-label="Admin sections">
+    <a class="segmented__item{% if request.endpoint == 'admin.users' %} segmented__item--active{% endif %}" href="{{ url_for('admin.users') }}">Users</a>
+    <a class="segmented__item{% if request.endpoint == 'admin.platform' %} segmented__item--active{% endif %}" href="{{ url_for('admin.platform') }}">Platform</a>
+    <a class="segmented__item{% if request.endpoint == 'admin.audit' %} segmented__item--active{% endif %}" href="{{ url_for('admin.audit') }}">Audit log</a>
+  </nav>
+</header>
+{% include "_flashes.html" %}

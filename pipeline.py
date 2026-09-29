@@ -2,7 +2,10 @@
 Pipeline orchestration — preparation only (research + writing).
 
 The pipeline prepares emails and marks them as `ready` for dashboard review.
-Sending is handled separately by the dashboard's send job system.
+Sending is handled separately by the send job system.
+
+Runs for ONE user: every read and write goes through that user's scope
+(db.for_user), their own AI pool and their own profile.
 
 RESUME RULES (by email, stable application id in DB):
   - sent / bounced / queued / sending  → skip entirely
@@ -13,29 +16,28 @@ RESUME RULES (by email, stable application id in DB):
 
 import json
 import threading
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import db
 import cache_store
-from utils import build_greeting
+import db
+import drafting
+import logsink
 from agents.research_agent import get_company_context
-from agents.composer import compose_email
 from model_router import RoutingCancelled
 
 
-def _load_draft(email: str, app: dict | None) -> dict | None:
-    """Draft from disk cache first, then from the DB row."""
-    draft = cache_store.load_draft(email)
+def _load_draft(user_id: int, email: str, app: dict | None) -> dict | None:
+    """Draft from the cache first, then from the DB row."""
+    draft = cache_store.load_draft(user_id, email)
     if draft:
         return draft
     return db.draft_from_application(app)
 
 
-def _load_research(email: str, app: dict | None) -> dict | None:
-    """Research from disk cache first, then rebuild from DB columns."""
-    context = cache_store.load_research(email)
+def _load_research(user_id: int, email: str, app: dict | None) -> dict | None:
+    """Research from the cache first, then rebuilt from DB columns."""
+    context = cache_store.load_research(user_id, email)
     # Research saved before the verified-areas/hook format (no "areas" key)
     # carries nothing the composer can use, so treat it as a miss and redo it.
     if context and "areas" in context:
@@ -43,12 +45,12 @@ def _load_research(email: str, app: dict | None) -> dict | None:
     if app:
         context = db.research_context_from_application(app)
         if context:
-            cache_store.save_research(email, context)
+            cache_store.save_research(user_id, email, context)
         return context
     return None
 
 
-def needs_preparation(app: dict | None) -> bool:
+def needs_preparation(user_id: int, app: dict | None) -> bool:
     """True if this email still needs research and/or writing."""
     if not app:
         return True
@@ -56,28 +58,38 @@ def needs_preparation(app: dict | None) -> bool:
         return False
     if app["status"] in db.SEND_IN_FLIGHT_STATUSES:
         return False
-    if _load_draft(app["email"], app):
+    if _load_draft(user_id, app["email"], app):
         return False
     return True
 
 
 class Pipeline:
-    def __init__(self, client, cfg, model: str,
-                 research_workers: int = 3, writer_workers: int = 2):
+    def __init__(self, user_id: int, client, dcfg: "drafting.DraftingConfig", model: str,
+                 research_workers: int = 3, writer_workers: int = 2,
+                 translation_model: str | None = None, stop_check=None):
+        self.user_id = user_id
+        self.data = db.for_user(user_id)
         self.client = client
-        self.cfg = cfg
+        self.dcfg = dcfg
         self.model = model
+        self.translation_model = translation_model
 
+        # Worker threads inherit this run's log sink, so every line they print
+        # lands in THIS user's activity log, never in another user's.
+        sink = logsink.current()
         self.research_pool = ThreadPoolExecutor(max_workers=research_workers,
-                                                 thread_name_prefix="research")
+                                                 thread_name_prefix=f"research-u{user_id}",
+                                                 initializer=logsink.bind, initargs=(sink,))
         self.writer_pool = ThreadPoolExecutor(max_workers=writer_workers,
-                                               thread_name_prefix="writer")
+                                               thread_name_prefix=f"writer-u{user_id}",
+                                               initializer=logsink.bind, initargs=(sink,))
 
         self._shutdown = threading.Event()
         # Distinct from _shutdown, which is also set on normal completion to
         # retire the watcher thread: this one means the user asked to stop.
         self._stop_requested = threading.Event()
-        self._stop_file = os.getenv("PIPELINE_STOP_FILE")
+        # Answers "did the user press Stop?" (the worker reads it from the DB).
+        self._stop_check = stop_check
         # A router waiting for a model must hear "Stop" too, or a worker can
         # sit in a long wait while the stop request goes unread.
         if getattr(client, "is_router", False):
@@ -102,20 +114,10 @@ class Pipeline:
         """Outermost net: a stage that dies must not take its company with it.
 
         Nothing calls .result() on these futures, so an exception escaping a
-        task is swallowed by the executor — the company silently disappears
-        from the run: not researched, not written, not counted, no error
-        anywhere. That is exactly what happened to a company whose name held
-        a zero-width space: printing it raised UnicodeEncodeError, and the
-        stage's own `except` handler raised again printing the same name.
-
-        Only a raising stage is accounted for here. Research *succeeds* by
-        handing off to the writer pool without recording anything, so
-        "finished without recording" is the normal path, not a loss — and a
-        global counter can't tell the two apart while other threads are
-        recording concurrently.
-
-        This assumes nothing about being able to print, since a failing print
-        is the very thing it exists to survive.
+        task would be swallowed by the executor — the company would silently
+        disappear from the run. Only a raising stage is accounted for here;
+        research *succeeds* by handing off to the writer pool without
+        recording anything. Assumes nothing about being able to print.
         """
         self._local.recorded = False
         try:
@@ -132,15 +134,17 @@ class Pipeline:
     def _should_stop(self) -> bool:
         return self._shutdown.is_set()
 
-    def _watch_stop_file(self):
-        """Polls for the stop file and sets _shutdown as soon as it appears —
+    def _watch_stop(self):
+        """Polls the stop request and sets _shutdown as soon as it's made —
         the submit loop in run() finishes almost instantly (it only enqueues
-        futures), so checking the stop file there alone would never catch a
-        Stop click made after all rows are queued. Tasks themselves check
-        _should_stop() at their own entry point, so setting the flag here is
-        what actually makes "Stop safely" take effect on not-yet-started work."""
+        futures), so checking there alone would never catch a Stop click
+        made after all rows are queued."""
         while not self._shutdown.is_set():
-            if self._stop_file and os.path.exists(self._stop_file):
+            try:
+                stop = self._stop_check()
+            except Exception:
+                stop = False
+            if stop:
                 self._stop_requested.set()
                 self._shutdown.set()
                 break
@@ -148,10 +152,12 @@ class Pipeline:
 
     def _mark_ready_from_draft(self, app_id: int, email: str, company_name: str,
                                 draft: dict, *, reused: bool):
-        db.update_application(app_id, status="ready",
-                               subject=draft["subject"], body=draft["body"],
-                               error_message=None)
-        cache_store.save_draft(email, draft)
+        fields = {"status": "ready", "subject": draft["subject"], "body": draft["body"],
+                  "error_message": None}
+        if draft.get("language"):
+            fields["language"] = draft["language"]
+        self.data.update_application(app_id, **fields)
+        cache_store.save_draft(self.user_id, email, draft)
         tag = "reused existing draft" if reused else "draft ready"
         print(f"  [ready] {company_name} (id={app_id}) — {tag}.")
         self._record("ready")
@@ -161,9 +167,10 @@ class Pipeline:
         if self._should_stop():
             self._record("skipped")
             return
+        existing = None
         try:
-            existing = db.get_application_by_email(email)
-            app_id = db.get_or_create_application(company_name, email, website, contact_name)
+            existing = self.data.get_application_by_email(email)
+            app_id = self.data.get_or_create_application(company_name, email, website, contact_name)
 
             if existing and existing["status"] in db.PREPARATION_DONE_STATUSES:
                 print(f"  [skip] {company_name} <{email}> (id={app_id}) — already {existing['status']}.")
@@ -175,27 +182,27 @@ class Pipeline:
                 self._record("skipped")
                 return
 
-            draft = _load_draft(email, existing)
+            draft = _load_draft(self.user_id, email, existing)
             if draft:
                 self._mark_ready_from_draft(app_id, email, company_name, draft, reused=True)
                 return
 
-            context = _load_research(email, existing)
+            context = _load_research(self.user_id, email, existing)
             if context is not None:
                 print(f"  [research] {company_name} (id={app_id}) ... (cached, skipping re-scrape)")
             else:
                 print(f"  [research] {company_name} (id={app_id}) ...")
-                db.update_application(app_id, status="researching")
-                db.log_event(app_id, "research",
-                             f"Scraping and analyzing {website or '(no website given)'}")
+                self.data.update_application(app_id, status="researching")
+                self.data.log_event(app_id, "research",
+                                    f"Scraping and analyzing {website or '(no website given)'}")
 
                 context = get_company_context(
-                    self.client, self.model, company_name, website, self.cfg["spec"]["areas"],
-                    translation_model=self.cfg.get("ai_translation_model"),
+                    self.client, self.model, company_name, website, self.dcfg.research_areas,
+                    translation_model=self.translation_model,
                 )
-                cache_store.save_research(email, context)
+                cache_store.save_research(self.user_id, email, context)
 
-                db.update_application(
+                self.data.update_application(
                     app_id,
                     status="researched",
                     industry=context.get("industry"),
@@ -209,10 +216,11 @@ class Pipeline:
                     hook_evidence=context.get("hook_evidence") or None,
                     hook_status=context.get("hook_status"),
                 )
-                db.log_event(
+                self.data.log_event(
                     app_id, "research",
                     f"CV areas: {', '.join(context.get('areas') or []) or 'none'} · "
                     f"hook: {context.get('company_hook') or context.get('hook_status')}"
+                    + (f" · site language: {context['site_language']}" if context.get("site_language") else "")
                     # Which model did the research, so a draft is always
                     # traceable to what wrote its company-specific line.
                     + (f" · via {context['research_model']}" if context.get("research_model") else ""),
@@ -226,12 +234,13 @@ class Pipeline:
 
         except RoutingCancelled:
             # Stopped while waiting for a model. Put the company back exactly as
-            # it was — not "failed", and never a draft built from half a
-            # research — so the next run simply picks it up again.
+            # it was — never a draft built from half a research — so the next
+            # run simply picks it up again.
             try:
-                app_id = db.get_or_create_application(company_name, email, website, contact_name)
+                app_id = self.data.get_or_create_application(company_name, email, website, contact_name)
                 previous = (existing or {}).get("status") or "pending"
-                db.update_application(app_id, status="pending" if previous == "researching" else previous)
+                self.data.update_application(
+                    app_id, status="pending" if previous == "researching" else previous)
             except Exception:
                 pass
             print(f"  [stop] {company_name} — left for the next run.")
@@ -240,9 +249,9 @@ class Pipeline:
         except Exception as e:
             print(f"  [error] research stage crashed for {company_name}: {e}")
             try:
-                app_id = db.get_or_create_application(company_name, email, website, contact_name)
-                db.update_application(app_id, status="failed", error_message=f"Research error: {e}")
-                db.log_event(app_id, "research", "Research stage crashed", detail={"error": str(e)})
+                app_id = self.data.get_or_create_application(company_name, email, website, contact_name)
+                self.data.update_application(app_id, status="failed", error_message=f"Research error: {e}")
+                self.data.log_event(app_id, "research", "Research stage crashed", detail={"error": str(e)})
             except Exception:
                 pass
             self._record("failed")
@@ -252,30 +261,29 @@ class Pipeline:
             self._record("skipped")
             return
         try:
-            existing = db.get_application_by_id(app_id)
-            draft = _load_draft(email, existing)
+            existing = self.data.get_application_by_id(app_id)
+            draft = _load_draft(self.user_id, email, existing)
             if draft:
                 print(f"  [write] {company_name} (id={app_id}) ... (existing draft, skipping re-write)")
                 self._mark_ready_from_draft(app_id, email, company_name, draft, reused=True)
                 return
 
             print(f"  [write] generating email for {company_name} (id={app_id}) ...")
-            db.update_application(app_id, status="writing")
-            greeting = build_greeting(contact_name, company_name)
+            self.data.update_application(app_id, status="writing")
+            row = existing or {"email": email, "company_name": company_name,
+                               "website": website, "contact_name": contact_name}
+            email_content = drafting.compose_for(self.dcfg, row, context)
+            cache_store.save_draft(self.user_id, email, email_content)
 
-            email_content = compose_email(
-                self.cfg["spec"], context, company_name, greeting,
-                self.cfg["applicant_name"], self.cfg["target_role"],
-            )
-            cache_store.save_draft(email, email_content)
-
-            db.update_application(app_id, status="ready",
-                                   subject=email_content["subject"],
-                                   body=email_content["body"],
-                                   error_message=None)
-            db.log_event(app_id, "write",
-                         f"Draft ready: \"{email_content['subject']}\"",
-                         detail=email_content)
+            self.data.update_application(app_id, status="ready",
+                                         subject=email_content["subject"],
+                                         body=email_content["body"],
+                                         language=email_content["language"],
+                                         error_message=None)
+            self.data.log_event(app_id, "write",
+                                f"Draft ready ({email_content['language'].upper()}): "
+                                f"\"{email_content['subject']}\"",
+                                detail=email_content)
 
             print(f"  [ready] {company_name} (id={app_id}) — email ready for review.")
             self._record("ready")
@@ -283,8 +291,9 @@ class Pipeline:
         except Exception as e:
             print(f"  [error] writer stage failed for {company_name} (id={app_id}): {e}")
             try:
-                db.update_application(app_id, status="failed", error_message=f"Writer agent error: {e}")
-                db.log_event(app_id, "write", "Writer agent failed", detail={"error": str(e)})
+                self.data.update_application(app_id, status="failed",
+                                             error_message=f"Writer agent error: {e}")
+                self.data.log_event(app_id, "write", "Writer agent failed", detail={"error": str(e)})
             except Exception:
                 pass
             self._record("failed")
@@ -294,7 +303,7 @@ class Pipeline:
         companies_rows: list of (company_name, email, website, contact_name) tuples.
         Returns the results dict. Safe to Ctrl+C.
         """
-        recovered = db.recover_stale_preparation_rows()
+        recovered = self.data.recover_stale_preparation_rows()
         if recovered:
             print(f"Recovered {recovered} row(s) left mid-stage by a previous crashed/interrupted run.")
 
@@ -304,9 +313,9 @@ class Pipeline:
             return self.results
 
         stop_watcher = None
-        if self._stop_file:
-            stop_watcher = threading.Thread(target=self._watch_stop_file, daemon=True,
-                                             name="stop-watcher")
+        if self._stop_check:
+            stop_watcher = threading.Thread(target=logsink.wrap(self._watch_stop), daemon=True,
+                                             name=f"stop-watcher-u{self.user_id}")
             stop_watcher.start()
 
         for row in companies_rows:
@@ -332,8 +341,7 @@ class Pipeline:
         if self._stop_requested.is_set():
             # Work cancelled by the stop request never ran, so it never
             # recorded an outcome. Count it as skipped, otherwise the caller's
-            # reconciliation check reports companies as "lost" when in fact
-            # the user asked us to stop.
+            # reconciliation check reports companies as "lost".
             with self._lock:
                 unaccounted = self.total_companies - self.terminal_count
                 if unaccounted > 0:
@@ -342,3 +350,30 @@ class Pipeline:
             print("Stopped on request — prepared work is saved; re-run to continue.")
 
         return self.results
+
+
+def select_rows(user_id: int, *, limit: int | None = None, include_all: bool = False) -> tuple[list, int]:
+    """The user's company-list rows that still need work, in upload order.
+    Returns (rows, skipped_as_done)."""
+    data = db.for_user(user_id)
+    all_rows = data.company_list_rows()
+    if include_all:
+        rows, skipped = all_rows, 0
+    else:
+        # Two queries in total, not one per row: on a 22k-row list a
+        # per-row lookup held the run for minutes before the first company.
+        known = data.get_applications_by_email()
+        cached_drafts = data.cache_keys("draft")
+        rows, skipped = [], 0
+        for row in all_rows:
+            app = known.get(row[1])
+            done = bool(app) and (
+                app["status"] in db.PREPARATION_DONE_STATUSES
+                or app["status"] in db.SEND_IN_FLIGHT_STATUSES
+                or db.draft_from_application(app) is not None
+                or cache_store._key(app["email"]) in cached_drafts)
+            if done:
+                skipped += 1
+            else:
+                rows.append(row)
+    return (rows[:limit] if limit else rows), skipped

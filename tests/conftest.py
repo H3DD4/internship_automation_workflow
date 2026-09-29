@@ -1,109 +1,179 @@
 """Shared fixtures.
 
-Every test gets its own temporary database, cache directory and .env, so a
-test run can never read the real applications.db, write into the real cache/,
-or pick up the developer's real credentials — the previous smoke-test script
-did all three.
+Every test gets its own empty database, and the environment is set BEFORE
+any app module is imported — so the suite can never read or write the real
+database, the real .env, or real credentials.
+
+By default tests run on a throwaway SQLite file per test. To run the same
+suite on PostgreSQL:
+
+    TEST_DATABASE_URL=postgresql+psycopg://user:pass@127.0.0.1:5433/internship_test pytest -q
 """
 
 import os
 import sys
 from pathlib import Path
 
-import pytest
+# ---- Environment first: nothing below may see the developer's .env values.
+os.environ["APP_ENV"] = "test"
+os.environ["DATABASE_URL"] = "sqlite://"            # replaced per test
+os.environ["SECRET_KEY"] = "test-secret-key-not-for-production-use-000000000000"
+os.environ["ENCRYPTION_KEYS"] = "dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcy0hISE="
+os.environ["EMBEDDED_WORKER"] = "0"
+os.environ["ALLOW_PRIVATE_URLS"] = "1"
+os.environ["SIGNUP_MODE"] = "approval"
+
+import pytest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-
-# The developer's real credentials. A test once posted to /oauth/disconnect
-# with nothing isolating the Google token — and the suite deleted the real
-# token.json, silently signing Gmail out.
 REAL_SECRET_FILES = [ROOT / "token.json", ROOT / "credentials.json",
-                     *ROOT.glob("client_secret_*.json"), ROOT / ".env"]
+                     *ROOT.glob("client_secret_*.json"), ROOT / ".env", ROOT / "applications.db"]
 
 
 def _fingerprint(paths):
-    return {str(p): (p.stat().st_size, p.stat().st_mtime_ns) if p.exists() else None
-            for p in paths}
+    return {str(p): (p.stat().st_size, p.stat().st_mtime_ns) if p.exists() else None for p in paths}
 
 
 @pytest.fixture(scope="session", autouse=True)
-def real_credentials_are_never_touched():
-    """Tripwire: fail the whole run if any test created, changed or deleted
-    the real token, OAuth client file or .env."""
+def real_files_are_never_touched():
+    """Tripwire: fail the run if any test changed the real .env, database,
+    token or OAuth client file."""
     before = _fingerprint(REAL_SECRET_FILES)
     yield
     after = _fingerprint(REAL_SECRET_FILES)
     changed = [path for path in before if before[path] != after[path]]
-    assert not changed, f"a test modified real credential files: {changed}"
+    assert not changed, f"a test modified real files: {changed}"
 
 
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
-    """Point db, cache_store, the dashboard's .env and the Google sign-in
-    files at tmp_path."""
-    import cache_store
-    import db
-    import google_auth_helper
-    import sender_worker
-
-    monkeypatch.setattr(google_auth_helper, "ROOT_DIR", tmp_path)
-    monkeypatch.setattr(google_auth_helper, "TOKEN_PATH", tmp_path / "token.json")
-
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "applications.db")
-    monkeypatch.setattr(db, "_initialized_path", None)
-
-    cache_dir = tmp_path / "cache"
-    monkeypatch.setattr(cache_store, "CACHE_DIR", cache_dir)
-    monkeypatch.setattr(cache_store, "RESEARCH_DIR", cache_dir / "research")
-    monkeypatch.setattr(cache_store, "DRAFTS_DIR", cache_dir / "drafts")
-
-    env_path = tmp_path / ".env"
-    env_path.write_text("")
-    monkeypatch.setattr(sender_worker, "ENV_PATH", env_path)
-
-    db.init_db()
-
-    # Saving settings calls load_dotenv(override=True), which writes straight
-    # into os.environ; restore it so one test's keys can't leak into the next.
-    saved_environ = dict(os.environ)
+    """A fresh, empty database for this test."""
+    import database
+    url = os.environ.get("TEST_DATABASE_URL")
+    if url:
+        monkeypatch.setenv("DATABASE_URL", url)
+        database.dispose_engine()
+        engine = database.get_engine()
+        database.metadata.drop_all(engine)
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS schema_version"))
+        database._initialized.clear()
+    else:
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'test.db').as_posix()}")
+        database.dispose_engine()
+    database.init_schema()
     yield tmp_path
-    os.environ.clear()
-    os.environ.update(saved_environ)
+    database.dispose_engine()
+
+
+def _make_user(email="user@example.com", role="user", status="active", name="Test User"):
+    import accounts
+    return accounts.create_user(email, "correct-horse-battery-9", full_name=name, role=role, status=status)
 
 
 @pytest.fixture
-def client(isolated, monkeypatch):
-    """Flask test client wired to the isolated workspace.
+def user_id(isolated):
+    return _make_user()
 
-    `origin` on the returned client is the header POSTs need to satisfy the
-    dashboard's CSRF guard.
-    """
+
+@pytest.fixture
+def data(user_id):
+    import db
+    return db.for_user(user_id)
+
+
+@pytest.fixture
+def make_user(isolated):
+    return _make_user
+
+
+@pytest.fixture
+def make_app(data):
+    """Factory creating an application row (for the default user) in a given state."""
+    def _make(company="Acme", email="jobs@acme.com", status="ready", subject="Subject", body="Body",
+              owner=None, **fields):
+        import db
+        target = db.for_user(owner) if owner else data
+        app_id = target.get_or_create_application(company, email, "https://acme.com")
+        target.update_application(app_id, status=status, subject=subject, body=body, **fields)
+        return app_id
+    return _make
+
+
+def _login(test_client, uid):
+    import accounts
+    from dashboard import security
+    token, session_id = accounts.create_session(uid, "127.0.0.1", "pytest")
+    test_client.set_cookie(security.COOKIE_NAME, token, domain="localhost")
+    from sqlalchemy import select
+    import database
+    with database.read() as conn:
+        csrf = conn.execute(select(database.auth_sessions.c.csrf_token)
+                            .where(database.auth_sessions.c.id == session_id)).scalar_one()
+    test_client.origin = {"Origin": "http://localhost", "X-CSRF-Token": csrf}
+    test_client.csrf = csrf
+    test_client.user_id = uid
+    return test_client
+
+
+@pytest.fixture
+def app_module(isolated):
     import dashboard.app as dashboard_app
-
-    monkeypatch.setattr(dashboard_app, "ENV_PATH", isolated / ".env")
-    monkeypatch.setattr(dashboard_app, "UPLOAD_DIR", isolated / "uploads")
-    monkeypatch.setattr(dashboard_app, "RUN_LOG_PATH", isolated / "run.log")
-    monkeypatch.setattr(dashboard_app, "STOP_FILE", isolated / "stop.flag")
-    # Never start the real background sender thread during tests.
-    monkeypatch.setattr(dashboard_app.sender_worker, "ensure_running", lambda: None)
-
     dashboard_app.app.config["TESTING"] = True
-    test_client = dashboard_app.app.test_client()
+    return dashboard_app
+
+
+@pytest.fixture
+def anon_client(app_module):
+    test_client = app_module.app.test_client()
     test_client.origin = {"Origin": "http://localhost"}
     return test_client
 
 
 @pytest.fixture
-def make_app(isolated):
-    """Factory creating an application row in a given state."""
-    import db
+def client(app_module, user_id):
+    """A test client signed in as the default user. `client.origin` holds the
+    headers a POST needs (same Origin + the session's CSRF token)."""
+    return _login(app_module.app.test_client(), user_id)
 
-    def _make(company="Acme", email="jobs@acme.com", status="ready",
-              subject="Subject", body="Body", **fields):
-        app_id = db.get_or_create_application(company, email, "https://acme.com")
-        db.update_application(app_id, status=status, subject=subject, body=body, **fields)
-        return app_id
 
-    return _make
+@pytest.fixture
+def login(app_module):
+    """login(user_id) -> a new client signed in as that user."""
+    return lambda uid: _login(app_module.app.test_client(), uid)
+
+
+@pytest.fixture
+def admin_client(app_module, make_user):
+    uid = make_user("admin@example.com", role="admin", name="Admin")
+    return _login(app_module.app.test_client(), uid)
+
+
+SAMPLE_SPEC = None
+
+
+@pytest.fixture
+def spec():
+    import json
+    return json.loads((ROOT / "specializations.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def spec_fr():
+    import json
+    return json.loads((ROOT / "specializations_fr.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def with_profile(user_id, spec, spec_fr):
+    """Give the default user the original hand-written wording (EN + FR)."""
+    import profiles
+    import user_config
+    profiles.save(user_id, mode="custom", template_id="custom", language_mode="auto",
+                  spec_en=spec, spec_fr=spec_fr)
+    user_config.UserConfig(user_id).set_many({"YOUR_NAME": "Mohamed Hedda",
+                                              "YOUR_TARGET_ROLE": "End-of-Study Internship"})
+    return user_id

@@ -24,21 +24,16 @@ class FakeClient:
     """Stands in for CompatibleAIClient — no test may reach the network."""
 
 
-def _pipeline():
-    import json
-    from pathlib import Path
-    cfg = {
-        "spec": json.loads((Path(__file__).parent.parent / "specializations.json").read_text(encoding="utf-8")),
-        "applicant_name": "Me",
-        "target_role": "Intern",
-    }
-    return Pipeline(FakeClient(), cfg, "model", research_workers=1, writer_workers=1)
+def _pipeline(user_id):
+    import drafting
+    return Pipeline(user_id, FakeClient(), drafting.load_config(user_id), "model",
+                    research_workers=1, writer_workers=1)
 
 
-def test_a_stage_that_raises_is_still_counted(isolated):
+def test_a_stage_that_raises_is_still_counted(with_profile):
     """The executor swallows an escaped exception, so the count is the only
     thing that would ever reveal the loss."""
-    pipeline = _pipeline()
+    pipeline = _pipeline(with_profile)
 
     def exploding_stage(_row):
         raise RuntimeError("stage blew up before it could record anything")
@@ -48,10 +43,10 @@ def test_a_stage_that_raises_is_still_counted(isolated):
     assert pipeline.results["failed"] == 1
 
 
-def test_a_stage_whose_error_handler_also_raises_is_still_counted(isolated):
+def test_a_stage_whose_error_handler_also_raises_is_still_counted(with_profile):
     """The exact shape of the live failure: the handler dies the same way the
     stage did, so nothing downstream of it ever runs."""
-    pipeline = _pipeline()
+    pipeline = _pipeline(with_profile)
 
     def doubly_exploding_stage(_row):
         try:
@@ -65,10 +60,10 @@ def test_a_stage_whose_error_handler_also_raises_is_still_counted(isolated):
     assert pipeline.results["failed"] == 1
 
 
-def test_the_guard_never_double_counts_a_stage_that_recorded_itself(isolated):
+def test_the_guard_never_double_counts_a_stage_that_recorded_itself(with_profile):
     """A stage that recorded an outcome and then died must not be counted
     twice — otherwise a run reports more companies than it was given."""
-    pipeline = _pipeline()
+    pipeline = _pipeline(with_profile)
 
     def records_then_dies(_row):
         pipeline._record("failed")
@@ -79,11 +74,11 @@ def test_the_guard_never_double_counts_a_stage_that_recorded_itself(isolated):
     assert pipeline.results == {"ready": 0, "failed": 1, "skipped": 0}
 
 
-def test_research_handing_off_to_the_writer_is_not_counted_as_a_loss(isolated):
+def test_research_handing_off_to_the_writer_is_not_counted_as_a_loss(with_profile):
     """Research succeeds by submitting to the writer pool WITHOUT recording;
     the writer records later. Treating "returned without recording" as a lost
     company made a clean 6-company run report "ready: 6, failed: 1"."""
-    pipeline = _pipeline()
+    pipeline = _pipeline(with_profile)
 
     def hands_off(_row):
         return  # exactly what _research_task does on success
@@ -93,11 +88,11 @@ def test_research_handing_off_to_the_writer_is_not_counted_as_a_loss(isolated):
     assert pipeline.results == {"ready": 0, "failed": 0, "skipped": 0}
 
 
-def test_the_guard_is_not_confused_by_other_threads_recording(isolated):
+def test_the_guard_is_not_confused_by_other_threads_recording(with_profile):
     """The flag is per-thread, so concurrent outcomes from the writer pool
     can't make a research stage look like it did (or didn't) record."""
     import threading
-    pipeline = _pipeline()
+    pipeline = _pipeline(with_profile)
 
     def dies_while_another_thread_records(_row):
         other = threading.Thread(target=lambda: pipeline._record("ready"))
@@ -111,10 +106,10 @@ def test_the_guard_is_not_confused_by_other_threads_recording(isolated):
     assert pipeline.terminal_count == 2
 
 
-def test_the_guard_reports_the_failure_without_printing_the_bad_name(isolated, capsys):
+def test_the_guard_reports_the_failure_without_printing_the_bad_name(with_profile, capsys):
     """The label is built from the email, and the message is forced to ASCII —
     the net cannot be brought down by the thing it is there to catch."""
-    pipeline = _pipeline()
+    pipeline = _pipeline(with_profile)
 
     def exploding_stage(_row):
         raise RuntimeError(UNPRINTABLE_NAME)

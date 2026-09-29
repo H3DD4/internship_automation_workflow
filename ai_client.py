@@ -14,7 +14,11 @@ import random
 import threading
 from types import SimpleNamespace
 
+import hashlib
+
 import requests
+
+import safe_http
 
 
 def extract_json_object(text: str) -> str | None:
@@ -287,13 +291,42 @@ def _classify_status(status: int) -> str:
     return "bad_request"
 
 
+# Every call to a provider goes through the SSRF-guarded session: a "custom"
+# base URL is user input, and on a server it must not reach private addresses.
+_http = None
+
+
+def _http_post(url: str, **kwargs):
+    global _http
+    if _http is None:
+        _http = safe_http.session()
+    safe_http.check_url(url)
+    return _http.post(url, **kwargs)
+
+
+def _http_get(url: str, **kwargs):
+    global _http
+    if _http is None:
+        _http = safe_http.session()
+    safe_http.check_url(url)
+    return _http.get(url, **kwargs)
+
+
+def key_fingerprint(api_key: str) -> str:
+    """Identifies a key without holding it: two users on the same provider
+    and model have separate quotas, so their token buckets must be separate."""
+    return hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:12]
+
+
 class CompatibleAIClient:
     def __init__(self, api_key: str, base_url: str, rate_limiter: RateLimiter = None):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.rate_limiter = rate_limiter or get_global_rate_limiter()
-        # Shared across clients: the provider limits the model, not the client.
+        # Shared across clients of the same key: the provider limits the
+        # model per account, not per client object.
         self.token_budget = _global_token_budget
+        self.budget_scope = key_fingerprint(api_key)
         self.messages = _Messages(self)
 
 
@@ -326,7 +359,7 @@ class _Messages:
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
 
-        budget_key = (self.client.base_url, model)
+        budget_key = (self.client.base_url, model, self.client.budget_scope)
         needed = estimate_tokens(system, payload["messages"][1:])
         attempt = 0
         while attempt < max_attempts:
@@ -338,7 +371,7 @@ class _Messages:
 
             # --- Network-level errors ---
             try:
-                response = requests.post(
+                response = _http_post(
                     f"{self.client.base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {self.client.api_key}",
@@ -347,6 +380,8 @@ class _Messages:
                     json=payload,
                     timeout=120,
                 )
+            except safe_http.BlockedURL as e:
+                raise AIProviderError(f"AI endpoint refused: {e}", kind="auth") from e
             except (requests.ConnectionError, requests.Timeout) as e:
                 if attempt == max_attempts:
                     raise AIProviderError(
@@ -630,7 +665,7 @@ def list_provider_models(base_url: str, api_key: str, timeout: int = 20) -> tupl
         return [], "No API key for this provider yet."
     url = base_url.rstrip("/") + "/models"
     try:
-        response = requests.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=timeout)
+        response = _http_get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=timeout)
     except requests.RequestException as exc:
         return [], f"Could not reach {url} ({exc})."
     if response.status_code in (401, 403):

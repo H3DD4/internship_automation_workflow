@@ -30,7 +30,7 @@
       <span class="cell-empty">—</span>
     {% endif %}
   </td>
-  <td class="cell-subject" title="{{ a.subject or '' }}">{{ a.subject or "—" }}</td>
+  <td class="cell-subject" title="{{ a.subject or '' }}">{% if a.language %}<span class="lang-chip lang-chip--{{ a.language }}">{{ a.language | upper }}</span> {% endif %}{{ a.subject or "—" }}</td>
   <td class="cell-mono cell-time col-updated">{{ a.updated_short }}</td>
   <td class="row-actions">
     {% if a.sendable %}

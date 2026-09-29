@@ -1,181 +1,35 @@
-"""
-Database layer (SQLite, zero setup required).
-Stores one row per company application + a full event log per company so the
-dashboard can show exactly what happened at each stage (research → write →
-send → bounce), including the AI's reasoning (matched extras + why).
+"""Data access for the application pipeline, scoped to one user.
+
+    data = db.for_user(user_id)
+    data.get_application_by_id(app_id)   # None unless it belongs to user_id
+
+Every method filters on the owning user, so a request for another account's
+row behaves exactly like a request for a row that doesn't exist. The method
+names and semantics are the ones the single-user version had — the atomic
+send claim, crash recovery, the funnel groups — only the scope is new.
+
+Module-level functions at the bottom serve the background worker, which
+works across users (finding pending jobs) and then drops into a user scope
+for everything it does.
 """
 
-import sqlite3
+from __future__ import annotations
+
 import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "applications.db"
+from sqlalchemy import func, select, text, update
+from sqlalchemy.exc import IntegrityError
 
-
-def get_connection():
-    # timeout + WAL + busy_timeout: multiple worker threads (research/writer
-    # pools) each open their own short-lived connection concurrently. WAL
-    # mode lets readers and a writer proceed without blocking each other,
-    # and busy_timeout makes SQLite automatically retry internally for up
-    # to 30s instead of immediately raising "database is locked".
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 30000")
-    return conn
-
-
-_initialized_path = None
-
-
-def init_db():
-    """Create tables/columns and run one-time migrations.
-
-    Guarded to run its body only once per DB_PATH per process:
-    dashboard/app.py calls this on every request (index(), company_detail()),
-    and the one-time status-rename migrations below must not re-fire on
-    every page load — among other things, a row that legitimately fails
-    again later in the same process would otherwise get silently flipped
-    back to 'researched' (and its error message lost) the next time someone
-    just loads the page. Keying on DB_PATH (rather than a plain bool) means
-    tests that repoint DB_PATH at a fresh tmp file per test still get a real
-    init instead of a stale skip. CREATE TABLE IF NOT EXISTS / guarded ALTER
-    TABLE are idempotent either way, but skipping them too avoids a
-    redundant DB round-trip on every request.
-    """
-    global _initialized_path
-    if _initialized_path == DB_PATH:
-        return
-    _initialized_path = DB_PATH
-
-    conn = get_connection()
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS applications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        company_name TEXT NOT NULL,
-        email TEXT NOT NULL UNIQUE,
-        website TEXT,
-        contact_name TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        industry TEXT,
-        mission_or_focus TEXT,
-        tone_of_voice TEXT,
-        talking_points TEXT,
-        matched_extra_mentions TEXT,
-        match_reasons TEXT,
-        subject TEXT,
-        body TEXT,
-        error_message TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        sent_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        application_id INTEGER NOT NULL,
-        timestamp TEXT NOT NULL,
-        stage TEXT NOT NULL,
-        message TEXT NOT NULL,
-        detail TEXT,
-        FOREIGN KEY (application_id) REFERENCES applications (id)
-    );
-
-    CREATE TABLE IF NOT EXISTS send_jobs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        total_items INTEGER NOT NULL DEFAULT 0,
-        sent_count INTEGER NOT NULL DEFAULT 0,
-        failed_count INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        started_at TEXT,
-        completed_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS send_job_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id INTEGER NOT NULL,
-        application_id INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'queued',
-        error_message TEXT,
-        message_id TEXT,
-        attempted_at TEXT,
-        FOREIGN KEY (job_id) REFERENCES send_jobs (id),
-        FOREIGN KEY (application_id) REFERENCES applications (id)
-    );
-
-    -- Every dashboard page load filters/counts by status and orders by
-    -- updated_at (get_applications_paginated, get_stats, count_* helpers),
-    -- and the sender worker's get_next_queued_item filters send_job_items by
-    -- (job_id, status) on every item it processes.
-    CREATE INDEX IF NOT EXISTS idx_applications_status ON applications (status);
-    CREATE INDEX IF NOT EXISTS idx_applications_updated_at ON applications (updated_at);
-    CREATE INDEX IF NOT EXISTS idx_send_job_items_job_status ON send_job_items (job_id, status);
-    -- Every company page loads that company's timeline. Without this it is a
-    -- full scan of the events table, which grows by several rows per company
-    -- per run — thousands now, tens of thousands across the whole list.
-    CREATE INDEX IF NOT EXISTS idx_events_application ON events (application_id, timestamp);
-    -- count_sent_today() / count_sent_since() filter on sent_at on every
-    -- tracker load and live-refresh tick.
-    CREATE INDEX IF NOT EXISTS idx_applications_sent_at ON applications (sent_at);
-
-    -- Small key/value store for app state that isn't per-company, such as
-    -- when the inbox was last scanned for bounce notifications.
-    CREATE TABLE IF NOT EXISTS meta (
-        key TEXT PRIMARY KEY,
-        value TEXT
-    );
-    """)
-    conn.commit()
-
-    # Lightweight migration: add any columns that didn't exist in older DBs
-    # created before this field was introduced, so upgrading never breaks.
-    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(applications)")}
-    for col_name, col_def in [
-        ("contact_name", "TEXT"),
-        ("send_attempts", "INTEGER DEFAULT 0"),
-        ("last_attempt_at", "TEXT"),
-        ("message_id", "TEXT"),
-        ("error_code", "TEXT"),
-        ("company_hook", "TEXT"),
-        ("hook_evidence", "TEXT"),
-        ("hook_status", "TEXT"),
-        ("hook_original", "TEXT"),
-        ("favorite", "INTEGER NOT NULL DEFAULT 0"),
-    ]:
-        if col_name not in existing_cols:
-            conn.execute(f"ALTER TABLE applications ADD COLUMN {col_name} {col_def}")
-            conn.commit()
-    # After the migration above: on an older database the column only exists
-    # from here on, so this index can't live in the CREATE script.
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_applications_favorite ON applications (favorite)")
-
-    # One-time status renames for the review-and-send architecture
-    conn.execute("UPDATE applications SET status = 'ready' WHERE status = 'drafted'")
-    conn.execute("UPDATE applications SET status = 'retry_wait' WHERE status = 'retry_later'")
-    # Failed writer runs with research done → researched (retry write, no re-scrape).
-    # error_message is deliberately kept (not cleared) — losing the error is
-    # what made a genuine write failure look like it "disappeared" once this
-    # ran again on the next page load, before init_db() was guarded to run
-    # its migrations only once per process.
-    conn.execute("""
-        UPDATE applications SET status = 'researched'
-        WHERE status = 'failed'
-          AND (subject IS NULL OR subject = '')
-          AND industry IS NOT NULL
-    """)
-    conn.commit()
-
-    conn.close()
+import database
+from database import (
+    applications, cache_entries, company_list, events, send_job_items, send_jobs, user_meta,
+)
 
 
 def _now():
-    # Timezone-aware UTC (datetime.utcnow() is deprecated as of Python 3.12).
-    # Every stored timestamp goes through this function, so the whole app
-    # (including count_sent_today's daily-cap check below) shares one single,
-    # unambiguous clock.
+    # Timezone-aware UTC. Every stored timestamp goes through here, so the
+    # daily-cap check and the bounce window share one unambiguous clock.
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -184,96 +38,21 @@ def now():
     return _now()
 
 
-def get_or_create_application(company_name: str, email: str, website: str, contact_name: str = "") -> int:
-    conn = get_connection()
-    row = conn.execute("SELECT id FROM applications WHERE email = ?", (email,)).fetchone()
-    if row:
-        conn.close()
-        return row["id"]
-
-    now = _now()
-    cur = conn.execute(
-        """INSERT INTO applications (company_name, email, website, contact_name, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
-        (company_name, email, website, contact_name, now, now),
-    )
-    conn.commit()
-    app_id = cur.lastrowid
-    conn.close()
-    return app_id
+def init_db():
+    database.init_schema()
 
 
-def get_applications_by_email() -> dict:
-    """Every application keyed by its exact email, in one query.
-
-    Deciding which spreadsheet rows still need work used to call
-    get_application_by_email() once per row — 21,860 queries, each on a new
-    connection — which held a run for 2 m 41 s before the first company was
-    researched. Same exact-match semantics, one round trip."""
-    conn = get_connection()
-    rows = conn.execute("SELECT * FROM applications").fetchall()
-    conn.close()
-    return {row["email"]: dict(row) for row in rows}
+def _dicts(result) -> list:
+    return [dict(row._mapping) for row in result]
 
 
-def get_application_by_email(email: str):
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM applications WHERE email = ?", (email,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+def _one(result):
+    row = result.first()
+    return dict(row._mapping) if row else None
 
 
-def update_application(app_id: int, **fields):
-    if not fields:
-        return
-    fields["updated_at"] = _now()
-    columns = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [app_id]
-    conn = get_connection()
-    conn.execute(f"UPDATE applications SET {columns} WHERE id = ?", values)
-    conn.commit()
-    conn.close()
-
-
-def log_event(app_id: int, stage: str, message: str, detail: dict = None):
-    conn = get_connection()
-    conn.execute(
-        """INSERT INTO events (application_id, timestamp, stage, message, detail)
-           VALUES (?, ?, ?, ?, ?)""",
-        (app_id, _now(), stage, message, json.dumps(detail) if detail is not None else None),
-    )
-    conn.commit()
-    conn.close()
-
-
-def get_events(app_id: int):
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM events WHERE application_id = ? ORDER BY timestamp ASC", (app_id,)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_all_applications():
-    conn = get_connection()
-    rows = conn.execute("SELECT * FROM applications ORDER BY updated_at DESC").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_stats():
-    conn = get_connection()
-    rows = conn.execute("SELECT status, COUNT(*) as c FROM applications GROUP BY status").fetchall()
-    conn.close()
-    stats = {r["status"]: r["c"] for r in rows}
-    stats["total"] = sum(stats.values())
-    return stats
-
-
-# The pipeline stages a company moves through, grouped into the five buckets
-# the dashboard shows as a funnel. Showing one card per raw status (11 of them)
-# made it impossible to see at a glance how much work was left vs. done.
+# The pipeline stages a company moves through, grouped into the funnel
+# buckets the dashboard shows.
 STATUS_GROUPS = {
     "to_prepare": ("pending", "researching", "researched", "writing"),
     "ready": ("ready",),
@@ -283,316 +62,507 @@ STATUS_GROUPS = {
     "skipped": ("skipped",),
 }
 
-
-def get_grouped_stats() -> dict:
-    """Per-status counts collapsed into the dashboard's funnel groups, plus
-    'total' and the raw per-status counts under 'by_status'."""
-    stats = get_stats()
-    grouped = {
-        group: sum(stats.get(status, 0) for status in statuses)
-        for group, statuses in STATUS_GROUPS.items()
-    }
-    grouped["total"] = stats.get("total", 0)
-    grouped["by_status"] = {k: v for k, v in stats.items() if k != "total"}
-    return grouped
-
-
-def get_meta(key: str):
-    """JSON-decoded value stored under `key`, or None."""
-    conn = get_connection()
-    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    conn.close()
-    if not row:
-        return None
-    try:
-        return json.loads(row["value"])
-    except (TypeError, ValueError):
-        return None
-
-
-def set_meta(key: str, value) -> None:
-    conn = get_connection()
-    conn.execute("INSERT INTO meta (key, value) VALUES (?, ?) "
-                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                 (key, json.dumps(value)))
-    conn.commit()
-    conn.close()
-
-
-def count_sent_since(days: int) -> int:
-    """Rows still marked sent whose send happened in the last `days` days —
-    the ones a bounce notification could still arrive for."""
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT COUNT(*) AS c FROM applications WHERE status = 'sent' AND sent_at >= ?",
-        (since,),
-    ).fetchone()
-    conn.close()
-    return row["c"]
-
-
-def count_sent_today() -> int:
-    # sent_at is stored via _now() which is UTC — must compare against the
-    # UTC calendar date, not the local one, or this under/overcounts by
-    # however many hours the local timezone is offset near midnight.
-    #
-    # Filters on sent_at alone, NOT status = 'sent': the daily cap exists to
-    # limit how many messages actually left this Gmail account today, which
-    # doesn't change if a message we sent this morning is later found to
-    # have bounced (status becomes 'bounced', sent_at is untouched) — it
-    # still counts against today's quota either way.
-    #
-    # A half-open range rather than LIKE 'YYYY-MM-DD%': the two match exactly
-    # the same ISO-8601 timestamps, but SQLite only serves LIKE from an index
-    # under a case-insensitive collation, while a range uses
-    # idx_applications_sent_at directly.
-    today = datetime.now(timezone.utc).date()
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT COUNT(*) as c FROM applications WHERE sent_at >= ? AND sent_at < ?",
-        (today.isoformat(), (today + timedelta(days=1)).isoformat()),
-    ).fetchone()
-    conn.close()
-    return row["c"]
-
-
-def get_application_by_id(app_id: int):
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def get_adjacent_application_id(app_id: int, direction: str = "next") -> int | None:
-    """The next/previous application id by id order, for walking through
-    companies on the detail page without going back to the list each time."""
-    conn = get_connection()
-    if direction == "prev":
-        row = conn.execute(
-            "SELECT id FROM applications WHERE id < ? ORDER BY id DESC LIMIT 1", (app_id,)
-        ).fetchone()
-    else:
-        row = conn.execute(
-            "SELECT id FROM applications WHERE id > ? ORDER BY id ASC LIMIT 1", (app_id,)
-        ).fetchone()
-    conn.close()
-    return row["id"] if row else None
-
-
-def set_favorite(app_ids: list, favorite: bool) -> int:
-    """Star or unstar companies. Returns how many rows were changed.
-
-    Deliberately leaves updated_at alone: the table is ordered by it, and
-    starring a company isn't a change to the company — bumping it would make
-    rows jump around as you star down the list."""
-    ids = [int(i) for i in app_ids]
-    if not ids:
-        return 0
-    conn = get_connection()
-    cur = conn.execute(
-        f"UPDATE applications SET favorite = ? WHERE id IN ({','.join('?' * len(ids))})",
-        [1 if favorite else 0, *ids],
-    )
-    conn.commit()
-    conn.close()
-    return cur.rowcount
-
-
-def count_favorites() -> dict:
-    """{"total": starred companies, "sendable": those with a draft ready to send}."""
-    conn = get_connection()
-    total = conn.execute("SELECT COUNT(*) FROM applications WHERE favorite = 1").fetchone()[0]
-    sendable = conn.execute(
-        f"SELECT COUNT(*) FROM applications WHERE favorite = 1 "
-        f"AND status IN ({','.join('?' * len(SENDABLE_STATUSES))}) "
-        f"AND subject IS NOT NULL AND subject != ''",
-        tuple(SENDABLE_STATUSES),
-    ).fetchone()[0]
-    conn.close()
-    return {"total": total, "sendable": sendable}
-
-
-def get_sendable_favorites() -> list:
-    """Starred companies whose draft can be sent now, oldest star first."""
-    conn = get_connection()
-    rows = conn.execute(
-        f"SELECT id, company_name, email FROM applications WHERE favorite = 1 "
-        f"AND status IN ({','.join('?' * len(SENDABLE_STATUSES))}) "
-        f"AND subject IS NOT NULL AND subject != '' ORDER BY id",
-        tuple(SENDABLE_STATUSES),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_applications_paginated(status: str = None, statuses: list = None,
-                                search: str = None,
-                                page: int = 1, limit: int = 50,
-                                favorite_only: bool = False) -> tuple[list, int]:
-    """Returns (rows, total_count) with pagination and optional filters.
-
-    `status` matches one exact status; `statuses` matches any of several (used
-    by the dashboard's grouped funnel/tab filters, e.g. "problems" covering
-    failed + retry_wait + bounced). `favorite_only` limits to starred rows.
-    """
-    conn = get_connection()
-    conditions = []
-    params = []
-
-    if favorite_only:
-        conditions.append("favorite = 1")
-    if statuses:
-        conditions.append(f"status IN ({','.join('?' * len(statuses))})")
-        params.extend(statuses)
-    elif status:
-        conditions.append("status = ?")
-        params.append(status)
-    if search:
-        search_pattern = f"%{search}%"
-        conditions.append("(company_name LIKE ? OR email LIKE ?)")
-        params.extend([search_pattern, search_pattern])
-
-    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-
-    count_row = conn.execute(
-        f"SELECT COUNT(*) as c FROM applications {where}", params
-    ).fetchone()
-    total = count_row["c"]
-
-    offset = (page - 1) * limit
-    rows = conn.execute(
-        f"SELECT * FROM applications {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-        params + [limit, offset]
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows], total
-
-
-# Statuses from which an application can be queued for sending. ("retry_later"
-# was the pre-migration name for "retry_wait" — init_db() converts it once at
-# startup, so no row can be in that status by the time this is checked.)
+# Statuses from which an application can be queued for sending.
 SENDABLE_STATUSES = frozenset({"ready", "failed", "retry_wait"})
-
-
-def create_send_job(app_ids: list[int]) -> tuple[int | None, list[int]]:
-    """Create a send job for the given application ids.
-
-    Each id is claimed with a single atomic UPDATE ... WHERE status IN
-    (sendable) — this is the only place that flips a row to 'queued', so two
-    concurrent requests for the same row (a double-click, or the row's own
-    "Send" button plus "Send selected" in the same instant) can never both
-    win: the second UPDATE simply matches zero rows once the first has
-    already moved the status away from a sendable state.
-
-    Returns (job_id, queued_app_ids). queued_app_ids may be shorter than
-    app_ids (or empty, with job_id None) if some/all were already claimed,
-    not in a sendable status, or have no draft.
-    """
-    conn = get_connection()
-    now = _now()
-    placeholders = ",".join("?" * len(SENDABLE_STATUSES))
-    queued_ids = []
-    for app_id in app_ids:
-        cur = conn.execute(
-            f"""UPDATE applications SET status = 'queued', updated_at = ?
-                WHERE id = ? AND status IN ({placeholders})
-                  AND subject IS NOT NULL AND subject != ''
-                  AND body IS NOT NULL AND body != ''""",
-            (now, app_id, *SENDABLE_STATUSES)
-        )
-        if cur.rowcount == 1:
-            queued_ids.append(app_id)
-
-    if not queued_ids:
-        conn.commit()
-        conn.close()
-        return None, []
-
-    cur = conn.execute(
-        "INSERT INTO send_jobs (status, total_items, created_at) VALUES ('pending', ?, ?)",
-        (len(queued_ids), now)
-    )
-    job_id = cur.lastrowid
-    for app_id in queued_ids:
-        conn.execute(
-            "INSERT INTO send_job_items (job_id, application_id, status) VALUES (?, ?, 'queued')",
-            (job_id, app_id)
-        )
-    conn.commit()
-    conn.close()
-    return job_id, queued_ids
-
-
-def get_send_job(job_id: int) -> dict | None:
-    conn = get_connection()
-    job = conn.execute("SELECT * FROM send_jobs WHERE id = ?", (job_id,)).fetchone()
-    if not job:
-        conn.close()
-        return None
-
-    items = conn.execute(
-        "SELECT sji.*, a.company_name, a.email "
-        "FROM send_job_items sji JOIN applications a ON sji.application_id = a.id "
-        "WHERE sji.job_id = ? ORDER BY sji.id", (job_id,)
-    ).fetchall()
-    conn.close()
-
-    result = dict(job)
-    result["items"] = [dict(i) for i in items]
-
-    # Compute live counts from items
-    statuses = [i["status"] for i in result["items"]]
-    result["queued"] = statuses.count("queued")
-    result["sending"] = statuses.count("sending")
-    result["sent_count"] = statuses.count("sent")
-    result["failed_count"] = statuses.count("failed") + statuses.count("retry_wait")
-    return result
-
-
-def get_next_queued_item(job_id: int) -> dict | None:
-    """Get the next queued item from a send job. Returns None when all are processed."""
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT sji.*, a.company_name, a.email, a.subject, a.body "
-        "FROM send_job_items sji JOIN applications a ON sji.application_id = a.id "
-        "WHERE sji.job_id = ? AND sji.status = 'queued' ORDER BY sji.id LIMIT 1",
-        (job_id,)
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def update_send_job_item(item_id: int, **fields):
-    if not fields:
-        return
-    columns = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [item_id]
-    conn = get_connection()
-    conn.execute(f"UPDATE send_job_items SET {columns} WHERE id = ?", values)
-    conn.commit()
-    conn.close()
-
-
-def update_send_job(job_id: int, **fields):
-    if not fields:
-        return
-    columns = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [job_id]
-    conn = get_connection()
-    conn.execute(f"UPDATE send_jobs SET {columns} WHERE id = ?", values)
-    conn.commit()
-    conn.close()
-
-
 # Statuses where the sender owns the row — pipeline must not touch these.
 SEND_IN_FLIGHT_STATUSES = frozenset({"queued", "sending"})
-
-# Statuses where this company is finished as far as preparation is concerned:
-# already sent/bounced, or deliberately skipped by the user. Preparation never
-# researches or re-drafts these.
+# Finished as far as preparation is concerned.
 PREPARATION_DONE_STATUSES = frozenset({"sent", "bounced", "skipped"})
 
+_APPLICATION_COLUMNS = {c.name for c in applications.columns} - {"id", "user_id", "created_at"}
+_JOB_ITEM_COLUMNS = {c.name for c in send_job_items.columns} - {"id", "job_id"}
+_JOB_COLUMNS = {c.name for c in send_jobs.columns} - {"id", "user_id"}
+
+
+def _checked(fields: dict, allowed: set) -> dict:
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"Unknown column(s): {', '.join(sorted(unknown))}")
+    return fields
+
+
+def _like_pattern(search: str) -> str:
+    escaped = search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+class UserData:
+    """Everything the pipeline, sender and dashboard do, for one user."""
+
+    def __init__(self, user_id: int):
+        if not isinstance(user_id, int) or user_id <= 0:
+            raise ValueError("A valid user id is required.")
+        self.user_id = user_id
+
+    # ------------------------------------------------------------------
+    # Applications
+    # ------------------------------------------------------------------
+
+    def get_or_create_application(self, company_name: str, email: str, website: str,
+                                  contact_name: str = "") -> int:
+        uid = self.user_id
+        with database.tx() as conn:
+            row = conn.execute(select(applications.c.id).where(
+                applications.c.user_id == uid, applications.c.email == email)).first()
+            if row:
+                return row.id
+        now = _now()
+        try:
+            with database.tx() as conn:
+                result = conn.execute(applications.insert().values(
+                    user_id=uid, company_name=company_name, email=email, website=website,
+                    contact_name=contact_name, status="pending", created_at=now, updated_at=now,
+                ).returning(applications.c.id))
+                return result.scalar_one()
+        except IntegrityError:
+            # Two workers created the same row at once; the other one won.
+            with database.read() as conn:
+                return conn.execute(select(applications.c.id).where(
+                    applications.c.user_id == uid, applications.c.email == email)).scalar_one()
+
+    def get_applications_by_email(self) -> dict:
+        """Every application keyed by its exact email, in one query."""
+        with database.read() as conn:
+            rows = _dicts(conn.execute(select(applications).where(
+                applications.c.user_id == self.user_id)))
+        return {row["email"]: row for row in rows}
+
+    def get_application_by_email(self, email: str):
+        with database.read() as conn:
+            return _one(conn.execute(select(applications).where(
+                applications.c.user_id == self.user_id, applications.c.email == email)))
+
+    def get_application_by_id(self, app_id: int):
+        with database.read() as conn:
+            return _one(conn.execute(select(applications).where(
+                applications.c.user_id == self.user_id, applications.c.id == int(app_id))))
+
+    def update_application(self, app_id: int, **fields):
+        if not fields:
+            return
+        fields = _checked(dict(fields), _APPLICATION_COLUMNS)
+        fields["updated_at"] = _now()
+        with database.tx() as conn:
+            conn.execute(update(applications).where(
+                applications.c.user_id == self.user_id, applications.c.id == int(app_id)
+            ).values(**fields))
+
+    def get_all_applications(self):
+        with database.read() as conn:
+            return _dicts(conn.execute(select(applications).where(
+                applications.c.user_id == self.user_id).order_by(applications.c.updated_at.desc())))
+
+    def get_adjacent_application_id(self, app_id: int, direction: str = "next") -> int | None:
+        base = select(applications.c.id).where(applications.c.user_id == self.user_id)
+        if direction == "prev":
+            query = base.where(applications.c.id < app_id).order_by(applications.c.id.desc())
+        else:
+            query = base.where(applications.c.id > app_id).order_by(applications.c.id.asc())
+        with database.read() as conn:
+            row = conn.execute(query.limit(1)).first()
+        return row.id if row else None
+
+    # ------------------------------------------------------------------
+    # Events
+    # ------------------------------------------------------------------
+
+    def log_event(self, app_id: int, stage: str, message: str, detail: dict = None):
+        with database.tx() as conn:
+            owned = conn.execute(select(applications.c.id).where(
+                applications.c.user_id == self.user_id, applications.c.id == int(app_id))).first()
+            if not owned:
+                return
+            conn.execute(events.insert().values(
+                application_id=int(app_id), timestamp=_now(), stage=stage, message=message,
+                detail=json.dumps(detail) if detail is not None else None))
+
+    def get_events(self, app_id: int):
+        query = (select(events).join(applications, applications.c.id == events.c.application_id)
+                 .where(applications.c.user_id == self.user_id, events.c.application_id == int(app_id))
+                 .order_by(events.c.timestamp.asc(), events.c.id.asc()))
+        with database.read() as conn:
+            return _dicts(conn.execute(query))
+
+    # ------------------------------------------------------------------
+    # Stats and the table
+    # ------------------------------------------------------------------
+
+    def get_stats(self):
+        with database.read() as conn:
+            rows = conn.execute(select(applications.c.status, func.count().label("c"))
+                                .where(applications.c.user_id == self.user_id)
+                                .group_by(applications.c.status)).all()
+        stats = {row.status: row.c for row in rows}
+        stats["total"] = sum(stats.values())
+        return stats
+
+    def get_grouped_stats(self) -> dict:
+        stats = self.get_stats()
+        grouped = {group: sum(stats.get(status, 0) for status in statuses)
+                   for group, statuses in STATUS_GROUPS.items()}
+        grouped["total"] = stats.get("total", 0)
+        grouped["by_status"] = {k: v for k, v in stats.items() if k != "total"}
+        return grouped
+
+    def get_applications_paginated(self, status: str = None, statuses: list = None,
+                                   search: str = None, page: int = 1, limit: int = 50,
+                                   favorite_only: bool = False) -> tuple[list, int]:
+        query = select(applications).where(applications.c.user_id == self.user_id)
+        count = select(func.count()).select_from(applications).where(
+            applications.c.user_id == self.user_id)
+        conditions = []
+        if favorite_only:
+            conditions.append(applications.c.favorite == 1)
+        if statuses:
+            conditions.append(applications.c.status.in_(list(statuses)))
+        elif status:
+            conditions.append(applications.c.status == status)
+        if search:
+            pattern = _like_pattern(search)
+            conditions.append(func.lower(applications.c.company_name).like(pattern, escape="\\")
+                              | func.lower(applications.c.email).like(pattern, escape="\\"))
+        for condition in conditions:
+            query, count = query.where(condition), count.where(condition)
+        offset = (max(1, page) - 1) * limit
+        with database.read() as conn:
+            total = conn.execute(count).scalar_one()
+            rows = _dicts(conn.execute(query.order_by(applications.c.updated_at.desc(),
+                                                      applications.c.id.desc())
+                                       .limit(limit).offset(offset)))
+        return rows, total
+
+    def count_sent_since(self, days: int) -> int:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with database.read() as conn:
+            return conn.execute(select(func.count()).select_from(applications).where(
+                applications.c.user_id == self.user_id, applications.c.status == "sent",
+                applications.c.sent_at >= since)).scalar_one()
+
+    def count_sent_today(self) -> int:
+        # Counts sent_at alone, not status = 'sent': the cap limits how many
+        # messages left the account today, which a later bounce doesn't undo.
+        today = datetime.now(timezone.utc).date()
+        with database.read() as conn:
+            return conn.execute(select(func.count()).select_from(applications).where(
+                applications.c.user_id == self.user_id,
+                applications.c.sent_at >= today.isoformat(),
+                applications.c.sent_at < (today + timedelta(days=1)).isoformat())).scalar_one()
+
+    # ------------------------------------------------------------------
+    # Favorites
+    # ------------------------------------------------------------------
+
+    def set_favorite(self, app_ids: list, favorite: bool) -> int:
+        """Star or unstar companies. Leaves updated_at alone so rows don't
+        jump around the table as you star down the list."""
+        ids = [int(i) for i in app_ids]
+        if not ids:
+            return 0
+        with database.tx() as conn:
+            result = conn.execute(update(applications).where(
+                applications.c.user_id == self.user_id, applications.c.id.in_(ids)
+            ).values(favorite=1 if favorite else 0))
+            return result.rowcount
+
+    def count_favorites(self) -> dict:
+        base = (select(func.count()).select_from(applications)
+                .where(applications.c.user_id == self.user_id, applications.c.favorite == 1))
+        with database.read() as conn:
+            total = conn.execute(base).scalar_one()
+            sendable = conn.execute(base.where(
+                applications.c.status.in_(list(SENDABLE_STATUSES)),
+                applications.c.subject.is_not(None), applications.c.subject != "")).scalar_one()
+        return {"total": total, "sendable": sendable}
+
+    def get_sendable_favorites(self) -> list:
+        with database.read() as conn:
+            return _dicts(conn.execute(
+                select(applications.c.id, applications.c.company_name, applications.c.email)
+                .where(applications.c.user_id == self.user_id, applications.c.favorite == 1,
+                       applications.c.status.in_(list(SENDABLE_STATUSES)),
+                       applications.c.subject.is_not(None), applications.c.subject != "")
+                .order_by(applications.c.id)))
+
+    # ------------------------------------------------------------------
+    # Send jobs
+    # ------------------------------------------------------------------
+
+    def create_send_job(self, app_ids: list[int]) -> tuple[int | None, list[int]]:
+        """Each id is claimed with one atomic UPDATE ... WHERE status IN
+        (sendable) — the only place a row becomes 'queued' — so a double
+        click can never queue the same company twice."""
+        now = _now()
+        queued_ids = []
+        with database.tx() as conn:
+            for app_id in app_ids:
+                result = conn.execute(update(applications).where(
+                    applications.c.user_id == self.user_id, applications.c.id == int(app_id),
+                    applications.c.status.in_(list(SENDABLE_STATUSES)),
+                    applications.c.subject.is_not(None), applications.c.subject != "",
+                    applications.c.body.is_not(None), applications.c.body != "",
+                ).values(status="queued", updated_at=now))
+                if result.rowcount == 1:
+                    queued_ids.append(int(app_id))
+            if not queued_ids:
+                return None, []
+            job_id = conn.execute(send_jobs.insert().values(
+                user_id=self.user_id, status="pending", total_items=len(queued_ids),
+                created_at=now).returning(send_jobs.c.id)).scalar_one()
+            conn.execute(send_job_items.insert(), [
+                {"job_id": job_id, "application_id": app_id, "status": "queued"}
+                for app_id in queued_ids])
+        return job_id, queued_ids
+
+    def get_send_job(self, job_id: int) -> dict | None:
+        with database.read() as conn:
+            job = _one(conn.execute(select(send_jobs).where(
+                send_jobs.c.user_id == self.user_id, send_jobs.c.id == int(job_id))))
+            if not job:
+                return None
+            items = _dicts(conn.execute(
+                select(send_job_items, applications.c.company_name, applications.c.email)
+                .join(applications, applications.c.id == send_job_items.c.application_id)
+                .where(send_job_items.c.job_id == int(job_id)).order_by(send_job_items.c.id)))
+        job["items"] = items
+        statuses = [i["status"] for i in items]
+        job["queued"] = statuses.count("queued")
+        job["sending"] = statuses.count("sending")
+        job["sent_count"] = statuses.count("sent")
+        job["failed_count"] = statuses.count("failed") + statuses.count("retry_wait")
+        return job
+
+    def get_pending_send_jobs(self) -> list:
+        with database.read() as conn:
+            return _dicts(conn.execute(select(send_jobs).where(
+                send_jobs.c.user_id == self.user_id,
+                send_jobs.c.status.in_(["pending", "running"])).order_by(send_jobs.c.id)))
+
+    def get_next_queued_item(self, job_id: int) -> dict | None:
+        with database.read() as conn:
+            return _one(conn.execute(
+                select(send_job_items, applications.c.company_name, applications.c.email,
+                       applications.c.subject, applications.c.body)
+                .join(applications, applications.c.id == send_job_items.c.application_id)
+                .join(send_jobs, send_jobs.c.id == send_job_items.c.job_id)
+                .where(send_jobs.c.user_id == self.user_id, send_job_items.c.job_id == int(job_id),
+                       send_job_items.c.status == "queued")
+                .order_by(send_job_items.c.id).limit(1)))
+
+    def claim_job_item(self, item_id: int) -> bool:
+        """queued -> sending, atomically. False when something else (another
+        worker, a cancel) got there first — so an email is never sent twice."""
+        with database.tx() as conn:
+            result = conn.execute(update(send_job_items).where(
+                send_job_items.c.id == int(item_id), send_job_items.c.status == "queued",
+                send_job_items.c.job_id.in_(select(send_jobs.c.id).where(
+                    send_jobs.c.user_id == self.user_id)),
+            ).values(status="sending", attempted_at=_now()))
+            return result.rowcount == 1
+
+    def update_send_job_item(self, item_id: int, **fields):
+        if not fields:
+            return
+        fields = _checked(dict(fields), _JOB_ITEM_COLUMNS)
+        with database.tx() as conn:
+            conn.execute(update(send_job_items).where(
+                send_job_items.c.id == int(item_id),
+                send_job_items.c.job_id.in_(select(send_jobs.c.id).where(
+                    send_jobs.c.user_id == self.user_id)),
+            ).values(**fields))
+
+    def update_send_job(self, job_id: int, **fields):
+        if not fields:
+            return
+        fields = _checked(dict(fields), _JOB_COLUMNS)
+        with database.tx() as conn:
+            conn.execute(update(send_jobs).where(
+                send_jobs.c.user_id == self.user_id, send_jobs.c.id == int(job_id)
+            ).values(**fields))
+
+    def revert_remaining(self, job_id: int, reason: str) -> None:
+        """Put every still-queued item of a job back to 'ready' (daily cap
+        reached, or the account's login failed — neither is about those
+        particular companies)."""
+        now = _now()
+        with database.tx() as conn:
+            owned = conn.execute(select(send_jobs.c.id).where(
+                send_jobs.c.user_id == self.user_id, send_jobs.c.id == int(job_id))).first()
+            if not owned:
+                return
+            app_ids = [r.application_id for r in conn.execute(
+                select(send_job_items.c.application_id).where(
+                    send_job_items.c.job_id == int(job_id), send_job_items.c.status == "queued"))]
+            if app_ids:
+                conn.execute(update(applications).where(
+                    applications.c.user_id == self.user_id, applications.c.id.in_(app_ids)
+                ).values(status="ready", error_message=reason, updated_at=now))
+            conn.execute(update(send_job_items).where(
+                send_job_items.c.job_id == int(job_id), send_job_items.c.status == "queued"
+            ).values(status="skipped"))
+
+    # ------------------------------------------------------------------
+    # Per-user key/value state (e.g. when the inbox was last scanned)
+    # ------------------------------------------------------------------
+
+    def get_meta(self, key: str):
+        with database.read() as conn:
+            row = conn.execute(select(user_meta.c.value).where(
+                user_meta.c.user_id == self.user_id, user_meta.c.key == key)).first()
+        if not row:
+            return None
+        try:
+            return json.loads(row.value)
+        except (TypeError, ValueError):
+            return None
+
+    def set_meta(self, key: str, value) -> None:
+        with database.tx() as conn:
+            database.upsert(conn, user_meta, {"user_id": self.user_id, "key": key,
+                                              "value": json.dumps(value)}, ["user_id", "key"])
+
+    # ------------------------------------------------------------------
+    # Preparation bookkeeping
+    # ------------------------------------------------------------------
+
+    def count_needing_preparation(self) -> int:
+        done = list(PREPARATION_DONE_STATUSES | {"ready"} | SEND_IN_FLIGHT_STATUSES)
+        has_draft = ((applications.c.subject.is_not(None)) & (applications.c.subject != "")
+                     & (applications.c.body.is_not(None)) & (applications.c.body != ""))
+        with database.read() as conn:
+            return conn.execute(select(func.count()).select_from(applications).where(
+                applications.c.user_id == self.user_id, applications.c.status.not_in(done),
+                ~has_draft)).scalar_one()
+
+    def recover_stale_preparation_rows(self) -> int:
+        """Rows left 'researching'/'writing' by a run that died go back to
+        where they can be picked up again."""
+        now = _now()
+        with database.tx() as conn:
+            first = conn.execute(update(applications).where(
+                applications.c.user_id == self.user_id, applications.c.status == "researching"
+            ).values(status="pending", updated_at=now)).rowcount
+            second = conn.execute(update(applications).where(
+                applications.c.user_id == self.user_id, applications.c.status == "writing"
+            ).values(status="researched", updated_at=now)).rowcount
+        return first + second
+
+    def recover_interrupted_sends(self) -> int:
+        """A send killed mid-flight is surfaced as 'retry_wait' (we can't know
+        whether it went out), orphaned 'queued' rows go back to 'ready', and
+        finished 'running' jobs are closed."""
+        now = _now()
+        message = "Interrupted by a restart — check your Gmail Sent folder before resending."
+        uid = self.user_id
+        user_jobs = select(send_jobs.c.id).where(send_jobs.c.user_id == uid)
+        with database.tx() as conn:
+            stuck = conn.execute(select(send_job_items.c.id, send_job_items.c.application_id).where(
+                send_job_items.c.status == "sending", send_job_items.c.job_id.in_(user_jobs))).all()
+            for item in stuck:
+                conn.execute(update(send_job_items).where(send_job_items.c.id == item.id)
+                             .values(status="retry_wait", error_message=message))
+                conn.execute(update(applications).where(
+                    applications.c.user_id == uid, applications.c.id == item.application_id
+                ).values(status="retry_wait", error_message=message, updated_at=now))
+            live = select(send_job_items.c.application_id).where(
+                send_job_items.c.status.in_(["queued", "sending"]))
+            orphaned = conn.execute(update(applications).where(
+                applications.c.user_id == uid, applications.c.status.in_(["queued", "sending"]),
+                applications.c.id.not_in(live)).values(status="ready", updated_at=now)).rowcount
+            busy_jobs = select(send_job_items.c.job_id).where(
+                send_job_items.c.status.in_(["queued", "sending"]))
+            conn.execute(update(send_jobs).where(
+                send_jobs.c.user_id == uid, send_jobs.c.status == "running",
+                send_jobs.c.id.not_in(busy_jobs)).values(status="completed", completed_at=now))
+        return len(stuck) + orphaned
+
+    # ------------------------------------------------------------------
+    # The companies list (what preparation works through)
+    # ------------------------------------------------------------------
+
+    def company_list_count(self) -> int:
+        with database.read() as conn:
+            return conn.execute(select(func.count()).select_from(company_list).where(
+                company_list.c.user_id == self.user_id)).scalar_one()
+
+    def company_list_rows(self) -> list:
+        """(company_name, email, website, contact_name) in upload order."""
+        with database.read() as conn:
+            rows = conn.execute(
+                select(company_list.c.company_name, company_list.c.email,
+                       company_list.c.website, company_list.c.contact_name)
+                .where(company_list.c.user_id == self.user_id).order_by(company_list.c.id)).all()
+        return [tuple(row) for row in rows]
+
+    def company_list_emails(self) -> set:
+        with database.read() as conn:
+            return {row.email for row in conn.execute(select(company_list.c.email).where(
+                company_list.c.user_id == self.user_id))}
+
+    def add_companies(self, rows: list) -> int:
+        """Append rows (dicts with email, company_name, website, contact_name),
+        skipping addresses already in the list. Returns how many were added."""
+        existing = self.company_list_emails()
+        now = _now()
+        fresh, seen = [], set()
+        for row in rows:
+            email = row["email"]
+            if email in existing or email in seen:
+                continue
+            seen.add(email)
+            fresh.append({"user_id": self.user_id, "email": email,
+                          "company_name": row.get("company_name") or "",
+                          "website": row.get("website") or "",
+                          "contact_name": row.get("contact_name") or "", "created_at": now})
+        if not fresh:
+            return 0
+        with database.tx() as conn:
+            for start in range(0, len(fresh), 1000):
+                conn.execute(company_list.insert(), fresh[start:start + 1000])
+        return len(fresh)
+
+    def clear_company_list(self) -> int:
+        """Forget the uploaded list. Applications already created (drafts,
+        sent history) are untouched."""
+        with database.tx() as conn:
+            return conn.execute(company_list.delete().where(
+                company_list.c.user_id == self.user_id)).rowcount
+
+    # ------------------------------------------------------------------
+    # Research / draft cache
+    # ------------------------------------------------------------------
+
+    def cache_get(self, kind: str, key: str):
+        with database.read() as conn:
+            row = conn.execute(select(cache_entries.c.data).where(
+                cache_entries.c.user_id == self.user_id, cache_entries.c.kind == kind,
+                cache_entries.c.key == key)).first()
+        if not row:
+            return None
+        try:
+            return json.loads(row.data)
+        except (TypeError, ValueError):
+            return None
+
+    def cache_keys(self, kind: str) -> set:
+        with database.read() as conn:
+            return {row.key for row in conn.execute(select(cache_entries.c.key).where(
+                cache_entries.c.user_id == self.user_id, cache_entries.c.kind == kind))}
+
+    def cache_put(self, kind: str, key: str, data: dict) -> None:
+        with database.tx() as conn:
+            database.upsert(conn, cache_entries, {
+                "user_id": self.user_id, "kind": kind, "key": key,
+                "data": json.dumps(data, ensure_ascii=False), "updated_at": _now(),
+            }, ["user_id", "kind", "key"])
+
+
+def for_user(user_id: int) -> UserData:
+    return UserData(int(user_id))
+
+
+# ---------------------------------------------------------------------------
+# Helpers on plain rows (no database access)
+# ---------------------------------------------------------------------------
 
 def draft_from_application(app: dict) -> dict | None:
     """Return {subject, body} from a DB row, or None if no draft stored."""
@@ -606,9 +576,9 @@ def draft_from_application(app: dict) -> dict | None:
 
 
 def research_context_from_application(app: dict) -> dict | None:
-    """Rebuild the research context from DB columns when the disk cache is
-    missing. Returns None for rows researched before the verified-areas
-    format, so they get researched again rather than composed from nothing."""
+    """Rebuild the research context from DB columns when the cache is
+    missing. None for rows researched before the verified-areas format, so
+    they get researched again rather than composed from nothing."""
     if not app:
         return None
     try:
@@ -635,112 +605,80 @@ def research_context_from_application(app: dict) -> dict | None:
     }
 
 
-def count_needing_preparation() -> int:
-    """Rows in DB that still need research and/or writing."""
-    done = PREPARATION_DONE_STATUSES | {"ready"} | SEND_IN_FLIGHT_STATUSES
-    placeholders = ",".join("?" * len(done))
-    conn = get_connection()
-    row = conn.execute(f"""
-        SELECT COUNT(*) AS c FROM applications
-        WHERE status NOT IN ({placeholders})
-          AND NOT (
-            subject IS NOT NULL AND subject != ''
-            AND body IS NOT NULL AND body != ''
-          )
-    """, tuple(done)).fetchone()
-    conn.close()
-    return row["c"]
+# ---------------------------------------------------------------------------
+# Cross-user queries for the background worker
+# ---------------------------------------------------------------------------
+
+def users_with_pending_send_jobs() -> list[int]:
+    with database.read() as conn:
+        return [row.user_id for row in conn.execute(
+            select(send_jobs.c.user_id).where(send_jobs.c.status.in_(["pending", "running"]))
+            .distinct())]
 
 
-def recover_stale_preparation_rows() -> int:
-    """Call once when a preparation run starts.
+def users_with_recent_sends(days: int) -> list[int]:
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with database.read() as conn:
+        return [row.user_id for row in conn.execute(
+            select(applications.c.user_id).where(applications.c.status == "sent",
+                                                 applications.c.sent_at >= since).distinct())]
 
-    A killed/crashed run (Ctrl+C mid-call, container restart) can leave rows
-    in 'researching' or 'writing' forever — nothing re-visits them once the
-    process that set that status is gone, so the dashboard would show them
-    as permanently "in progress". Reset 'researching' back to 'pending' (redo
-    the scrape+research) and 'writing' back to 'researched' (research is
-    already saved — only the write step needs to redo). Returns the count.
-    """
-    conn = get_connection()
+
+def all_user_ids_with_applications() -> list[int]:
+    with database.read() as conn:
+        return [row.user_id for row in conn.execute(select(applications.c.user_id).distinct())]
+
+
+def pending_send_jobs() -> list:
+    """Every pending/running job, oldest first: (id, user_id, worker_id, heartbeat_at)."""
+    with database.read() as conn:
+        return _dicts(conn.execute(
+            select(send_jobs.c.id, send_jobs.c.user_id, send_jobs.c.worker_id,
+                   send_jobs.c.heartbeat_at, send_jobs.c.status)
+            .where(send_jobs.c.status.in_(["pending", "running"])).order_by(send_jobs.c.id)))
+
+
+def claim_send_job(job_id: int, worker_id: str, stale_before: str) -> bool:
+    """Take ownership of a job nobody owns, or whose owner stopped sending
+    heartbeats before `stale_before`. Atomic, so two workers can never both
+    process one job."""
     now = _now()
-    cur1 = conn.execute(
-        "UPDATE applications SET status = 'pending', updated_at = ? WHERE status = 'researching'",
-        (now,),
-    )
-    cur2 = conn.execute(
-        "UPDATE applications SET status = 'researched', updated_at = ? WHERE status = 'writing'",
-        (now,),
-    )
-    conn.commit()
-    count = cur1.rowcount + cur2.rowcount
-    conn.close()
-    return count
+    with database.tx() as conn:
+        result = conn.execute(update(send_jobs).where(
+            send_jobs.c.id == int(job_id), send_jobs.c.status.in_(["pending", "running"]),
+            (send_jobs.c.worker_id.is_(None)) | (send_jobs.c.worker_id == worker_id)
+            | (send_jobs.c.heartbeat_at.is_(None)) | (send_jobs.c.heartbeat_at < stale_before),
+        ).values(worker_id=worker_id, heartbeat_at=now))
+        return result.rowcount == 1
 
 
-def recover_interrupted_sends() -> int:
-    """Call once when the sender worker starts (dashboard process launch).
+def heartbeat_send_job(job_id: int, worker_id: str) -> bool:
+    """False when another worker has taken the job over (we were too slow)."""
+    with database.tx() as conn:
+        return conn.execute(update(send_jobs).where(
+            send_jobs.c.id == int(job_id), send_jobs.c.worker_id == worker_id
+        ).values(heartbeat_at=_now())).rowcount == 1
 
-    If the previous process was killed mid-send, a row's application and its
-    send_job_item can be left in 'sending' forever — 'sending' isn't in
-    SEND_IN_FLIGHT's queued-only pickup (get_next_queued_item only selects
-    'queued'), so nothing would ever move it again. We don't know whether the
-    email actually went out before the crash, so we don't guess 'sent' —
-    we surface it as 'retry_wait' (sendable, editable) with a message telling
-    the user to check their Sent folder first. Also sweeps 'queued' items
-    left behind by a run that never got a job started, and closes out any
-    'running' job that has nothing left to do.
-    Returns the number of rows recovered.
-    """
-    conn = get_connection()
+
+def recover_job_items(job_id: int) -> int:
+    """A job taken over from a dead worker: an item left 'sending' may or may
+    not have gone out, so it becomes 'retry_wait' with a clear message rather
+    than being sent a second time."""
+    message = "Interrupted by a restart — check your Sent folder before resending."
     now = _now()
-    message = "Interrupted by a restart — check your Gmail Sent folder before resending."
-
-    stuck_items = conn.execute(
-        "SELECT id, application_id FROM send_job_items WHERE status = 'sending'"
-    ).fetchall()
-    for item in stuck_items:
-        conn.execute(
-            "UPDATE send_job_items SET status = 'retry_wait', error_message = ? WHERE id = ?",
-            (message, item["id"]),
-        )
-        conn.execute(
-            "UPDATE applications SET status = 'retry_wait', error_message = ?, updated_at = ? "
-            "WHERE id = ?",
-            (message, now, item["application_id"]),
-        )
-
-    # Orphaned applications stuck as 'queued'/'sending' with no live send_job_item
-    # at all (e.g. the job row itself failed to insert) — return them to 'ready'.
-    orphaned = conn.execute("""
-        SELECT id FROM applications
-        WHERE status IN ('queued', 'sending')
-          AND id NOT IN (SELECT application_id FROM send_job_items WHERE status IN ('queued', 'sending'))
-    """).fetchall()
-    for row in orphaned:
-        conn.execute(
-            "UPDATE applications SET status = 'ready', updated_at = ? WHERE id = ?",
-            (now, row["id"]),
-        )
-
-    # Close out any 'running' job with nothing left queued/sending.
-    conn.execute("""
-        UPDATE send_jobs SET status = 'completed', completed_at = ?
-        WHERE status = 'running'
-          AND id NOT IN (SELECT job_id FROM send_job_items WHERE status IN ('queued', 'sending'))
-    """, (now,))
-
-    conn.commit()
-    recovered = len(stuck_items) + len(orphaned)
-    conn.close()
-    return recovered
+    with database.tx() as conn:
+        stuck = conn.execute(select(send_job_items.c.id, send_job_items.c.application_id).where(
+            send_job_items.c.job_id == int(job_id), send_job_items.c.status == "sending")).all()
+        for item in stuck:
+            conn.execute(update(send_job_items).where(send_job_items.c.id == item.id)
+                         .values(status="retry_wait", error_message=message))
+            conn.execute(update(applications).where(applications.c.id == item.application_id)
+                         .values(status="retry_wait", error_message=message, updated_at=now))
+    return len(stuck)
 
 
-def get_pending_send_jobs() -> list:
-    """Return all send jobs that need processing (pending or running)."""
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM send_jobs WHERE status IN ('pending', 'running') ORDER BY id"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+def ping() -> bool:
+    with database.read() as conn:
+        return conn.execute(text("SELECT 1")).scalar_one() == 1
+
+

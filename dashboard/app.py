@@ -1,607 +1,360 @@
 """
-Simple local dashboard. Run with:  python dashboard/app.py
-Then open http://127.0.0.1:5050 in your browser.
+The dashboard — a multi-user web app. Run locally with:
 
-Read-only view into applications.db — shows overall stats, every company's
-current status, and (per company) the full timeline: research findings,
-AI reasoning behind matched extra mentions, the generated email, and the
-final send/bounce outcome.
+    python dashboard/app.py          # http://127.0.0.1:5050
 
-Live view of a running pipeline: since the sender (main.py) writes to the
-database in WAL mode, this dashboard can safely read it while a run is in
-progress. The page auto-refreshes (toggle in the top bar) so you can watch
-a run happen without touching the terminal.
+In production it runs under gunicorn (see Dockerfile) with the background
+worker as its own process (python worker.py).
 
-Google OAuth 2.0 flow:
-  /oauth/start      -> redirects to Google consent screen
-  /oauth/callback   -> exchanges code for token, saves token.json
-  /oauth/disconnect -> deletes token.json
+Every view works on the signed-in user's data only: db.for_user(g.user) is
+the only way this module reads or writes applications, so another account's
+row is indistinguishable from one that doesn't exist.
 """
 
+import json
 import os
 import sys
-import json
-import secrets
-import smtplib
-import imaplib
-import socket
-import subprocess
 from pathlib import Path
-from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, session, url_for
-from dotenv import load_dotenv
-import db
-import sender_worker
-from ai_client import (DEFAULT_PROVIDER, PROVIDERS, CompatibleAIClient,
-                       list_provider_models, resolve_ai_settings)
+from flask import (Flask, Response, abort, flash, g, jsonify, redirect, render_template, request,
+                   session, url_for)
 
-# Allows OAuth's local HTTP redirect (127.0.0.1:5050) to satisfy oauthlib's
-# strict HTTPS check. Safe only because this dashboard is hardcoded to bind
-# to the loopback address (see app.run(host="127.0.0.1", ...) at the bottom
-# of this file) — set once here rather than per-request.
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+import accounts
+import cache_store
+import company_import
+import config
+import database
+import db
+import drafting
+import email_templates
+import profiles
+import runs
+import vault
+from ai_client import (DEFAULT_PROVIDER, PROVIDERS, CompatibleAIClient, list_provider_models,
+                       resolve_ai_settings)
+from dashboard import security
 
 ROOT_DIR = Path(__file__).parent.parent
-UPLOAD_DIR = ROOT_DIR / "dashboard_uploads"
-ENV_PATH = ROOT_DIR / ".env"
-MAIN_PATH = ROOT_DIR / "main.py"
-RUN_LOG_PATH = ROOT_DIR / "dashboard_run.log"
-STOP_FILE = ROOT_DIR / "dashboard_stop.flag"
-run_process = None
 
-
-def _format_env_line(key: str, value) -> str:
-    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return f'{key}="{escaped}"'
-
-
-def _save_env(values):
-    """Update keys in .env in place, preserving comments, blank lines, and the
-    existing ordering; keys not already present are appended at the end.
-
-    Rewriting the whole file from just its parsed key=value pairs (the
-    previous behavior) silently deleted every comment — and .env.example,
-    which users copy to .env, is mostly comments explaining each setting,
-    so the first dashboard save wiped all of that guidance.
-    """
-    lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
-    remaining = {key: value for key, value in values.items() if value is not None}
-
-    updated = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
-            if key in remaining:
-                updated.append(_format_env_line(key, remaining.pop(key)))
-                continue
-        updated.append(line)
-
-    for key, value in remaining.items():
-        updated.append(_format_env_line(key, value))
-
-    ENV_PATH.write_text("\n".join(updated) + "\n", encoding="utf-8")
-
-
-def _get_or_create_dashboard_secret() -> str:
-    """A hardcoded Flask secret_key lets anyone forge a valid session cookie
-    for this app (used for the OAuth CSRF-state/PKCE-verifier and flash
-    messages) — generate a random one on first run and persist it in .env
-    so it stays stable across restarts instead of rotating (which would
-    invalidate any session mid-OAuth-flow) or staying a known constant."""
-    load_dotenv(ENV_PATH, override=True)
-    existing = (os.getenv("DASHBOARD_SECRET", "") or "").strip()
-    if existing:
-        return existing
-    generated = secrets.token_hex(32)
-    _save_env({"DASHBOARD_SECRET": generated})
-    return generated
-
+vault.ensure_dev_keys()
+if not config.is_production():
+    # Google's OAuth library insists on https; a local run is http on loopback.
+    os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
+# Google may return a slightly different scope list than requested; which
+# scopes actually came back is checked explicitly in the callback.
+os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
 app = Flask(__name__)
-app.secret_key = _get_or_create_dashboard_secret()
-# Static assets are referenced through asset(), which stamps each URL with the
-# file's mtime, so they can be cached for a year without ever going stale.
-app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 60 * 60 * 24 * 365
+app.secret_key = config.get("SECRET_KEY")
+app.config.update(
+    SEND_FILE_MAX_AGE_DEFAULT=60 * 60 * 24 * 365,
+    MAX_CONTENT_LENGTH=max(config.MAX_CV_BYTES, config.MAX_COMPANIES_UPLOAD_BYTES) + 1024 * 1024,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=config.is_production(),
+    SESSION_COOKIE_NAME="__Host-flask" if config.is_production() else "flask",
+)
+if config.bool_setting("TRUST_PROXY", config.is_production()):
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+from dashboard.admin_routes import bp as admin_bp  # noqa: E402
+from dashboard.auth_routes import bp as auth_bp  # noqa: E402
+from dashboard.profile_routes import bp as profile_bp  # noqa: E402
+
+app.register_blueprint(auth_bp)
+app.register_blueprint(admin_bp)
+app.register_blueprint(profile_bp)
 
 STATUS_LABELS = {
-    "pending": "Pending",
-    "researching": "Researching",
-    "researched": "Researched",
-    "writing": "Writing email",
-    "ready": "Ready to send",
-    "queued": "Queued",
-    "sending": "Sending",
-    "sent": "Sent",
-    "failed": "Failed",
-    "retry_wait": "Retry later",
-    "bounced": "Not delivered",
-    "skipped": "Skipped",
+    "pending": "Pending", "researching": "Researching", "researched": "Researched",
+    "writing": "Writing email", "ready": "Ready to send", "queued": "Queued",
+    "sending": "Sending", "sent": "Sent", "failed": "Failed", "retry_wait": "Retry later",
+    "bounced": "Not delivered", "skipped": "Skipped",
 }
-
-# Statuses that mean "a background worker is actively on this one right now" —
-# used for the small live-activity indicator in the top bar. "researched" is
-# NOT included: it means research finished and it's waiting to be picked up
-# by a writer worker, not that anything is actively running on it.
 IN_PROGRESS_STATUSES = {"researching", "writing", "sending", "queued"}
-
-# Statuses whose draft can still be edited (nothing has been sent yet, and no
-# sender worker owns the row).
 EDITABLE_STATUSES = frozenset({"ready", "failed", "retry_wait"})
+STATUS_TABS = [("", "All"), ("favorites", "★ Favorites"), ("to_prepare", "To prepare"),
+               ("ready", "Ready"), ("sent", "Sent"), ("problems", "Problems"), ("skipped", "Skipped")]
+FUNNEL_CARDS = [("to_prepare", "To prepare", "to_prepare"), ("ready", "Ready to review", "ready"),
+                ("sending", "Sending", "sending"), ("sent", "Sent", "sent"),
+                ("problems", "Problems", "problems")]
+FILTER_GROUPS = db.STATUS_GROUPS
+LANGUAGE_LABELS = {"en": "English", "fr": "Français"}
 
-# The tabs above the table. Each value is either a group name from
-# db.STATUS_GROUPS or a single status; "" means no filter.
-STATUS_TABS = [
-    ("", "All"),
-    ("favorites", "★ Favorites"),
-    ("to_prepare", "To prepare"),
-    ("ready", "Ready"),
-    ("sent", "Sent"),
-    ("problems", "Problems"),
-    ("skipped", "Skipped"),
-]
+_started = False
 
 
-def _preparation_config() -> dict:
-    """What rebuilding a draft needs: the wording spec and the applicant's
-    profile. No AI settings — drafts are assembled, not generated."""
-    spec_path = ROOT_DIR / "specializations.json"
-    # See main.py's load_config: without encoding=, Windows reads this UTF-8
-    # file as cp1252 and every em-dash reaches the company as mojibake.
-    with open(spec_path, encoding="utf-8") as f:
-        specializations = json.load(f)
-    return {
-        "applicant_name": os.getenv("YOUR_NAME", ""),
-        "target_role": os.getenv("YOUR_TARGET_ROLE", ""),
-        "spec": specializations,
-    }
+@app.before_request
+def _before():
+    global _started
+    if not _started:
+        database.init_schema()
+        if config.embedded_worker() and not app.config.get("TESTING"):
+            import worker
+            worker.ensure_embedded()
+        _started = True
+    return security.before_request()
 
 
-def _run_state():
-    global run_process
-    if run_process is not None and run_process.poll() is not None:
-        run_process = None
-    tail = ""
-    if RUN_LOG_PATH.exists():
-        try:
-            lines = RUN_LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
-            tail = "\n".join(lines[-60:])
-        except OSError:
-            tail = ""
-    return {"running": run_process is not None,
-            "stop_requested": STOP_FILE.exists(),
-            "log_path": str(RUN_LOG_PATH) if RUN_LOG_PATH.exists() else None,
-            "log_tail": tail}
+@app.after_request
+def _after(response):
+    return security.after_request(response)
 
 
-def _resolve_saved_path(raw_value: str):
-    """Resolve a path saved in .env (absolute or relative to project root)."""
-    if not raw_value:
-        return None
-    path = Path(raw_value)
-    if not path.is_absolute():
-        path = ROOT_DIR / path
-    return path
-
-
-def _is_placeholder(value: str) -> bool:
-    lowered = (value or "").strip().lower()
-    if not lowered:
-        return True
-    # App passwords are often pasted with spaces ("xxxx xxxx xxxx xxxx") and
-    # _check_gmail_credentials strips spaces before comparing — so compare
-    # in both spaced and unspaced form.
-    compact = lowered.replace(" ", "")
-    exact_placeholders = {
-        "your_bai_api_key_here", "your_anthropic_api_key_here", "your_groq_api_key_here",
-        "your_opencode_api_key_here", "your_openrouter_api_key_here",
-        "your_mistral_api_key_here", "your_gemini_api_key_here",
-        "you@gmail.com", "your full name", "xxxx xxxx xxxx xxxx",
-        "xxxxxxxxxxxxxxxx", "./my_cv.pdf", "my_cv.pdf",
-        "companies.xlsx", "./companies.xlsx",
-    }
-    return lowered.strip("\"'") in exact_placeholders or compact.strip("\"'") in exact_placeholders
+def data() -> db.UserData:
+    return db.for_user(g.user["id"])
 
 
 # ---------------------------------------------------------------------------
-# Per-page-load work, cached
+# Template helpers
 # ---------------------------------------------------------------------------
-# The tracker and Settings pages render _setup_state() on every load. Two parts
-# of it were expensive for values that almost never change, which is what
-# made moving between pages feel slow:
-#   - the companies row count streamed the entire spreadsheet (22k rows), and
-#   - the Google sign-in check called Google to refresh an expired token —
-#     and when the refresh can't succeed (a Testing-mode token past its 7
-#     days), it failed over the network again on every single page load.
-# Both are now keyed on the underlying file, so they recompute the moment it
-# actually changes and otherwise cost a stat() call.
-
-_OAUTH_STATUS_TTL = 120  # seconds
-_oauth_cache = {"key": None, "at": 0.0, "value": None}
-_rows_cache: dict = {}
-_area_labels_cache = {"key": None, "value": {}}
-
-
-def _file_key(path) -> tuple | None:
-    """Identity of a file's current contents, cheap enough to check per request."""
-    try:
-        stat = Path(path).stat()
-    except (OSError, TypeError):
-        return None
-    return (str(path), stat.st_size, stat.st_mtime_ns)
-
-
-def _oauth_status() -> tuple:
-    """(configured, connected, email, expired) for Google sign-in.
-
-    Cached on token.json's identity plus a short TTL. A successful refresh, a
-    new sign-in and a disconnect all rewrite or delete token.json, so each is
-    picked up on the very next load. The TTL only bounds how often an
-    expired-and-unrefreshable token is retried against Google."""
-    import time
-    try:
-        from google_auth_helper import (
-            TOKEN_PATH, get_authorized_email, get_credentials, oauth_is_configured,
-            token_exists,
-        )
-    except ImportError:
-        return False, False, "", False
-
-    key = (_file_key(TOKEN_PATH), oauth_is_configured())
-    now = time.monotonic()
-    if _oauth_cache["key"] == key and now - _oauth_cache["at"] < _OAUTH_STATUS_TTL:
-        return _oauth_cache["value"]
-
-    configured, connected, email, expired = key[1], False, "", False
-    if token_exists():
-        if get_credentials() is not None:
-            connected, email = True, get_authorized_email() or ""
-        else:
-            # Testing-mode tokens die after 7 days; say so instead of silently
-            # falling back to "not connected".
-            expired = True
-    value = (configured, connected, email, expired)
-    # A refresh inside get_credentials() rewrites token.json, so store the key
-    # as it stands AFTER the check, or the next load would redo it for nothing.
-    _oauth_cache.update(key=(_file_key(TOKEN_PATH), configured), at=now, value=value)
-    return value
-
-
-def _invalidate_oauth_status():
-    _oauth_cache.update(key=None, value=None)
-
-
-def _setup_state():
-    load_dotenv(ENV_PATH, override=True)
-    companies_raw = (os.getenv("COMPANIES_FILE_PATH", "") or "").strip()
-    cv_raw = (os.getenv("CV_FILE_PATH", "") or "").strip()
-    companies_path = _resolve_saved_path("" if _is_placeholder(companies_raw) else companies_raw)
-    cv_path = _resolve_saved_path("" if _is_placeholder(cv_raw) else cv_raw)
-    has_companies = bool(companies_path and companies_path.is_file())
-    has_cv = bool(cv_path and cv_path.is_file())
-    ai = resolve_ai_settings()
-    ai_key = ai["api_key"]
-    gmail_address = (os.getenv("GMAIL_ADDRESS", "") or "").strip()
-    gmail_password = (os.getenv("GMAIL_APP_PASSWORD", "") or "").strip()
-    your_name = (os.getenv("YOUR_NAME", "") or "").strip()
-    target_role = (os.getenv("YOUR_TARGET_ROLE", "") or "").strip()
-    has_api_key = bool(ai_key) and not _is_placeholder(ai_key)
-    has_profile = bool(your_name) and bool(target_role) and not _is_placeholder(your_name)
-
-    oauth_configured, oauth_connected, oauth_email, oauth_expired = _oauth_status()
-    if oauth_connected and not oauth_email:
-        oauth_email = gmail_address
-
-    # Gmail is "ready" if we have OAuth OR app-password credentials
-    has_gmail_oauth = oauth_connected
-    has_gmail_smtp = (bool(gmail_address) and bool(gmail_password)
-                      and not _is_placeholder(gmail_address)
-                      and not _is_placeholder(gmail_password))
-    has_gmail = has_gmail_oauth or has_gmail_smtp
-
-    # Preparation (research + write) only needs an AI key, a profile, and a
-    # companies file — Gmail and the CV are send-time-only concerns. Gating
-    # "Start preparation" on Gmail/CV (as "ready" alone used to) blocked
-    # drafting emails for anyone who hadn't connected Gmail yet.
-    prep_ready = has_api_key and has_profile and has_companies
-    send_ready = prep_ready and has_gmail and has_cv
-
-    return {
-        "ready": send_ready,
-        "prep_ready": prep_ready,
-        "send_ready": send_ready,
-        "has_profile_and_files": has_profile and has_companies,
-        "min_delay": os.getenv("MIN_DELAY_SECONDS", "45"),
-        "max_delay": os.getenv("MAX_DELAY_SECONDS", "120"),
-        "max_per_day": os.getenv("MAX_EMAILS_PER_DAY", "20"),
-        # Tuning knobs that used to be .env-only — editable under
-        # Settings > Advanced so nobody has to hand-edit a dotfile.
-        "bounce_minutes": os.getenv("BOUNCE_CHECK_MINUTES", "30"),
-        "research_workers": os.getenv("RESEARCH_WORKERS", "3"),
-        "writer_workers": os.getenv("WRITER_WORKERS", "2"),
-        "ai_max_rpm": os.getenv("AI_MAX_RPM", "800"),
-        "ai_fallbacks": ", ".join(ai["fallbacks"]),
-        # Blank in the form means "same as the research model".
-        "ai_translation_model": (os.getenv("AI_TRANSLATION_MODEL", "") or "").strip(),
-        "has_api_key": has_api_key,
-        "has_gmail": has_gmail,
-        "has_gmail_oauth": has_gmail_oauth,
-        "has_gmail_smtp": has_gmail_smtp,
-        "oauth_configured": oauth_configured,
-        "oauth_email": oauth_email,
-        "oauth_expired": oauth_expired,
-        "gmail_address": "" if _is_placeholder(gmail_address) else gmail_address,
-        "name": "" if _is_placeholder(your_name) else your_name,
-        "target_role": target_role,
-        "companies_name": companies_path.name if has_companies else "",
-        "companies_rows": _count_companies_rows(companies_path) if has_companies else None,
-        "cv_name": cv_path.name if has_cv else "",
-        "cv_size_kb": round(cv_path.stat().st_size / 1024, 1) if has_cv else None,
-        "ai_provider": ai["provider"],
-        "ai_provider_label": ai["label"],
-        "ai_model": ai["model"],
-        "ai_base_url": ai["base_url"],
-        # Which providers already have a key saved, so the form can say
-        # "saved" per provider without ever sending a key to the browser.
-        "saved_provider_keys": {pid: bool(os.getenv(p["key_env"], "").strip())
-                                 for pid, p in PROVIDERS.items()},
-    }
-
-
-def _count_companies_rows(companies_path: Path) -> int:
-    """Best-effort row count for the setup banner. Never raises.
-
-    Counting streams the whole spreadsheet — seconds for a 22k-row file — and
-    this runs on every tracker and Settings load for a number that changes
-    only when a new file is uploaded. So it is cached on the file's size and
-    mtime: an upload is picked up immediately, anything else is a stat()."""
-    key = _file_key(companies_path)
-    if key is None:
-        return 0
-    if key in _rows_cache:
-        return _rows_cache[key]
-    count = _count_companies_rows_uncached(companies_path)
-    _rows_cache.clear()  # only the current file is ever worth remembering
-    _rows_cache[key] = count
-    return count
-
-
-def _count_companies_rows_uncached(companies_path: Path) -> int:
-    try:
-        suffix = companies_path.suffix.lower()
-        if suffix in (".xlsx", ".xls"):
-            try:
-                from openpyxl import load_workbook
-                workbook = load_workbook(companies_path, read_only=True, data_only=True)
-                sheet = workbook.active
-                rows = sum(1 for _ in sheet.iter_rows(values_only=True)) - 1
-                workbook.close()
-                return max(rows, 0)
-            except Exception:
-                import pandas as pd
-                return max(len(pd.read_excel(companies_path)), 0)
-        import pandas as pd
-        return max(len(pd.read_csv(companies_path)), 0)
-    except Exception:
-        return 0
-
-
-def _validate_companies_file(path: Path) -> tuple[bool, str, int]:
-    """Check the uploaded companies file has an email column + usable rows."""
-    try:
-        import pandas as pd
-        if path.suffix.lower() in (".xlsx", ".xls"):
-            df = pd.read_excel(path)
-        else:
-            df = pd.read_csv(path)
-    except Exception as exc:
-        return False, f"Could not read that file ({exc}).", 0
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    if "email" not in df.columns:
-        return False, f"Companies file must have an 'email' column. Found: {', '.join(df.columns) or 'none'}.", 0
-    from utils import is_valid_email
-    usable = int(df["email"].apply(is_valid_email).sum())
-    if usable == 0:
-        return False, "No valid email addresses found in that file.", 0
-    return True, "", usable
-
-
-def _request_origin_ok() -> bool:
-    """Best-effort CSRF guard for state-changing requests.
-
-    A browser always attaches an Origin header to a cross-site POST/fetch
-    (this can't be suppressed by an attacker page), so comparing it against
-    this dashboard's own origin blocks a foreign page's auto-submitted form
-    or fetch() from reaching /setup, /run, /api/send-job, etc. Without this,
-    any website you merely visit could silently rewrite AI_BASE_URL to
-    exfiltrate your AI key and every prompt, or queue real sends.
-    """
-    origin = request.headers.get("Origin")
-    if origin is not None:
-        return origin.rstrip("/") == request.host_url.rstrip("/")
-    referer = request.headers.get("Referer")
-    if referer:
-        return urlparse(referer).netloc == request.host
-    # A real browser submission always sends at least one of these; a
-    # state-changing request with neither is treated as untrusted.
-    return False
-
 
 @app.context_processor
-def _inject_area_labels():
-    """Readable names for CV area ids ("soc_blue_team" -> "security operations
-    and threat detection") in every template, including the live-refresh rows.
-
-    Runs on every render — including each live-refresh tick — so the parsed
-    labels are kept until specializations.json itself changes."""
-    spec_path = ROOT_DIR / "specializations.json"
-    key = _file_key(spec_path)
-    if key is not None and key == _area_labels_cache["key"]:
-        return {"area_labels": _area_labels_cache["value"]}
-    try:
-        spec = json.loads(spec_path.read_text(encoding="utf-8"))
-        labels = {area["id"]: area["label"] for area in spec.get("areas", [])}
-    except (OSError, ValueError, KeyError):
-        return {"area_labels": {}}
-    _area_labels_cache.update(key=key, value=labels)
-    return {"area_labels": labels}
-
-
-@app.context_processor
-def _inject_asset_urls():
-    """asset('style.css') -> /static/style.css?v=<mtime>.
-
-    Static files are served with a one-year cache (below), so moving between
-    pages no longer re-requests the stylesheet and scripts every time. The
-    version stamp is the file's mtime, so an edited file gets a new URL and is
-    fetched fresh — long caching without ever serving a stale stylesheet."""
+def _inject_globals():
     def asset(filename: str) -> str:
         try:
             version = int((Path(app.static_folder) / filename).stat().st_mtime)
         except OSError:
             version = 0
         return url_for("static", filename=filename, v=version)
-    return {"asset": asset}
+
+    labels = {}
+    if g.get("user"):
+        if "_specs" not in g:
+            g._specs = profiles.specs_for(g.user["id"])
+        _, spec_en, spec_fr = g._specs
+        for spec in (spec_fr, spec_en):
+            for area in (spec or {}).get("areas", []):
+                if spec is spec_en or area["id"] not in labels:
+                    labels[area["id"]] = area["label"]
+    return {"asset": asset, "area_labels": labels, "csrf_token": security.csrf_token,
+            "csp_nonce": g.get("csp_nonce", ""), "current_user": g.get("user"),
+            "language_labels": LANGUAGE_LABELS,
+            "pending_approvals": _pending_approvals()}
 
 
-@app.before_request
-def _csrf_guard():
-    if request.method in ("GET", "HEAD", "OPTIONS") or request.endpoint == "static":
-        return None
-    if not _request_origin_ok():
-        message = "Request blocked: it didn't come from this dashboard (origin check failed)."
-        if request.path.startswith("/api/"):
-            return jsonify({"ok": False, "message": message}), 403
-        abort(403, description=message)
-    return None
+def _pending_approvals() -> int:
+    if not g.get("user") or g.user["role"] != "admin":
+        return 0
+    try:
+        return sum(1 for u in accounts.list_users() if u["status"] == "pending")
+    except Exception:
+        return 0
+
+
+@app.errorhandler(400)
+@app.errorhandler(403)
+@app.errorhandler(404)
+@app.errorhandler(413)
+@app.errorhandler(429)
+def _error(exc):
+    code = getattr(exc, "code", 500)
+    messages = {400: "That request couldn't be understood.", 403: "You can't do that.",
+                404: "Not found.", 413: "That upload is too large.", 429: "Too many requests."}
+    message = getattr(exc, "description", None) if code == 403 else None
+    if security.is_api_request():
+        return jsonify({"ok": False, "message": message or messages.get(code, "Error")}), code
+    return render_template("error.html", code=code, message=message or messages.get(code, "Error")), code
+
+
+@app.get("/healthz")
+def health():
+    try:
+        db.ping()
+        return jsonify({"ok": True})
+    except Exception:
+        return jsonify({"ok": False}), 503
+
+
+# ---------------------------------------------------------------------------
+# Setup state (what's configured, what's missing)
+# ---------------------------------------------------------------------------
+
+# The Google sign-in check can refresh an expired token over the network, and
+# a Testing-mode token past its 7 days fails that refresh every time. Cached
+# per user on the stored token's version plus a short TTL: a sign-in, a
+# refresh or a disconnect changes the version and shows on the very next load.
+_OAUTH_STATUS_TTL = 120
+_oauth_cache: dict = {}
+
+
+def _oauth_status(cfg) -> dict:
+    import time
+    import google_auth_helper
+    version = cfg.secret_version("GOOGLE_TOKEN")
+    if not version:
+        _oauth_cache.pop(cfg.user_id, None)
+        return {"connected": False, "valid": False, "email": "", "can_read": False}
+    hit = _oauth_cache.get(cfg.user_id)
+    now = time.monotonic()
+    if hit and hit[0] == version and now - hit[1] < _OAUTH_STATUS_TTL:
+        return hit[2]
+    valid = google_auth_helper.get_credentials(cfg) is not None
+    value = {"connected": True, "valid": valid, "email": google_auth_helper.get_authorized_email(cfg) or "",
+             "can_read": google_auth_helper.can_read_inbox(cfg)}
+    # A refresh inside get_credentials() rewrites the token: key on the
+    # version as it stands AFTER the check.
+    _oauth_cache[cfg.user_id] = (cfg.secret_version("GOOGLE_TOKEN"), now, value)
+    return value
+
+
+def _setup_state() -> dict:
+    import google_auth_helper
+    import mail_service
+    cfg = g.cfg
+    ai = resolve_ai_settings(cfg.ai_env())
+    saved = cfg.saved_secret_names()
+    profile, spec_en, spec_fr = profiles.specs_for(g.user["id"])
+    has_profile = bool(spec_en) and not email_templates.spec_problems(spec_en)
+    companies_rows = data().company_list_count()
+    cv = cfg.cv_info()
+    method = mail_service.sending_method(cfg)
+    oauth = _oauth_status(cfg)
+    oauth_connected, oauth_email, oauth_valid = oauth["connected"], oauth["email"], oauth["valid"]
+    has_gmail = bool(method) and (method != "oauth" or oauth_valid)
+    has_api_key = bool(ai["api_key"])
+    prep_ready = has_api_key and has_profile and companies_rows > 0
+    return {
+        "prep_ready": prep_ready,
+        "send_ready": prep_ready and has_gmail and bool(cv),
+        "has_api_key": has_api_key,
+        "has_profile": has_profile,
+        "has_companies": companies_rows > 0,
+        "companies_rows": companies_rows,
+        "has_gmail": has_gmail,
+        "mail_method": method,
+        "mail_label": mail_service.PROVIDER_LABELS.get(method, ""),
+        "from_address": mail_service.from_address(cfg, method) if method else "",
+        "has_gmail_oauth": oauth_valid,
+        "oauth_connected": oauth_connected,
+        "oauth_expired": oauth_connected and not oauth_valid,
+        "oauth_email": oauth_email,
+        "oauth_configured": google_auth_helper.oauth_is_configured(),
+        "oauth_can_read_inbox": oauth["can_read"],
+        "has_mail_password": "GMAIL_APP_PASSWORD" in saved,
+        "gmail_address": cfg.get("GMAIL_ADDRESS"),
+        "smtp_host": cfg.get("SMTP_HOST"), "smtp_port": cfg.get("SMTP_PORT"),
+        "smtp_security": cfg.get("SMTP_SECURITY", "ssl"), "smtp_username": cfg.get("SMTP_USERNAME"),
+        "imap_host": cfg.get("IMAP_HOST"),
+        "cv_name": cv["name"] if cv else "", "cv_size_kb": cv["size_kb"] if cv else None,
+        "min_delay": cfg.get("MIN_DELAY_SECONDS", "45"), "max_delay": cfg.get("MAX_DELAY_SECONDS", "120"),
+        "max_per_day": str(cfg.int_setting("MAX_EMAILS_PER_DAY", 20)),
+        "bounce_minutes": cfg.get("BOUNCE_CHECK_MINUTES", "30"),
+        "research_workers": str(cfg.int_setting("RESEARCH_WORKERS", 3)),
+        "writer_workers": str(cfg.int_setting("WRITER_WORKERS", 2)),
+        "ai_max_rpm": cfg.get("AI_MAX_RPM", "800"),
+        "ai_fallbacks": ", ".join(ai["fallbacks"]),
+        "ai_translation_model": cfg.get("AI_TRANSLATION_MODEL"),
+        "ai_provider": ai["provider"], "ai_provider_label": ai["label"],
+        "ai_model": ai["model"], "ai_base_url": ai["base_url"],
+        "saved_provider_keys": {pid: p["key_env"] in saved for pid, p in PROVIDERS.items()},
+        "profile_mode": profile.get("mode") or "template",
+        "template_id": profile.get("template_id") or email_templates.DEFAULT_TEMPLATE,
+        "template_name": (email_templates.TEMPLATES.get(profile.get("template_id") or "", {})
+                          .get("name", {}).get("en") or "Your own wording"),
+        "language_mode": profile.get("language_mode") or "auto",
+        "languages": [lang for lang, spec in (("en", spec_en), ("fr", spec_fr)) if spec],
+        "name": cfg.get("YOUR_NAME"), "target_role": cfg.get("YOUR_TARGET_ROLE"),
+        "user_max_per_day": None if g.user["role"] == "admin" else config.USER_MAX_EMAILS_PER_DAY,
+        "user_max_workers": None if g.user["role"] == "admin" else config.USER_MAX_RESEARCH_WORKERS,
+    }
+
+
+def _run_state() -> dict:
+    run = runs.latest(g.user["id"])
+    running = bool(run and run["status"] in runs.ACTIVE)
+    tail = "\n".join(((run or {}).get("log") or "").splitlines()[-60:])
+    return {"running": running, "stop_requested": bool(run and run["stop_requested"] and running),
+            "status": (run or {}).get("status"), "log_tail": tail,
+            "queued": bool(run and run["status"] == "requested")}
+
+
+def _bounce_check_state() -> dict:
+    import bounce_checker
+    last = bounce_checker.last_check(g.user["id"]) or {}
+    interval = g.cfg.int_setting("BOUNCE_CHECK_MINUTES", 30)
+    return {"last_at": last.get("at"), "last_error": last.get("error"),
+            "last_trigger": last.get("trigger"), "auto_minutes": interval if interval > 0 else 0,
+            "available": __import__("bounce_checker").credentials_available(g.cfg)}
 
 
 def _decorate_rows(applications: list) -> list:
-    """Add the display-only fields the table needs to each application row."""
     for a in applications:
         a["status_label"] = STATUS_LABELS.get(a["status"], a["status"])
         try:
             a["matched_extra_mentions_list"] = json.loads(a["matched_extra_mentions"] or "[]")
         except (TypeError, json.JSONDecodeError):
             a["matched_extra_mentions_list"] = []
-        # Short inline error/retry reason for the list view, so a failed or
-        # retry_wait row is understandable at a glance without a click-through.
         msg = a.get("error_message") or ""
         if a["status"] == "bounced":
-            # The pill already says "Not delivered"; show just the reason.
             msg = msg.removeprefix("Not delivered — ")
         a["error_short"] = (msg[:80] + "…") if len(msg) > 80 else msg
         a["sendable"] = bool(a["status"] in db.SENDABLE_STATUSES and a.get("subject"))
         a["favorite"] = bool(a.get("favorite"))
-        # "09-27 20:22" — the year is always the current one and just crowded
-        # the column until the whole timestamp truncated to "202…".
-        a["updated_short"] = (a["updated_at"][5:16].replace("T", " ")
-                               if a.get("updated_at") else "—")
+        a["updated_short"] = (a["updated_at"][5:16].replace("T", " ") if a.get("updated_at") else "—")
+        a["language"] = a.get("language") or ("en" if a.get("subject") else "")
     return applications
 
 
-# The funnel cards shown above the table: (group key, label, the status filter
-# clicking the card applies). Each maps to a db.STATUS_GROUPS bucket.
-FUNNEL_CARDS = [
-    ("to_prepare", "To prepare", "to_prepare"),
-    ("ready", "Ready to review", "ready"),
-    ("sending", "Sending", "sending"),
-    ("sent", "Sent", "sent"),
-    ("problems", "Problems", "problems"),
-]
-
-# Group names usable as a ?status= filter value, expanded to their statuses so
-# a funnel card and a status tab can both filter by a whole stage.
-FILTER_GROUPS = db.STATUS_GROUPS
-
-
 def _table_context(page: int, status_param: str, search_param: str, limit: int = 50) -> dict:
-    """Shared table/stat payload for both the full page render and the JSON
-    refresh endpoint, so the live-updating view can never drift from the
-    server-rendered one."""
-    # "favorites" is a filter on the star, not a status.
+    d = data()
     favorite_only = status_param == "favorites"
     statuses = FILTER_GROUPS.get(status_param) if status_param and not favorite_only else None
-    applications, table_total = db.get_applications_paginated(
+    applications, table_total = d.get_applications_paginated(
         status=status_param if not statuses and not favorite_only else None,
         statuses=list(statuses) if statuses else None,
-        search=search_param, page=page, limit=limit, favorite_only=favorite_only,
-    )
-    grouped = db.get_grouped_stats()
-    favorites = db.count_favorites()
+        search=search_param, page=page, limit=limit, favorite_only=favorite_only)
+    grouped = d.get_grouped_stats()
+    favorites = d.count_favorites()
     grouped["favorites"] = favorites["total"]
-    sent_today = db.count_sent_today()
-    max_per_day = int(os.getenv("MAX_EMAILS_PER_DAY", 20))
+    sent_today = d.count_sent_today()
+    max_per_day = g.cfg.int_setting("MAX_EMAILS_PER_DAY", 20)
     return {
         "applications": _decorate_rows(applications),
-        "table_total": table_total,
-        "table_page": page,
-        "table_pages": max(1, (table_total + limit - 1) // limit),
-        "table_limit": limit,
-        "funnel": [
-            {"key": key, "label": label, "filter": filter_value, "value": grouped.get(key, 0)}
-            for key, label, filter_value in FUNNEL_CARDS
-        ],
+        "table_total": table_total, "table_page": page,
+        "table_pages": max(1, (table_total + limit - 1) // limit), "table_limit": limit,
+        "funnel": [{"key": key, "label": label, "filter": fv, "value": grouped.get(key, 0)}
+                   for key, label, fv in FUNNEL_CARDS],
         "grouped": grouped,
-        "bounced_count": grouped.get("by_status", {}).get("bounced", 0),
-        "failed_count": grouped.get("by_status", {}).get("failed", 0),
+        "bounced_count": grouped["by_status"].get("bounced", 0),
+        "failed_count": grouped["by_status"].get("failed", 0),
         "bounce_check": _bounce_check_state(),
         "total_count": grouped.get("total", 0),
         "skipped_count": grouped.get("skipped", 0),
-        "sent_today": sent_today,
-        "max_per_day": max_per_day,
+        "sent_today": sent_today, "max_per_day": max_per_day,
         "cap_remaining": max(0, max_per_day - sent_today),
         "in_progress_count": sum(grouped["by_status"].get(s, 0) for s in IN_PROGRESS_STATUSES),
-        "pending_prep": db.count_needing_preparation(),
-        "favorites_total": favorites["total"],
-        "favorites_sendable": favorites["sendable"],
-        "filter_status": status_param or "",
-        "filter_q": search_param or "",
+        "pending_prep": d.count_needing_preparation(),
+        "favorites_total": favorites["total"], "favorites_sendable": favorites["sendable"],
+        "filter_status": status_param or "", "filter_q": search_param or "",
     }
 
 
+# ---------------------------------------------------------------------------
+# The tracker
+# ---------------------------------------------------------------------------
+
 @app.route("/")
 def index():
-    db.init_db()
-    sender_worker.ensure_running()
-    load_dotenv(ENV_PATH, override=True)
-
     page = max(1, request.args.get("page", 1, type=int))
-    status_param = request.args.get("status", "").strip()
-    search_param = request.args.get("q", "").strip()
-
+    status_param = request.args.get("status", "").strip()[:40]
+    search_param = request.args.get("q", "").strip()[:120]
     context = _table_context(page, status_param, search_param)
-
-    active_jobs = db.get_pending_send_jobs()
-    active_job = active_jobs[0] if active_jobs else None
-
+    active_jobs = data().get_pending_send_jobs()
     return render_template(
-        "index.html",
-        setup=_setup_state(),
-        oauth_redirect_uri=_oauth_redirect_uri(),
-        run_state=_run_state(),
-        active_job=db.get_send_job(active_job["id"]) if active_job else None,
-        status_tabs=STATUS_TABS,
-        providers=PROVIDERS,
-        **context,
-    )
+        "index.html", setup=_setup_state(), run_state=_run_state(),
+        active_job=data().get_send_job(active_jobs[0]["id"]) if active_jobs else None,
+        status_tabs=STATUS_TABS, **context)
 
 
 @app.get("/api/overview")
 def api_overview():
-    """Stats + the current table page, so the dashboard can refresh live in
-    place. A full page reload (the old behavior) cleared any checked rows and
-    interrupted an in-flight send's progress toast.
-
-    The rows come back as HTML rendered from the same _rows.html partial the
-    full page uses, so the live view can't drift from the server-rendered one.
-    """
     page = max(1, request.args.get("page", 1, type=int))
-    status_param = request.args.get("status", "").strip()
-    search_param = request.args.get("q", "").strip()
+    status_param = request.args.get("status", "").strip()[:40]
+    search_param = request.args.get("q", "").strip()[:120]
     context = _table_context(page, status_param, search_param)
     run_state = _run_state()
     return jsonify({
@@ -609,775 +362,182 @@ def api_overview():
         "rows_html": render_template("_rows.html", applications=context["applications"]),
         "funnel": context["funnel"],
         "grouped": {k: v for k, v in context["grouped"].items() if k != "by_status"},
-        "table_total": context["table_total"],
-        "table_page": context["table_page"],
-        "table_pages": context["table_pages"],
-        "total_count": context["total_count"],
-        "pending_prep": context["pending_prep"],
-        "in_progress_count": context["in_progress_count"],
-        "sent_today": context["sent_today"],
-        "max_per_day": context["max_per_day"],
-        "cap_remaining": context["cap_remaining"],
-        "bounced_count": context["bounced_count"],
-        "failed_count": context["failed_count"],
-        "bounce_check": context["bounce_check"],
-        "favorites_total": context["favorites_total"],
-        "favorites_sendable": context["favorites_sendable"],
-        "running": run_state["running"],
-        "stop_requested": run_state["stop_requested"],
+        **{key: context[key] for key in (
+            "table_total", "table_page", "table_pages", "total_count", "pending_prep",
+            "in_progress_count", "sent_today", "max_per_day", "cap_remaining", "bounced_count",
+            "failed_count", "bounce_check", "favorites_total", "favorites_sendable")},
+        "running": run_state["running"], "stop_requested": run_state["stop_requested"],
         "log_tail": run_state["log_tail"],
     })
 
 
 @app.post("/api/skip/<int:app_id>")
 def api_skip(app_id):
-    """Mark a company as deliberately skipped (or un-skip it). Skipped rows
-    are left alone by preparation and can't be sent, but nothing is deleted,
-    so it's always reversible."""
     payload = request.get_json(silent=True) or {}
     unskip = bool(payload.get("unskip"))
-    application = db.get_application_by_id(app_id)
+    d = data()
+    application = d.get_application_by_id(app_id)
     if not application:
         return jsonify({"ok": False, "message": "Application not found."}), 404
-
     if unskip:
         if application["status"] != "skipped":
             return jsonify({"ok": False, "message": "That company isn't skipped."})
-        # Back to 'ready' when a draft exists, otherwise let preparation redo it.
         new_status = "ready" if (application.get("subject") and application.get("body")) else "pending"
-        db.update_application(app_id, status=new_status, error_message=None)
-        db.log_event(app_id, "skip", "Un-skipped from dashboard.")
+        d.update_application(app_id, status=new_status, error_message=None)
+        d.log_event(app_id, "skip", "Un-skipped from dashboard.")
         return jsonify({"ok": True, "status": new_status, "message": "Company un-skipped."})
-
     if application["status"] in db.SEND_IN_FLIGHT_STATUSES or application["status"] == "sent":
-        return jsonify({"ok": False,
-                        "message": f"Can't skip — already {application['status']}."})
-    db.update_application(app_id, status="skipped", error_message=None)
-    db.log_event(app_id, "skip", "Skipped from dashboard.")
+        return jsonify({"ok": False, "message": f"Can't skip — already {application['status']}."})
+    d.update_application(app_id, status="skipped", error_message=None)
+    d.log_event(app_id, "skip", "Skipped from dashboard.")
     return jsonify({"ok": True, "status": "skipped", "message": "Company skipped."})
+
+
+def _int_ids(raw) -> list | None:
+    if not isinstance(raw, list) or not raw or len(raw) > 5000:
+        return None
+    try:
+        return [int(i) for i in raw]
+    except (TypeError, ValueError):
+        return None
 
 
 @app.post("/api/favorite")
 def api_favorite():
-    """Star or unstar one or many companies: {"app_ids": [..], "favorite": bool}."""
     payload = request.get_json(silent=True) or {}
-    raw_ids = payload.get("app_ids")
-    if not isinstance(raw_ids, list) or not raw_ids:
-        return jsonify({"ok": False, "message": "No companies given."}), 400
-    try:
-        app_ids = [int(i) for i in raw_ids]
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "message": "Invalid company id."}), 400
+    app_ids = _int_ids(payload.get("app_ids"))
+    if app_ids is None:
+        return jsonify({"ok": False, "message": "No valid companies given."}), 400
     favorite = bool(payload.get("favorite", True))
-    changed = db.set_favorite(app_ids, favorite)
-    counts = db.count_favorites()
+    changed = data().set_favorite(app_ids, favorite)
+    counts = data().count_favorites()
     return jsonify({"ok": True, "favorite": favorite, "changed": changed,
-                    "favorites_total": counts["total"],
-                    "favorites_sendable": counts["sendable"]})
+                    "favorites_total": counts["total"], "favorites_sendable": counts["sendable"]})
 
 
 @app.get("/api/favorites/sendable")
 def api_sendable_favorites():
-    """Every starred company with a draft that can go out now — across all
-    pages, so "send favorites" isn't limited to the 50 rows on screen."""
-    rows = db.get_sendable_favorites()
     return jsonify({"ok": True, "recipients": [
-        {"id": r["id"], "company": r["company_name"], "email": r["email"]} for r in rows]})
+        {"id": r["id"], "company": r["company_name"], "email": r["email"]}
+        for r in data().get_sendable_favorites()]})
+
+
+def _rebuild(app_id: int, lang: str | None):
+    import pipeline as pipeline_module
+    from agents.draft_guard import GuardRejection
+    d = data()
+    application = d.get_application_by_id(app_id)
+    if not application:
+        return jsonify({"ok": False, "message": "Application not found."}), 404
+    if application["status"] in db.SEND_IN_FLIGHT_STATUSES or application["status"] in ("sent", "bounced"):
+        return jsonify({"ok": False, "message": f"Can't change it — already {application['status']}."})
+    try:
+        dcfg = drafting.load_config(g.user["id"], g.cfg)
+    except drafting.NotReady as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    if lang and lang not in dcfg.available_languages:
+        return jsonify({"ok": False, "message": f"No {LANGUAGE_LABELS.get(lang, lang)} wording yet — "
+                                                "add it on your Profile page."}), 400
+    context = pipeline_module._load_research(g.user["id"], application["email"], application) or {}
+    # Rebuilding keeps the language the draft is in unless a switch was asked.
+    try:
+        draft = drafting.compose_for(dcfg, application, context, lang=lang or application.get("language"))
+    except GuardRejection as exc:
+        return jsonify({"ok": False, "message": f"Your wording produced an invalid email: {exc}"}), 400
+    cache_store.save_draft(g.user["id"], application["email"], draft)
+    d.update_application(app_id, status="ready", subject=draft["subject"], body=draft["body"],
+                         language=draft["language"], error_message=None)
+    d.log_event(app_id, "write", f"Draft rebuilt ({draft['language'].upper()}): \"{draft['subject']}\"",
+                detail=draft)
+    return jsonify({"ok": True, "subject": draft["subject"], "body": draft["body"],
+                    "language": draft["language"], "message": "Draft rebuilt."})
 
 
 @app.post("/api/regenerate/<int:app_id>")
 def api_regenerate(app_id):
-    """Rebuild one company's draft from its saved research and the current
-    specializations.json. Instant and AI-free — the email is assembled, not
-    generated — so this is also how an edit to specializations.json reaches
-    drafts that were already prepared."""
-    import cache_store
-    from agents.composer import compose_email
-    from agents.draft_guard import GuardRejection
-    from utils import build_greeting
-    import pipeline as pipeline_module
-
-    application = db.get_application_by_id(app_id)
-    if not application:
-        return jsonify({"ok": False, "message": "Application not found."}), 404
-    if application["status"] in db.SEND_IN_FLIGHT_STATUSES or application["status"] == "sent":
-        return jsonify({"ok": False,
-                        "message": f"Can't rebuild — already {application['status']}."})
-
-    load_dotenv(ENV_PATH, override=True)
-    try:
-        cfg = _preparation_config()
-    except (OSError, KeyError, ValueError) as exc:
-        return jsonify({"ok": False, "message": f"Configuration problem: {exc}"}), 400
-
-    # No research yet (or research from before the current format) still
-    # yields a correct email: the standard version, with no company-specific
-    # claims — exactly what's wanted when nothing is known about them.
-    context = pipeline_module._load_research(application["email"], application) or {}
-    greeting = build_greeting(application.get("contact_name"), application["company_name"])
-    try:
-        draft = compose_email(cfg["spec"], context, application["company_name"], greeting,
-                              cfg["applicant_name"], cfg["target_role"])
-    except GuardRejection as exc:
-        return jsonify({"ok": False,
-                        "message": f"specializations.json produced an invalid email: {exc}"}), 400
-
-    cache_store.save_draft(application["email"], draft)
-    db.update_application(app_id, status="ready", subject=draft["subject"],
-                          body=draft["body"], error_message=None)
-    db.log_event(app_id, "write", f"Draft rebuilt from dashboard: \"{draft['subject']}\"",
-                 detail=draft)
-    return jsonify({"ok": True, "subject": draft["subject"], "body": draft["body"],
-                    "message": "Draft rebuilt."})
+    """Rebuild one draft from its saved research and the current profile —
+    instant, no AI."""
+    return _rebuild(app_id, None)
 
 
-def _setup_return_url() -> str:
-    """Where to land after a /setup POST. The settings form posts a hidden
-    `return_to`; anything unexpected falls back to the tracker, so this can
-    never be turned into an open redirect."""
-    if (request.form.get("return_to") or "").strip() == "settings":
-        return url_for("settings_page")
-    return url_for("index")
-
-
-@app.get("/settings")
-def settings_page():
-    """Every knob in one place, grouped into sections — the tracker page
-    stays about companies, not configuration."""
-    load_dotenv(ENV_PATH, override=True)
-    return render_template(
-        "settings.html",
-        setup=_setup_state(),
-        pool=_pool_rows(),
-        oauth_redirect_uri=_oauth_redirect_uri(),
-        bounce_check=_bounce_check_state(),
-        providers=PROVIDERS,
-    )
-
-
-@app.post("/setup")
-def setup():
-    uploads = UPLOAD_DIR
-    uploads.mkdir(exist_ok=True)
-    load_dotenv(ENV_PATH, override=True)
-    from werkzeug.utils import secure_filename
-
-    # Only what PREPARATION needs is required here. Gmail (address+app
-    # password OR OAuth, checked separately) and the CV are send-time-only
-    # concerns — requiring them up front used to block saving a workspace,
-    # and therefore starting preparation, before Gmail was connected at all.
-    # AI provider: each provider keeps its own key variable, so switching
-    # provider in this form never overwrites another provider's saved key.
-    provider = (request.form.get("ai_provider") or os.getenv("AI_PROVIDER") or DEFAULT_PROVIDER)
-    provider = provider.strip().lower()
-    if provider not in PROVIDERS:
-        provider = DEFAULT_PROVIDER
-    preset = PROVIDERS[provider]
-    ai_fields = {"AI_PROVIDER": provider}
-    typed_key = (request.form.get("ai_api_key") or "").strip()
-    if typed_key:
-        ai_fields[preset["key_env"]] = typed_key
-    typed_base = (request.form.get("ai_base_url") or "").strip().rstrip("/")
-    base_env = f"{provider.upper()}_BASE_URL"
-    if typed_base:
-        # Store an override only when it differs from the preset; an empty
-        # value means "use the preset".
-        ai_fields[base_env] = "" if typed_base == preset["base_url"] else typed_base
-    ai_fields["AI_MODEL"] = ((request.form.get("ai_model") or "").strip()
-                             or os.getenv("AI_MODEL", "") or preset["default_model"])
-
-    profile_fields = {
-        key: (request.form.get(form_name) or "").strip() or os.getenv(key, "")
-        for key, form_name in (("YOUR_NAME", "your_name"), ("YOUR_TARGET_ROLE", "target_role"))
-    }
-    optional_fields = {
-        key: (request.form.get(form_name) or "").strip() or os.getenv(key, "")
-        for key, form_name in (("GMAIL_ADDRESS", "gmail_address"),
-                                ("GMAIL_APP_PASSWORD", "gmail_app_password"))
-    }
-    # Numeric pacing settings: keep the saved value when left blank, and
-    # ignore anything non-numeric rather than writing a value that would
-    # crash the sender worker's int() parse later.
-    pacing_fields = {}
-    for key, form_name, minimum in (
-        ("MIN_DELAY_SECONDS", "min_delay", 0),
-        ("MAX_DELAY_SECONDS", "max_delay", 0),
-        ("MAX_EMAILS_PER_DAY", "max_per_day", 1),
-        ("BOUNCE_CHECK_MINUTES", "bounce_minutes", 0),
-        ("RESEARCH_WORKERS", "research_workers", 1),
-        ("WRITER_WORKERS", "writer_workers", 1),
-        ("AI_MAX_RPM", "ai_max_rpm", 1),
-    ):
-        raw = (request.form.get(form_name, "") or "").strip()
-        if raw.isdigit() and int(raw) >= minimum:
-            pacing_fields[key] = raw
-
-    # Fallback models are only meaningful for the provider they belong to, so
-    # a blank box means "use this provider's presets", not "no fallbacks".
-    if "ai_fallbacks" in request.form:
-        ai_fields["AI_FALLBACK_MODELS"] = ",".join(
-            m.strip() for m in (request.form.get("ai_fallbacks") or "").split(",") if m.strip())
-    # Blank is meaningful here too: it puts translation back on the research model.
-    if "ai_translation_model" in request.form:
-        ai_fields["AI_TRANSLATION_MODEL"] = (request.form.get("ai_translation_model") or "").strip()
-
-    effective = resolve_ai_settings({**os.environ, **ai_fields})
-    missing = [label for label, value in (
-        (f"{preset['label']} API key", effective["api_key"]),
-        ("provider base URL", effective["base_url"]),
-        ("AI model", effective["model"]),
-        ("your name", profile_fields["YOUR_NAME"]),
-        ("target role", profile_fields["YOUR_TARGET_ROLE"]),
-    ) if not value]
-    if missing:
-        flash(f"Add every field before saving. Missing: {', '.join(missing)}.", "error")
-        return redirect(_setup_return_url())
-
-    companies = request.files.get("companies_file")
-    cv = request.files.get("cv_file")
-    existing_companies = _resolve_saved_path(os.getenv("COMPANIES_FILE_PATH", ""))
-    existing_cv = _resolve_saved_path(os.getenv("CV_FILE_PATH", ""))
-    if companies and not companies.filename:
-        companies = None
-    if cv and not cv.filename:
-        cv = None
-    if companies and not companies.filename.lower().endswith((".csv", ".xlsx", ".xls")):
-        flash("Upload a CSV or Excel companies file.", "error")
-        return redirect(_setup_return_url())
-    if cv and not cv.filename.lower().endswith((".pdf", ".doc", ".docx")):
-        flash("Upload a PDF or Word CV file.", "error")
-        return redirect(_setup_return_url())
-    if not companies and (existing_companies is None or not existing_companies.is_file()):
-        flash("Upload a CSV or Excel companies file.", "error")
-        return redirect(_setup_return_url())
-
-    companies_path = existing_companies
-    cv_path = existing_cv
-    companies_rows = 0
-    if companies:
-        companies_path = uploads / f"companies{Path(companies.filename).suffix.lower()}"
-        companies.save(companies_path)
-    if cv:
-        safe_name = secure_filename(cv.filename) or "cv.pdf"
-        cv_path = uploads / f"cv_{safe_name}"
-        cv.save(cv_path)
-    # Validate file CONTENTS right away so a bad upload is caught here with a
-    # clear message, not later as a cryptic pipeline failure.
-    ok, message, companies_rows = _validate_companies_file(companies_path)
-    if not ok:
-        flash(f"Companies file problem: {message}", "error")
-        return redirect(_setup_return_url())
-    if cv and (not cv_path.is_file() or cv_path.stat().st_size == 0):
-        flash("CV file is empty or unreadable — please re-upload it.", "error")
-        return redirect(_setup_return_url())
-
-    env_updates = {**ai_fields, **profile_fields, **optional_fields, **pacing_fields,
-                    "COMPANIES_FILE_PATH": str(companies_path)}
-    if cv_path:
-        env_updates["CV_FILE_PATH"] = str(cv_path)
-    _save_env(env_updates)
-    load_dotenv(ENV_PATH, override=True)
-
-    cv_note = f"CV attached as {cv_path.name}" if cv_path else "no CV yet — add one before sending"
-    flash(f"Settings saved — {companies_rows} usable email(s) in {companies_path.name}, "
-          f"{cv_note}.", "success")
-    return redirect(_setup_return_url())
-
-
-def _check_gmail_credentials(gmail_address: str, gmail_app_password: str) -> tuple[bool, str]:
-    """Log in to Gmail (SMTP + IMAP) to prove the creds work.
-
-    Uses the same logins as the real run: SMTP_SSL (what mailer.py sends
-    through) and IMAP (what bounce_checker.py scans through). Logs out
-    immediately — nothing is sent or read.
-    """
-    address = (gmail_address or "").strip()
-    password = (gmail_app_password or "").strip()
-    if not address or not password:
-        return False, "Enter both the Gmail address and the app password first."
-    if "@" not in address or "." not in address.split("@")[-1]:
-        return False, f"'{address}' doesn't look like an email address — check for typos."
-    if _is_placeholder(address) or _is_placeholder(password):
-        return False, "That looks like the example placeholder — paste your real Gmail address and app password."
-    password = password.replace(" ", "")
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
-            server.login(address, password)
-    except smtplib.SMTPAuthenticationError:
-        return False, ("Gmail rejected the login (SMTP: username/password not accepted). "
-                        "Almost always: (1) you used your normal Gmail password instead of an "
-                        "App Password — create one at myaccount.google.com/apppasswords (needs 2-Step Verification); "
-                        "(2) a typo or extra space; (3) 2-Step Verification is off.")
-    except (smtplib.SMTPException, OSError, socket.timeout, socket.gaierror) as exc:
-        return False, (f"Could not reach Gmail's send server ({exc}). "
-                        "Credentials weren't tested — check your connection and retry.")
-    except Exception as exc:  # pragma: no cover - defensive
-        return False, f"Unexpected error testing the send login: {exc}"
-
-    try:
-        conn = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-        try:
-            conn.login(address, password)
-        finally:
-            try:
-                conn.logout()
-            except Exception:
-                pass
-    except imaplib.IMAP4.error as exc:
-        return False, ("Send login works, but inbox (IMAP) login failed. "
-                       "Enable IMAP in Gmail: Settings > Forwarding and POP/IMAP > Enable IMAP. "
-                       f"Detail: {exc}")
-    except (OSError, socket.timeout, socket.gaierror) as exc:
-        return False, (f"Send login works, but the inbox server was unreachable ({exc}). "
-                        "Sending will work; bounce detection may not until IMAP is reachable.")
-    except Exception as exc:  # pragma: no cover
-        return False, f"Send login works, but inbox check hit an unexpected error: {exc}"
-
-    return True, "Gmail credentials are valid — send login and inbox login both succeeded."
-
-
-@app.post("/validate-gmail")
-def validate_gmail():
-    """Fallback when JS is off: test typed (or previously saved) Gmail creds."""
-    load_dotenv(ENV_PATH, override=True)
-    address = request.form.get("gmail_address", "").strip() or os.getenv("GMAIL_ADDRESS", "")
-    password = request.form.get("gmail_app_password", "").strip() or os.getenv("GMAIL_APP_PASSWORD", "")
-    ok, message = _check_gmail_credentials(address, password)
-    flash(("Gmail OK — " if ok else "Gmail check failed — ") + message, "success" if ok else "error")
-    return _to_gmail_settings()
-
-
-@app.post("/api/validate-gmail")
-def api_validate_gmail():
-    """JSON check for the inline Validate button (no page reload)."""
-    load_dotenv(ENV_PATH, override=True)
-    payload = request.get_json(silent=True) or {}
-    address = (payload.get("gmail_address", "") or "").strip() or os.getenv("GMAIL_ADDRESS", "")
-    password = (payload.get("gmail_app_password", "") or "").strip() or os.getenv("GMAIL_APP_PASSWORD", "")
-    ok, message = _check_gmail_credentials(address, password)
-    return jsonify({"ok": ok, "message": message})
-
-
-# ---------------------------------------------------------------------------
-# Google OAuth 2.0 routes
-# ---------------------------------------------------------------------------
-
-# Google may grant a slightly different scope list than requested (it adds
-# "openid"-style aliases, or leaves out a box the user unticked); without this
-# oauthlib raises "Scope has changed" and the whole connection fails. Which
-# scopes actually came back is checked explicitly in the callback instead.
-os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
-
-OAUTH_HOST = "127.0.0.1"
-
-
-def _to_gmail_settings():
-    """Where every Gmail/OAuth outcome lands. The Gmail controls live on the
-    Settings page now, so sending these back to the tracker showed the result
-    on a page with nothing to act on."""
-    return redirect(url_for("settings_page") + "#s-gmail")
-
-
-def _oauth_redirect_uri() -> str:
-    """Always http://127.0.0.1:<port>/oauth/callback, whatever address the
-    browser used. Google compares the redirect URI character for character
-    with the one registered on the OAuth client, so opening the dashboard as
-    "localhost" used to produce a redirect_uri_mismatch error."""
-    port = request.host.rsplit(":", 1)[1] if ":" in request.host else "80"
-    return f"http://{OAUTH_HOST}:{port}{url_for('oauth_callback')}"
-
-
-def _get_oauth_flow(redirect_uri: str = None, code_verifier: str = None):
-    """Build a google_auth_oauthlib Flow from the client secret file.
-
-    Re-resolves the client-secret path on every call (rather than trusting a
-    module-import-time constant) so dropping the file in after the dashboard
-    process has already started is picked up without a restart.
-    """
-    from google_auth_helper import _find_client_secret, SCOPES
-    from google_auth_oauthlib.flow import Flow
-    client_secret_path = _find_client_secret()
-    if not client_secret_path:
-        return None
-    flow = Flow.from_client_secrets_file(
-        str(client_secret_path),
-        scopes=SCOPES,
-        redirect_uri=redirect_uri or _oauth_redirect_uri(),
-        code_verifier=code_verifier,
-    )
-    return flow
-
-
-@app.route("/oauth/start")
-def oauth_start():
-    """Redirect the user to Google's OAuth consent screen."""
-    from google_auth_helper import oauth_is_configured
-    if not oauth_is_configured():
-        flash("Upload your Google OAuth client file first (Gmail account → Set up Google sign-in).", "error")
-        return _to_gmail_settings()
-    # The session cookie holding the state and PKCE verifier belongs to the
-    # host it was set on; start on the same host Google will redirect back to.
-    if request.host.split(":")[0] != OAUTH_HOST:
-        return redirect(_oauth_redirect_uri().replace("/oauth/callback", url_for("oauth_start")))
-    try:
-        flow = _get_oauth_flow()
-    except (ValueError, KeyError) as exc:
-        flash(f"The Google OAuth client file is invalid ({exc}) — upload it again.", "error")
-        return _to_gmail_settings()
-    if not flow:
-        flash("Could not build OAuth flow — credentials file may be invalid.", "error")
-        return _to_gmail_settings()
-    state = secrets.token_urlsafe(16)
-    session["oauth_state"] = state
-    params = {"access_type": "offline", "prompt": "consent", "state": state}
-    # Pre-selects the account on Google's screen, so connecting is one click.
-    hint = (os.getenv("GMAIL_ADDRESS") or "").strip()
-    if "@" in hint:
-        params["login_hint"] = hint
-    auth_url, _ = flow.authorization_url(**params)
-    # authorization_url() is what generates the PKCE code_verifier (it is
-    # still None before that call). The callback's Flow must reuse it, or
-    # Google rejects the exchange with "Missing code verifier".
-    session["oauth_code_verifier"] = flow.code_verifier
-    return redirect(auth_url)
-
-
-@app.route("/oauth/callback")
-def oauth_callback():
-    """Google redirects here after the user consents."""
-    from google_auth_helper import (_save_credentials, get_oauth_email_address,
-                                    missing_required_scopes, revoke_token, save_authorized_email)
-    error = request.args.get("error")
-    if error:
-        hint = (" — if the app is in Testing mode, add your address as a test user on the "
-                "OAuth consent screen." if error == "access_denied" else "")
-        flash(f"Google authorisation was denied: {error}{hint}", "error")
-        return _to_gmail_settings()
-
-    # State check (CSRF protection)
-    state = request.args.get("state", "")
-    code_verifier = session.pop("oauth_code_verifier", None)
-    if not state or state != session.pop("oauth_state", None):
-        flash("OAuth state mismatch — please try connecting again.", "error")
-        return _to_gmail_settings()
-
-    try:
-        flow = _get_oauth_flow(code_verifier=code_verifier)
-        flow.fetch_token(code=request.args.get("code", ""))
-        creds = flow.credentials
-        missing = missing_required_scopes(creds)
-        if "https://www.googleapis.com/auth/gmail.send" in missing:
-            flash("Google connected, but the “Send email on your behalf” permission was left "
-                  "unticked — connect again and tick every box.", "error")
-            return _to_gmail_settings()
-        revoke_token()   # drop any previous account's token (and its stored email)
-        _save_credentials(creds)
-        email = get_oauth_email_address(creds)
-        if email:
-            save_authorized_email(email)
-            # Also persist the email to .env so pipeline.py can read it
-            _save_env({"GMAIL_ADDRESS": email})
-            load_dotenv(ENV_PATH, override=True)
-            note = (" Bounce detection needs the “Read email” permission too — reconnect and tick it."
-                    if missing else "")
-            flash(f"✓ Connected as {email} — your emails will be sent from this account.{note}", "success")
-        else:
-            flash("✓ Google account connected! (Could not read email address — try reconnecting.)", "success")
-    except Exception as exc:
-        text = str(exc)
-        if "redirect_uri_mismatch" in text:
-            text = f"redirect URI mismatch — add {_oauth_redirect_uri()} to the OAuth client's authorised redirect URIs"
-        flash(f"Connecting Google failed: {text}", "error")
-    _invalidate_oauth_status()
-    return _to_gmail_settings()
-
-
-@app.post("/oauth/client-secret")
-def oauth_client_secret():
-    """Upload the OAuth client JSON downloaded from Google Cloud Console."""
-    from google_auth_helper import save_client_secret, validate_client_secret
-    upload = request.files.get("client_secret")
-    if not upload or not upload.filename:
-        flash("Choose the OAuth client JSON file first.", "error")
-        return _to_gmail_settings()
-    raw = upload.read(64 * 1024)
-    ok, detail = validate_client_secret(raw)
-    if not ok:
-        flash(detail, "error")
-        return _to_gmail_settings()
-    save_client_secret(raw)
-    _invalidate_oauth_status()
-    flash("✓ Google OAuth client saved — now click “Sign in with Google”.", "success")
-    return _to_gmail_settings()
-
-
-@app.post("/oauth/disconnect")
-def oauth_disconnect():
-    """Delete token.json — user must re-authorise to use OAuth again."""
-    from google_auth_helper import revoke_token
-    revoke_token()
-    _invalidate_oauth_status()
-    flash("Google account disconnected. You can reconnect any time or use an App Password instead.", "success")
-    return _to_gmail_settings()
-
-
-@app.get("/api/gmail-status")
-def api_gmail_status():
-    """JSON endpoint: returns current OAuth connection status."""
-    try:
-        from google_auth_helper import (
-            token_exists, get_credentials, get_authorized_email, oauth_is_configured
-        )
-        configured = oauth_is_configured()
-        if not configured:
-            return jsonify({"mode": "none", "configured": False,
-                            "message": "OAuth credentials file not found."})
-        if not token_exists():
-            return jsonify({"mode": "disconnected", "configured": True,
-                            "message": "Not connected — click Connect with Google."})
-        creds = get_credentials()
-        if not creds:
-            return jsonify({"mode": "expired", "configured": True,
-                            "message": "Token expired and could not be refreshed. Please reconnect."})
-        email = get_authorized_email() or "unknown"
-        return jsonify({"mode": "connected", "configured": True, "email": email,
-                        "message": f"Connected as {email}"})
-    except ImportError:
-        return jsonify({"mode": "none", "configured": False,
-                        "message": "Google libraries not installed."})
-
-
-def _ai_settings_from_request(payload: dict) -> dict:
-    """The provider settings to test: whatever the form currently shows,
-    falling back to what's saved for that provider."""
-    load_dotenv(ENV_PATH, override=True)
-    provider = (payload.get("ai_provider") or os.getenv("AI_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
-    if provider not in PROVIDERS:
-        provider = DEFAULT_PROVIDER
-    overrides = {"AI_PROVIDER": provider}
-    preset = PROVIDERS[provider]
-    if (payload.get("ai_api_key") or "").strip():
-        overrides[preset["key_env"]] = payload["ai_api_key"].strip()
-    if (payload.get("ai_base_url") or "").strip():
-        overrides[f"{provider.upper()}_BASE_URL"] = payload["ai_base_url"].strip()
-    if (payload.get("ai_model") or "").strip():
-        overrides["AI_MODEL"] = payload["ai_model"].strip()
-    return resolve_ai_settings({**os.environ, **overrides})
-
-
-@app.post("/api/models")
-def api_models():
-    """List the models the selected provider offers, for the model picker."""
-    ai = _ai_settings_from_request(request.get_json(silent=True) or {})
-    models, error = list_provider_models(ai["base_url"], ai["api_key"])
-    if error:
-        return jsonify({"ok": False, "message": error, "models": []})
-    return jsonify({"ok": True, "models": models,
-                    "message": f"{len(models)} model(s) available on {ai['label']}."})
-
-
-@app.post("/api/validate-ai")
-def api_validate_ai():
-    """Send one tiny request with the selected provider, key and model."""
-    ai = _ai_settings_from_request(request.get_json(silent=True) or {})
-    portal = PROVIDERS[ai["provider"]]["key_portal"]
-    if not ai["api_key"] or _is_placeholder(ai["api_key"]):
-        hint = f" (get one at {portal})" if portal else ""
-        return jsonify({"ok": False, "message": f"Paste your {ai['label']} API key first{hint}."})
-    if not ai["base_url"]:
-        return jsonify({"ok": False, "message": "Set the provider's base URL first."})
-    if not ai["model"]:
-        return jsonify({"ok": False, "message": "Pick a model first (use Load models)."})
-    client = CompatibleAIClient(ai["api_key"], ai["base_url"])
-    try:
-        client.messages.create(model=ai["model"], max_tokens=20, system="Reply with one word.",
-                               messages=[{"role": "user", "content": "Say ok"}],
-                               max_attempts=1, temperature=0.0)
-    except RuntimeError as exc:
-        text = str(exc)
-        if "401" in text or "403" in text:
-            return jsonify({"ok": False, "message": f"{ai['label']} rejected the key (401/403)."})
-        if "404" in text:
-            return jsonify({"ok": False, "message": f"Model '{ai['model']}' not found on {ai['label']} "
-                                                    "(404). Use Load models to see valid ids."})
-        return jsonify({"ok": False, "message": f"{ai['label']} error: {text[:220]}"})
-    return jsonify({"ok": True, "message": f"Works — {ai['label']} answered with model '{ai['model']}'."})
-
-
-def _pool_rows() -> list:
-    """The model pool as Settings shows it — built from .env, no network."""
-    from model_router import build_router
-    rows = []
-    for row in build_router().snapshot():
-        row["roles"] = ", ".join(f"{task} (tier {tier})" if tier else f"{task} (preferred)"
-                                 for task, tier in sorted(row["tiers"].items()))
-        rows.append(row)
-    return rows
-
-
-def _probe_deployment(d) -> dict:
-    """One tiny live request to a pooled model, reported in plain words."""
-    import time as _time
-    from ai_client import AIProviderError
-    started = _time.perf_counter()
-    try:
-        # Room for a reasoning model (gpt-oss) to think before it answers: at
-        # 16 tokens it spent the whole allowance reasoning and replied empty.
-        d.client.messages.create(
-            model=d.model, max_tokens=200, system="Reply with one word.",
-            messages=[{"role": "user", "content": "Say ok"}], max_attempts=1,
-            temperature=0.0, reasoning_effort="low" if d.reasoning else None,
-        )
-        return {"state": "ok",
-                "detail": f"Answered in {(_time.perf_counter() - started) * 1000:.0f} ms."}
-    except AIProviderError as error:
-        headers = error.headers or {}
-        if error.kind == "bad_response":
-            # A 200 proves the key and model work; only this probe's reply was odd.
-            return {"state": "ok", "detail": "Reachable (the probe's short reply came back empty)."}
-        if str(headers.get("x-ratelimit-limit-req-minute")) == "0":
-            return {"state": "inactive", "detail": "The account's plan allows 0 requests a minute. "
-                                                   "Activate a plan in the provider's console."}
-        if error.kind == "auth" and error.status == 401:
-            return {"state": "bad_key", "detail": "The API key was rejected."}
-        if error.kind == "auth":
-            return {"state": "unavailable", "detail": "Not available on this key's plan."}
-        if error.kind == "not_found":
-            return {"state": "unavailable", "detail": "This provider doesn't serve that model."}
-        if error.kind == "rate_limit":
-            return {"state": "busy", "detail": "Rate-limited right now; it's used again as soon "
-                                               "as it frees up."}
-        return {"state": "error", "detail": str(error)[:160]}
-    except Exception as error:  # a probe must never break the page
-        return {"state": "error", "detail": str(error)[:160]}
-
-
-@app.post("/api/ai-health")
-def api_ai_health():
-    """Probe every model in the pool at once. Costs one request per model, so
-    it runs only when asked — never on page load."""
-    from concurrent.futures import ThreadPoolExecutor
-    from model_router import build_router
-    load_dotenv(ENV_PATH, override=True)
-    router = build_router()
-    if not router.deployments:
-        return jsonify({"ok": False, "rows": [],
-                        "message": "No AI provider has a key yet. Add one above."})
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(_probe_deployment, router.deployments))
-    rows = [{"name": d.name, "tiers": d.tiers, **result}
-            for d, result in zip(router.deployments, results)]
-    working = lambda task: [r["name"] for r in rows  # noqa: E731
-                            if task in r["tiers"] and r["state"] in ("ok", "busy")]
-    gaps = [task for task in ("research", "translation") if not working(task)]
-    message = ("Every task has at least one working model." if not gaps else
-               f"No working model for: {', '.join(gaps)}. Fix a key or plan above.")
-    return jsonify({"ok": not gaps, "rows": rows, "message": message})
+@app.post("/api/language/<int:app_id>")
+def api_language(app_id):
+    """The EN/FR switch: rewrite this company's draft in the other language."""
+    lang = ((request.get_json(silent=True) or {}).get("language") or "").lower()
+    if lang not in LANGUAGE_LABELS:
+        return jsonify({"ok": False, "message": "Unknown language."}), 400
+    return _rebuild(app_id, lang)
 
 
 @app.post("/run")
 def run_pipeline():
-    global run_process
-    if run_process is not None and run_process.poll() is None:
-        flash("A pipeline run is already in progress.", "error")
-        return redirect(url_for("index"))
     setup_state = _setup_state()
-    companies_path = os.getenv("COMPANIES_FILE_PATH")
-    if not setup_state["prep_ready"] or not companies_path:
-        flash("Add your AI key, profile, and companies file before starting preparation "
-              "(Gmail and CV are only needed later, when you send).", "error")
+    if not setup_state["prep_ready"]:
+        flash("Add your AI key, your profile and a companies list before starting preparation "
+              "(the email account and CV are only needed later, to send).", "error")
         return redirect(url_for("index"))
-
-    STOP_FILE.unlink(missing_ok=True)
-    command = [sys.executable, str(MAIN_PATH), "--companies", companies_path]
-    batch_limit = (request.form.get("batch_limit") or "").strip()
-    if batch_limit.isdigit() and int(batch_limit) > 0:
-        command.extend(["--limit", batch_limit])
-    with RUN_LOG_PATH.open("a", encoding="utf-8") as log_file:
-        log_file.write("\n--- Dashboard preparation run ---\n")
-        run_process = subprocess.Popen(
-            command, cwd=ROOT_DIR, stdout=log_file, stderr=subprocess.STDOUT,
-            env={**os.environ, "PIPELINE_STOP_FILE": str(STOP_FILE),
-                 # Written to a file, Python buffers output in 8 KB blocks, so
-                 # the Activity log sat empty for most of a run.
-                 "PYTHONUNBUFFERED": "1",
-                 # The log is read as UTF-8; the child otherwise writes the
-                 # Windows code page and every "—" arrived as "�".
-                 "PYTHONIOENCODING": "utf-8"})
-    flash("Preparation engine started. Emails appear here as ready — select and send when you're happy.", "success")
+    raw = (request.form.get("batch_limit") or "").strip()
+    limit = int(raw) if raw.isdigit() and int(raw) > 0 else None
+    try:
+        runs.request_run(g.user["id"], limit)
+    except runs.RunConflict as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("index"))
+    if config.embedded_worker():
+        import worker
+        worker.ensure_embedded()
+    flash("Preparation started. Emails appear here as they're ready — review, then send.", "success")
     return redirect(url_for("index"))
 
 
 @app.post("/stop")
 def stop_pipeline():
-    if run_process is None or run_process.poll() is not None:
-        flash("No pipeline run is active.", "error")
+    if runs.request_stop(g.user["id"]):
+        flash("Stop requested. Finished drafts and sent history are kept.", "success")
     else:
-        STOP_FILE.touch()
-        flash("Stop requested. Completed drafts and sent addresses are preserved.", "success")
+        flash("No preparation run is active.", "error")
     return redirect(url_for("index"))
 
 
 @app.post("/api/check-bounces")
 def api_check_bounces():
-    """Scan the inbox for bounce notifications now, instead of waiting for
-    the next scheduled/manual `python bounce_checker.py` run."""
-    load_dotenv(ENV_PATH, override=True)
     import bounce_checker
-    result = bounce_checker.run_check(sender_worker.BOUNCE_WINDOW_DAYS, trigger="manual")
+    import sender_worker
+    if security.rate_limited(f"bounce:{g.user['id']}", 6, 600):
+        return jsonify({"ok": False, "message": "Checked very recently — try again in a few minutes."}), 429
+    result = bounce_checker.run_check(g.cfg, sender_worker.BOUNCE_WINDOW_DAYS, trigger="manual")
     if result["error"]:
         return jsonify({"ok": False, "message": f"Bounce check failed: {result['error']}",
                         "bounce_check": _bounce_check_state()}), 500
     updated = result["updated"]
-    return jsonify({
-        "ok": True,
-        "updated": updated,
-        "message": (f"{updated} email(s) were not delivered — marked in red." if updated
-                     else "No new delivery failures found."),
-        "bounce_check": _bounce_check_state(),
-    })
-
-
-def _bounce_check_state() -> dict:
-    """What the dashboard shows about delivery tracking: when the inbox was
-    last scanned, whether that worked, and how often it runs on its own."""
-    import bounce_checker
-    last = bounce_checker.last_check() or {}
-    interval = sender_worker._env_int("BOUNCE_CHECK_MINUTES", 30)
-    return {
-        "last_at": last.get("at"),
-        "last_error": last.get("error"),
-        "last_trigger": last.get("trigger"),
-        "auto_minutes": interval if interval > 0 else 0,
-    }
+    return jsonify({"ok": True, "updated": updated,
+                    "message": (f"{updated} email(s) were not delivered — marked in red." if updated
+                                else "No new delivery failures found."),
+                    "bounce_check": _bounce_check_state()})
 
 
 @app.post("/company/<int:app_id>/edit")
 def edit_email(app_id):
-    application = db.get_application_by_id(app_id)
-    subject = request.form.get("subject", "").strip()
-    body = request.form.get("body", "").strip()
-    if not application or not subject or not body:
+    d = data()
+    application = d.get_application_by_id(app_id)
+    if not application:
+        abort(404)
+    subject = request.form.get("subject", "").strip()[:500]
+    body = request.form.get("body", "").strip()[:20000]
+    if not subject or not body:
         flash("Subject and body are required.", "error")
         return redirect(url_for("company_detail", app_id=app_id))
-
     if application["status"] not in EDITABLE_STATUSES:
         flash(f"Cannot edit — email is currently '{application['status']}'.", "error")
         return redirect(url_for("company_detail", app_id=app_id))
-
-    db.update_application(app_id, subject=subject, body=body, status="ready",
-                          error_message=None)
-    db.log_event(app_id, "write", "Email edited and saved from dashboard.")
-    import cache_store
-    cache_store.save_draft(application["email"], {"subject": subject, "body": body})
-    flash("Email draft saved. The saved version will be used on the next run.", "success")
+    d.update_application(app_id, subject=subject, body=body, status="ready", error_message=None)
+    d.log_event(app_id, "write", "Email edited and saved from dashboard.")
+    cache_store.save_draft(g.user["id"], application["email"],
+                           {"subject": subject, "body": body, "language": application.get("language") or "en"})
+    flash("Email draft saved.", "success")
     return redirect(url_for("company_detail", app_id=app_id))
 
 
-# Raw provider errors ("AI provider error 401: {"error":{"code":"",...") mean
-# nothing at a glance, so the timeline states the cause in plain words and
-# keeps the raw text one click away under "details".
 _ERROR_EXPLANATIONS = [
     ("charmap", "Couldn't print a character in the company name to the console."),
     ("codec can't encode", "Couldn't print a character in the company name to the console."),
@@ -1396,8 +556,6 @@ _FAILURE_MESSAGES = {"Writer agent failed", "Research stage crashed"}
 
 
 def _event_error_summary(event: dict) -> str:
-    """A one-line, plain-language reason for a failed event, or "" if it
-    didn't fail."""
     detail = event.get("detail_parsed")
     error = detail.get("error") if isinstance(detail, dict) else None
     if not error and event.get("message") not in _FAILURE_MESSAGES:
@@ -1410,17 +568,13 @@ def _event_error_summary(event: dict) -> str:
 
 
 def _starts_attempt(event: dict) -> bool:
-    message = event.get("message") or ""
-    return message.startswith(("Scraping and analyzing", "Re-researched"))
+    return (event.get("message") or "").startswith(("Scraping and analyzing", "Re-researched"))
 
 
 def _split_superseded_events(events: list) -> tuple[list, list]:
-    """(earlier, current). "Current" starts at the most recent research
-    attempt that went on to produce a draft; everything before it has been
-    superseded by that draft. Months of retries against a dead API key used to
-    fill the page with "Writer agent failed" above a perfectly good email."""
-    produced_draft = [i for i, e in enumerate(events)
-                      if e["stage"] == "write" and not e["error_summary"]]
+    """(earlier, current): history before the research attempt that produced
+    the current draft folds away."""
+    produced_draft = [i for i, e in enumerate(events) if e["stage"] == "write" and not e["error_summary"]]
     if not produced_draft:
         return [], events
     starts = [i for i, e in enumerate(events) if _starts_attempt(e) and i <= produced_draft[-1]]
@@ -1431,216 +585,603 @@ def _split_superseded_events(events: list) -> tuple[list, list]:
 
 @app.route("/company/<int:app_id>")
 def company_detail(app_id):
-    db.init_db()
-    application = db.get_application_by_id(app_id)
+    import mail_service
+    d = data()
+    application = d.get_application_by_id(app_id)
     if not application:
-        return "Not found", 404
-
-    events = db.get_events(app_id)
+        abort(404)
+    events = d.get_events(app_id)
     for e in events:
-        if e["detail"]:
-            try:
-                e["detail_parsed"] = json.loads(e["detail"])
-            except json.JSONDecodeError:
-                e["detail_parsed"] = None
-        else:
+        try:
+            e["detail_parsed"] = json.loads(e["detail"]) if e["detail"] else None
+        except json.JSONDecodeError:
             e["detail_parsed"] = None
         e["error_summary"] = _event_error_summary(e)
     earlier_events, current_events = _split_superseded_events(events)
 
-    try:
-        talking_points = json.loads(application["talking_points"] or "[]")
-    except (TypeError, json.JSONDecodeError):
-        talking_points = []
-    try:
-        matched_extras = json.loads(application["matched_extra_mentions"] or "[]")
-    except (TypeError, json.JSONDecodeError):
-        matched_extras = []
-    try:
-        match_reasons = json.loads(application["match_reasons"] or "{}")
-    except (TypeError, json.JSONDecodeError):
-        match_reasons = {}
+    def _json(value, default):
+        try:
+            return json.loads(value or default)
+        except (TypeError, json.JSONDecodeError):
+            return json.loads(default)
 
     application["status_label"] = STATUS_LABELS.get(application["status"], application["status"])
-    application["sendable"] = bool(application["status"] in db.SENDABLE_STATUSES
-                                    and application.get("subject"))
+    application["sendable"] = bool(application["status"] in db.SENDABLE_STATUSES and application.get("subject"))
     application["editable"] = application["status"] in EDITABLE_STATUSES
-
-    load_dotenv(ENV_PATH, override=True)
-    cv_path = _resolve_saved_path((os.getenv("CV_FILE_PATH", "") or "").strip())
-    cv_info = None
-    if cv_path and cv_path.is_file():
-        cv_info = {"name": cv_path.name, "size_kb": round(cv_path.stat().st_size / 1024, 1)}
-
-    word_count = len((application.get("body") or "").split())
-
+    application["language"] = application.get("language") or ("en" if application.get("subject") else "")
+    method = mail_service.sending_method(g.cfg)
+    _, spec_en, spec_fr = profiles.specs_for(g.user["id"])
     return render_template(
-        "detail.html",
-        application=application,
-        events=events,
-        earlier_events=earlier_events,
-        current_events=current_events,
+        "detail.html", application=application, events=events,
+        earlier_events=earlier_events, current_events=current_events,
         earlier_failed=sum(1 for e in earlier_events if e["error_summary"]),
-        talking_points=talking_points,
-        matched_extras=matched_extras,
-        match_reasons=match_reasons,
-        prev_id=db.get_adjacent_application_id(app_id, direction="prev"),
-        next_id=db.get_adjacent_application_id(app_id, direction="next"),
-        from_email=(os.getenv("GMAIL_ADDRESS", "") or "").strip() or "your Gmail account",
-        cv_info=cv_info,
-        word_count=word_count,
+        talking_points=_json(application["talking_points"], "[]"),
+        matched_extras=_json(application["matched_extra_mentions"], "[]"),
+        match_reasons=_json(application["match_reasons"], "{}"),
+        prev_id=d.get_adjacent_application_id(app_id, direction="prev"),
+        next_id=d.get_adjacent_application_id(app_id, direction="next"),
+        from_email=(mail_service.from_address(g.cfg, method) if method else "") or "your email account",
+        cv_info=g.cfg.cv_info(),
+        word_count=len((application.get("body") or "").split()),
+        languages_available=[lang for lang, spec in (("en", spec_en), ("fr", spec_fr)) if spec],
     )
 
 
 @app.post("/api/send-job")
 def api_create_send_job():
-    """Create a send job from selected application IDs. Returns immediately.
-
-    The actual eligibility check (sendable status + has a draft) happens
-    atomically inside db.create_send_job — that single UPDATE...WHERE is what
-    prevents two overlapping requests (a double-click, or this row's own
-    "Send" button plus "Send selected" in the same instant) from both
-    queueing the same application into two jobs.
-    """
     payload = request.get_json(silent=True) or {}
-    raw_ids = payload.get("app_ids", [])
-    if not isinstance(raw_ids, list) or not raw_ids:
-        return jsonify({"ok": False, "message": "No emails selected."}), 400
-    try:
-        app_ids = [int(aid) for aid in raw_ids]
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "message": "Invalid application id."}), 400
-
-    job_id, queued_ids = db.create_send_job(app_ids)
-
+    app_ids = _int_ids(payload.get("app_ids"))
+    if app_ids is None:
+        return jsonify({"ok": False, "message": "No valid emails selected."}), 400
+    if not g.cfg.cv_info():
+        return jsonify({"ok": False, "message": "Upload your CV in Settings before sending."})
+    job_id, queued_ids = data().create_send_job(app_ids)
     if not queued_ids:
-        return jsonify({"ok": False,
-                        "message": "None of the selected emails are ready to send "
-                                    "(already sending, or no draft)."})
-
-    sender_worker.ensure_running()
-
+        return jsonify({"ok": False, "message": "None of the selected emails are ready to send "
+                                                "(already sending, or no draft)."})
+    if config.embedded_worker() and not app.config.get("TESTING"):
+        import worker
+        worker.ensure_embedded()
     skipped = len(app_ids) - len(queued_ids)
     message = f"Send job created for {len(queued_ids)} email(s)."
     if skipped:
         message += f" ({skipped} already in progress or not ready were skipped.)"
-
-    return jsonify({
-        "ok": True,
-        "job_id": job_id,
-        "total": len(queued_ids),
-        "message": message,
-    })
+    return jsonify({"ok": True, "job_id": job_id, "total": len(queued_ids), "message": message})
 
 
 @app.get("/api/send-job/<int:job_id>")
 def api_send_job_status(job_id):
-    """Poll send job progress."""
-    job = db.get_send_job(job_id)
+    job = data().get_send_job(job_id)
     if not job:
         return jsonify({"ok": False, "message": "Job not found."}), 404
-
     return jsonify({
-        "ok": True,
-        "job_id": job_id,
-        "status": job["status"],
-        "total": job["total_items"],
-        "queued": job.get("queued", 0),
-        "sending": job.get("sending", 0),
-        "sent": job.get("sent_count", 0),
-        "failed": job.get("failed_count", 0),
-        "items": [
-            {
-                "app_id": item["application_id"],
-                "company": item.get("company_name", ""),
-                "email": item.get("email", ""),
-                "status": item["status"],
-                "error": item.get("error_message", ""),
-            }
-            for item in job.get("items", [])
-        ],
+        "ok": True, "job_id": job_id, "status": job["status"], "total": job["total_items"],
+        "queued": job.get("queued", 0), "sending": job.get("sending", 0),
+        "sent": job.get("sent_count", 0), "failed": job.get("failed_count", 0),
+        "items": [{"app_id": i["application_id"], "company": i.get("company_name", ""),
+                   "email": i.get("email", ""), "status": i["status"],
+                   "error": i.get("error_message", "")} for i in job.get("items", [])],
     })
 
 
 @app.get("/api/applications")
 def api_applications():
-    """Paginated applications list for frontend refresh."""
-    status = request.args.get("status", "").strip() or None
-    search = request.args.get("search", "").strip() or None
-    # type=int on Werkzeug's MultiDict.get falls back to the default instead
-    # of raising when the value doesn't parse (e.g. ?page=abc) — a plain
-    # int() call here would 500 on any non-numeric query param.
+    status = request.args.get("status", "").strip()[:40] or None
+    search = request.args.get("search", "").strip()[:120] or None
     page = max(1, request.args.get("page", 1, type=int) or 1)
-    limit = request.args.get("limit", 50, type=int) or 50
-    limit = max(1, min(limit, 200))  # hard cap
-
-    rows, total = db.get_applications_paginated(
-        status=status, search=search, page=page, limit=limit
-    )
-    for a in rows:
-        a["status_label"] = STATUS_LABELS.get(a["status"], a["status"])
-
-    return jsonify({
-        "applications": rows,
-        "total": total,
-        "page": page,
-        "limit": limit,
-        "pages": (total + limit - 1) // limit,
-    })
+    limit = max(1, min(request.args.get("limit", 50, type=int) or 50, 200))
+    rows, total = data().get_applications_paginated(status=status, search=search, page=page, limit=limit)
+    fields = ("id", "company_name", "email", "website", "status", "subject", "updated_at",
+              "sent_at", "favorite", "language")
+    return jsonify({"applications": [{**{k: r.get(k) for k in fields},
+                                      "status_label": STATUS_LABELS.get(r["status"], r["status"])}
+                                     for r in rows],
+                    "total": total, "page": page, "limit": limit,
+                    "pages": (total + limit - 1) // limit})
 
 
 @app.post("/api/update-draft")
 def api_update_draft():
-    """Update subject/body for an application (with edit protection)."""
     payload = request.get_json(silent=True) or {}
-    app_id = payload.get("app_id")
-    subject = (payload.get("subject") or "").strip()
-    body = (payload.get("body") or "").strip()
-
-    if not app_id or not subject or not body:
-        return jsonify({"ok": False, "message": "app_id, subject, and body required."})
+    subject = (payload.get("subject") or "").strip()[:500]
+    body = (payload.get("body") or "").strip()[:20000]
     try:
-        app_id = int(app_id)
+        app_id = int(payload.get("app_id"))
     except (TypeError, ValueError):
         return jsonify({"ok": False, "message": "Invalid app_id."}), 400
-
-    app = db.get_application_by_id(app_id)
-    if not app:
-        return jsonify({"ok": False, "message": "Application not found."})
-
-    if app["status"] not in EDITABLE_STATUSES:
-        return jsonify({"ok": False,
-                        "message": f"Cannot edit — status is '{app['status']}'."})
-
-    db.update_application(app_id, subject=subject, body=body,
-                          status="ready", error_message=None)
-    db.log_event(app_id, "write", "Email edited from dashboard.")
-
-    import cache_store
-    cache_store.save_draft(app["email"], {"subject": subject, "body": body})
-
-    # The new status matters to the caller: saving an edit on a failed draft
-    # moves it back to "ready", which changes the status pill and whether the
-    # Send button belongs on the page.
+    if not subject or not body:
+        return jsonify({"ok": False, "message": "Subject and body are required."})
+    d = data()
+    application = d.get_application_by_id(app_id)
+    if not application:
+        return jsonify({"ok": False, "message": "Application not found."}), 404
+    if application["status"] not in EDITABLE_STATUSES:
+        return jsonify({"ok": False, "message": f"Cannot edit — status is '{application['status']}'."})
+    d.update_application(app_id, subject=subject, body=body, status="ready", error_message=None)
+    d.log_event(app_id, "write", "Email edited from dashboard.")
+    cache_store.save_draft(g.user["id"], application["email"],
+                           {"subject": subject, "body": body, "language": application.get("language") or "en"})
     return jsonify({"ok": True, "message": "Draft saved.", "status": "ready",
-                    "previous_status": app["status"]})
+                    "previous_status": application["status"]})
 
 
-def _warm_caches():
-    """Pay the one-off costs (streaming the companies spreadsheet, checking
-    the Google token) in the background at startup, so the first page you
-    open isn't the slow one."""
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+@app.get("/settings")
+def settings_page():
+    return render_template("settings.html", setup=_setup_state(), pool=_pool_rows(),
+                           oauth_redirect_uri=oauth_redirect_uri(),
+                           bounce_check=_bounce_check_state(), providers=PROVIDERS,
+                           sessions=accounts.count_sessions(g.user["id"]))
+
+
+def _digits(name: str, minimum: int, maximum: int) -> str | None:
+    raw = (request.form.get(name, "") or "").strip()
+    if raw.isdigit() and minimum <= int(raw) <= maximum:
+        return raw
+    return None
+
+
+@app.post("/settings")
+def save_settings():
+    import safe_http
+    cfg = g.cfg
+    section = request.form.get("section", "")
+    updates = {}
+
+    if section == "ai":
+        provider = (request.form.get("ai_provider") or DEFAULT_PROVIDER).strip().lower()
+        if provider not in PROVIDERS:
+            provider = DEFAULT_PROVIDER
+        preset = PROVIDERS[provider]
+        updates["AI_PROVIDER"] = provider
+        typed_base = (request.form.get("ai_base_url") or "").strip().rstrip("/")
+        if typed_base and typed_base != preset["base_url"]:
+            try:
+                safe_http.check_url(typed_base)
+                if config.is_production() and not typed_base.startswith("https://"):
+                    raise safe_http.BlockedURL("Use an https:// address.")
+            except (safe_http.BlockedURL, Exception) as exc:
+                return security.flash_and_back(f"That API address can't be used: {exc}", "error", "settings_page")
+            updates[f"{provider.upper()}_BASE_URL"] = typed_base
+        elif typed_base == preset["base_url"]:
+            updates[f"{provider.upper()}_BASE_URL"] = ""
+        updates["AI_MODEL"] = (request.form.get("ai_model") or "").strip()[:120] or preset["default_model"]
+        updates["AI_FALLBACK_MODELS"] = ",".join(
+            m.strip()[:120] for m in (request.form.get("ai_fallbacks") or "").split(",") if m.strip())[:1000]
+        updates["AI_TRANSLATION_MODEL"] = (request.form.get("ai_translation_model") or "").strip()[:120]
+        typed_key = (request.form.get("ai_api_key") or "").strip()
+        if typed_key:
+            if len(typed_key) > 500:
+                return security.flash_and_back("That API key is too long.", "error", "settings_page")
+            cfg.set_secret(preset["key_env"], typed_key)
+        if request.form.get("remove_key") == "on":
+            cfg.delete_secret(preset["key_env"])
+        anchor = "#s-ai"
+
+    elif section == "sending":
+        limits = {"MIN_DELAY_SECONDS": ("min_delay", 0, 3600), "MAX_DELAY_SECONDS": ("max_delay", 0, 7200),
+                  "MAX_EMAILS_PER_DAY": ("max_per_day", 1, 500), "BOUNCE_CHECK_MINUTES": ("bounce_minutes", 0, 1440)}
+        for key, (form_name, lo, hi) in limits.items():
+            value = _digits(form_name, lo, hi)
+            if value is not None:
+                updates[key] = value
+        anchor = "#s-sending"
+
+    elif section == "advanced":
+        limits = {"RESEARCH_WORKERS": ("research_workers", 1, 16), "WRITER_WORKERS": ("writer_workers", 1, 16),
+                  "AI_MAX_RPM": ("ai_max_rpm", 1, 5000)}
+        for key, (form_name, lo, hi) in limits.items():
+            value = _digits(form_name, lo, hi)
+            if value is not None:
+                updates[key] = value
+        anchor = "#s-advanced"
+
+    elif section == "details":
+        updates["YOUR_NAME"] = (request.form.get("your_name") or "").strip()[:120]
+        updates["YOUR_TARGET_ROLE"] = (request.form.get("target_role") or "").strip()[:120]
+        anchor = "#s-details"
+
+    elif section == "mail":
+        method = request.form.get("mail_method", "")
+        if method not in ("oauth", "app_password", "smtp"):
+            return security.flash_and_back("Choose how to send.", "error", "settings_page")
+        updates["MAIL_METHOD"] = method
+        if method in ("app_password", "smtp"):
+            address = accounts.normalize_email(request.form.get("gmail_address", ""))
+            if address and not accounts.valid_email(address):
+                return security.flash_and_back("Enter a valid email address.", "error", "settings_page")
+            updates["GMAIL_ADDRESS"] = address
+        if method == "smtp":
+            host = (request.form.get("smtp_host") or "").strip().lower()[:253]
+            port = _digits("smtp_port", 1, 65535) or "465"
+            imap = (request.form.get("imap_host") or "").strip().lower()[:253]
+            try:
+                safe_http.check_host(host, int(port))
+                if imap:
+                    safe_http.check_host(imap, 993)
+            except safe_http.BlockedURL as exc:
+                return security.flash_and_back(str(exc), "error", "settings_page")
+            updates.update({"SMTP_HOST": host, "SMTP_PORT": port, "IMAP_HOST": imap,
+                            "SMTP_SECURITY": "starttls" if request.form.get("smtp_security") == "starttls" else "ssl",
+                            "SMTP_USERNAME": (request.form.get("smtp_username") or "").strip()[:320]})
+        password = (request.form.get("gmail_app_password") or "").strip()
+        if password:
+            cfg.set_secret("GMAIL_APP_PASSWORD", password[:500])
+        anchor = "#s-gmail"
+    else:
+        abort(400)
+
+    cfg.set_many(updates)
+    flash("Settings saved.", "success")
+    return redirect(url_for("settings_page") + anchor)
+
+
+@app.post("/settings/cv")
+def upload_cv():
+    upload = request.files.get("cv_file")
+    if not upload or not upload.filename:
+        return security.flash_and_back("Choose your CV file first.", "error", "settings_page")
     try:
-        _setup_state()
-    except Exception:  # a cold cache is only slower, never wrong
+        info = g.cfg.save_cv(upload.filename, upload.read(config.MAX_CV_BYTES + 1))
+    except ValueError as exc:
+        return security.flash_and_back(str(exc), "error", "settings_page")
+    # Keep the profile's CV text in step, so claims are checked against the
+    # CV that is actually attached.
+    try:
+        stored = g.cfg.cv()
+        text = profiles.extract_cv_text(stored["filename"], stored["content"])
+        if profiles.load(g.user["id"]):
+            profiles.save(g.user["id"], cv_text=text)
+    except profiles.ProfileError:
         pass
+    flash(f"CV saved as {info['filename']} — it's attached to every application.", "success")
+    return redirect(url_for("settings_page") + "#s-files")
+
+
+@app.get("/settings/cv")
+def download_cv():
+    cv = g.cfg.cv()
+    if not cv:
+        abort(404)
+    return Response(cv["content"], mimetype=cv["content_type"], headers={
+        "Content-Disposition": f"attachment; filename=\"{cv['filename']}\"",
+        "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/companies/preview")
+def companies_preview():
+    upload = request.files.get("companies_file")
+    if not upload or not upload.filename:
+        return jsonify({"ok": False, "message": "Choose a file first."}), 400
+    try:
+        report = company_import.parse(upload.filename, upload.read(config.MAX_COMPANIES_UPLOAD_BYTES + 1),
+                                      data().company_list_emails())
+    except company_import.ImportFailure as exc:
+        return jsonify({"ok": False, "message": str(exc)})
+    return jsonify({"ok": True, **{k: report[k] for k in ("total", "invalid", "duplicates",
+                                                          "already_listed", "errors", "columns")},
+                    "usable": len(report["rows"]), "new": len(report["new_rows"]),
+                    "sample": report["new_rows"][:5]})
+
+
+@app.post("/api/companies/import")
+def companies_import():
+    upload = request.files.get("companies_file")
+    mode = request.form.get("mode", "append")
+    if not upload or not upload.filename:
+        return jsonify({"ok": False, "message": "Choose a file first."}), 400
+    d = data()
+    try:
+        report = company_import.parse(upload.filename, upload.read(config.MAX_COMPANIES_UPLOAD_BYTES + 1),
+                                      set() if mode == "replace" else d.company_list_emails())
+    except company_import.ImportFailure as exc:
+        return jsonify({"ok": False, "message": str(exc)})
+    if not report["rows"]:
+        return jsonify({"ok": False, "message": "No usable rows in that file."})
+    if mode == "replace":
+        d.clear_company_list()
+    room = config.MAX_COMPANIES_PER_USER - d.company_list_count()
+    if room <= 0:
+        return jsonify({"ok": False, "message": f"Your list is full ({config.MAX_COMPANIES_PER_USER} companies)."})
+    added = d.add_companies(report["new_rows"][:room])
+    accounts.audit("companies_imported", actor=g.user["id"], detail={"added": added, "mode": mode})
+    return jsonify({"ok": True, "added": added, "total": d.company_list_count(),
+                    "message": f"{added} compan{'y' if added == 1 else 'ies'} added — "
+                               f"{d.company_list_count()} in your list."})
+
+
+@app.post("/api/companies/clear")
+def companies_clear():
+    removed = data().clear_company_list()
+    return jsonify({"ok": True, "message": f"List cleared ({removed} rows). Drafts and sent history are kept."})
+
+
+@app.get("/companies-template.csv")
+def companies_template():
+    return Response(company_import.TEMPLATE_CSV, mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=companies-template.csv"})
+
+
+def _check_mail_login() -> tuple[bool, str]:
+    import mail_service
+    import mailer
+    import safe_http
+    payload = request.get_json(silent=True) or {}
+    cfg = g.cfg
+    method = payload.get("mail_method") or mail_service.sending_method(cfg)
+    if method == "oauth":
+        return False, "Google sign-in is checked by signing in — use the Google button."
+    address = (payload.get("gmail_address") or "").strip() or cfg.get("GMAIL_ADDRESS")
+    password = (payload.get("gmail_app_password") or "").strip() or cfg.secret("GMAIL_APP_PASSWORD")
+    if not address or not password:
+        return False, "Enter the address and the password first."
+    if method == "smtp":
+        host = (payload.get("smtp_host") or cfg.get("SMTP_HOST")).strip()
+        port = int(payload.get("smtp_port") or cfg.get("SMTP_PORT") or 465)
+        security_mode = payload.get("smtp_security") or cfg.get("SMTP_SECURITY", "ssl")
+        username = (payload.get("smtp_username") or cfg.get("SMTP_USERNAME") or address).strip()
+    else:
+        host, port, security_mode = mailer.GMAIL_SMTP
+        username, password = address, password.replace(" ", "")
+    try:
+        safe_http.check_host(host, port)
+        mailer.check_smtp_login(host=host, port=port, security=security_mode,
+                                username=username, password=password)
+    except (safe_http.BlockedURL, mailer.PermanentSendError, mailer.TransientSendError) as exc:
+        hint = (" For Gmail you need an App Password (myaccount.google.com/apppasswords, with "
+                "2-Step Verification on), not your normal password." if method == "app_password" else "")
+        return False, f"{exc}{hint}"
+    return True, "Login works — nothing was sent."
+
+
+@app.post("/api/validate-gmail")
+def api_validate_gmail():
+    if security.rate_limited(f"mailcheck:{g.user['id']}", 10, 600):
+        return jsonify({"ok": False, "message": "Too many checks — wait a few minutes."}), 429
+    ok, message = _check_mail_login()
+    return jsonify({"ok": ok, "message": message})
+
+
+# ---------------------------------------------------------------------------
+# Google sign-in (the platform's OAuth client, the user's own token)
+# ---------------------------------------------------------------------------
+
+LOCAL_OAUTH_HOST = "127.0.0.1"
+
+
+def oauth_redirect_uri() -> str:
+    base = config.public_base_url()
+    if base:
+        return f"{base}{url_for('oauth_callback')}"
+    # Local: always 127.0.0.1 — Google compares redirect URIs character for
+    # character, so opening the app as "localhost" would otherwise fail.
+    port = request.host.rsplit(":", 1)[1] if ":" in request.host else "80"
+    return f"http://{LOCAL_OAUTH_HOST}:{port}{url_for('oauth_callback')}"
+
+
+def _to_mail_settings():
+    return redirect(url_for("settings_page") + "#s-gmail")
+
+
+def _oauth_flow(code_verifier: str | None = None):
+    import google_auth_helper
+    from google_auth_oauthlib.flow import Flow
+    client = google_auth_helper.client_config()
+    if not client:
+        return None
+    return Flow.from_client_config(client, scopes=google_auth_helper.requested_scopes(),
+                                   redirect_uri=oauth_redirect_uri(), code_verifier=code_verifier)
+
+
+@app.route("/oauth/start")
+def oauth_start():
+    import secrets as _secrets
+    if not config.public_base_url() and request.host.split(":")[0] != LOCAL_OAUTH_HOST:
+        return redirect(oauth_redirect_uri().replace("/oauth/callback", url_for("oauth_start")))
+    flow = _oauth_flow()
+    if not flow:
+        flash("Google sign-in isn't set up on this platform yet — ask the administrator, or use "
+              "an app password.", "error")
+        return _to_mail_settings()
+    state = _secrets.token_urlsafe(24)
+    session["oauth_state"] = state
+    session["oauth_uid"] = g.user["id"]
+    params = {"access_type": "offline", "prompt": "consent", "state": state,
+              "include_granted_scopes": "false"}
+    hint = g.cfg.get("GMAIL_ADDRESS") or g.user["email"]
+    if "@" in hint:
+        params["login_hint"] = hint
+    auth_url, _ = flow.authorization_url(**params)
+    session["oauth_code_verifier"] = flow.code_verifier
+    return redirect(auth_url)
+
+
+@app.route("/oauth/callback")
+def oauth_callback():
+    import google_auth_helper
+    error = request.args.get("error")
+    if error:
+        hint = (" — while the platform's Google app is in Testing mode, only its listed test users "
+                "can sign in." if error == "access_denied" else "")
+        flash(f"Google sign-in was cancelled or denied: {error[:60]}{hint}", "error")
+        return _to_mail_settings()
+    state = request.args.get("state", "")
+    expected = session.pop("oauth_state", None)
+    owner = session.pop("oauth_uid", None)
+    code_verifier = session.pop("oauth_code_verifier", None)
+    if not state or not expected or state != expected or owner != g.user["id"]:
+        flash("Google sign-in couldn't be verified — please try again.", "error")
+        return _to_mail_settings()
+    try:
+        flow = _oauth_flow(code_verifier=code_verifier)
+        flow.fetch_token(code=request.args.get("code", ""))
+        creds = flow.credentials
+        missing = google_auth_helper.missing_required_scopes(creds)
+        if google_auth_helper.SEND_SCOPE in missing:
+            flash("Google connected, but the “Send email on your behalf” permission was left "
+                  "unticked — connect again and tick it.", "error")
+            return _to_mail_settings()
+        email = google_auth_helper.email_from_id_token(creds)
+        google_auth_helper.save_credentials(g.cfg, creds, email)
+        g.cfg.set_many({"MAIL_METHOD": "oauth", "GMAIL_ADDRESS": email or g.cfg.get("GMAIL_ADDRESS")})
+        accounts.audit("google_connected", actor=g.user["id"])
+        note = (" Bounce detection needs the “Read email” permission — reconnect and tick it."
+                if missing else "")
+        flash(f"✓ Connected as {email or 'your Google account'} — your emails will be sent from it.{note}",
+              "success")
+    except Exception as exc:
+        text = str(exc)
+        if "redirect_uri_mismatch" in text:
+            text = f"redirect URI mismatch — the platform's Google client must list {oauth_redirect_uri()}"
+        flash(f"Connecting Google failed: {text[:200]}", "error")
+    return _to_mail_settings()
+
+
+@app.post("/oauth/disconnect")
+def oauth_disconnect():
+    import google_auth_helper
+    google_auth_helper.revoke_token(g.cfg)
+    if g.cfg.get("MAIL_METHOD") == "oauth":
+        g.cfg.set_many({"MAIL_METHOD": ""})
+    flash("Google account disconnected.", "success")
+    return _to_mail_settings()
+
+
+# ---------------------------------------------------------------------------
+# AI provider tools
+# ---------------------------------------------------------------------------
+
+def _ai_settings_from_request(payload: dict) -> dict:
+    env = g.cfg.ai_env()
+    provider = (payload.get("ai_provider") or env.get("AI_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
+    if provider not in PROVIDERS:
+        provider = DEFAULT_PROVIDER
+    overrides = {"AI_PROVIDER": provider}
+    preset = PROVIDERS[provider]
+    if (payload.get("ai_api_key") or "").strip():
+        overrides[preset["key_env"]] = payload["ai_api_key"].strip()[:500]
+    if (payload.get("ai_base_url") or "").strip():
+        overrides[f"{provider.upper()}_BASE_URL"] = payload["ai_base_url"].strip()[:300]
+    if (payload.get("ai_model") or "").strip():
+        overrides["AI_MODEL"] = payload["ai_model"].strip()[:120]
+    return resolve_ai_settings({**env, **overrides})
+
+
+@app.post("/api/models")
+def api_models():
+    if security.rate_limited(f"models:{g.user['id']}", 20, 600):
+        return jsonify({"ok": False, "message": "Too many requests — wait a few minutes.", "models": []}), 429
+    ai = _ai_settings_from_request(request.get_json(silent=True) or {})
+    models, error = list_provider_models(ai["base_url"], ai["api_key"])
+    if error:
+        return jsonify({"ok": False, "message": error, "models": []})
+    return jsonify({"ok": True, "models": models[:500],
+                    "message": f"{len(models)} model(s) available on {ai['label']}."})
+
+
+@app.post("/api/validate-ai")
+def api_validate_ai():
+    if security.rate_limited(f"validate-ai:{g.user['id']}", 20, 600):
+        return jsonify({"ok": False, "message": "Too many tests — wait a few minutes."}), 429
+    ai = _ai_settings_from_request(request.get_json(silent=True) or {})
+    portal = PROVIDERS[ai["provider"]]["key_portal"]
+    if not ai["api_key"]:
+        return jsonify({"ok": False, "message": f"Paste your {ai['label']} API key first"
+                                                + (f" (get one at {portal})." if portal else ".")})
+    if not ai["base_url"]:
+        return jsonify({"ok": False, "message": "Set the provider's base URL first."})
+    if not ai["model"]:
+        return jsonify({"ok": False, "message": "Pick a model first (use Load models)."})
+    from ai_client import RateLimiter
+    client = CompatibleAIClient(ai["api_key"], ai["base_url"], rate_limiter=RateLimiter(60))
+    try:
+        client.messages.create(model=ai["model"], max_tokens=200, system="Reply with one word.",
+                               messages=[{"role": "user", "content": "Say ok"}],
+                               max_attempts=1, temperature=0.0)
+    except RuntimeError as exc:
+        text = str(exc)
+        if "401" in text or "403" in text:
+            return jsonify({"ok": False, "message": f"{ai['label']} rejected the key (401/403)."})
+        if "404" in text:
+            return jsonify({"ok": False, "message": f"Model '{ai['model']}' not found on {ai['label']} (404)."})
+        return jsonify({"ok": False, "message": f"{ai['label']} error: {text[:220]}"})
+    return jsonify({"ok": True, "message": f"Works — {ai['label']} answered with model '{ai['model']}'."})
+
+
+def _pool_rows() -> list:
+    from model_router import build_router
+    rows = []
+    for row in build_router(g.cfg.ai_env()).snapshot():
+        row["roles"] = ", ".join(f"{task} (tier {tier})" if tier else f"{task} (preferred)"
+                                 for task, tier in sorted(row["tiers"].items()))
+        rows.append(row)
+    return rows
+
+
+def _probe_deployment(d) -> dict:
+    import time as _time
+    from ai_client import AIProviderError
+    started = _time.perf_counter()
+    try:
+        d.client.messages.create(model=d.model, max_tokens=200, system="Reply with one word.",
+                                 messages=[{"role": "user", "content": "Say ok"}], max_attempts=1,
+                                 temperature=0.0, reasoning_effort="low" if d.reasoning else None)
+        return {"state": "ok", "detail": f"Answered in {(_time.perf_counter() - started) * 1000:.0f} ms."}
+    except AIProviderError as error:
+        headers = error.headers or {}
+        if error.kind == "bad_response":
+            return {"state": "ok", "detail": "Reachable (the probe's short reply came back empty)."}
+        if str(headers.get("x-ratelimit-limit-req-minute")) == "0":
+            return {"state": "inactive", "detail": "The account's plan allows 0 requests a minute."}
+        if error.kind == "auth" and error.status == 401:
+            return {"state": "bad_key", "detail": "The API key was rejected."}
+        if error.kind == "auth":
+            return {"state": "unavailable", "detail": "Not available on this key's plan."}
+        if error.kind == "not_found":
+            return {"state": "unavailable", "detail": "This provider doesn't serve that model."}
+        if error.kind == "rate_limit":
+            return {"state": "busy", "detail": "Rate-limited right now."}
+        return {"state": "error", "detail": str(error)[:160]}
+    except Exception as error:
+        return {"state": "error", "detail": str(error)[:160]}
+
+
+@app.post("/api/ai-health")
+def api_ai_health():
+    from concurrent.futures import ThreadPoolExecutor
+    from model_router import build_router
+    if security.rate_limited(f"ai-health:{g.user['id']}", 5, 600):
+        return jsonify({"ok": False, "rows": [], "message": "Checked very recently — wait a few minutes."}), 429
+    router = build_router(g.cfg.ai_env())
+    if not router.deployments:
+        return jsonify({"ok": False, "rows": [], "message": "No AI provider has a key yet. Add one above."})
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(_probe_deployment, router.deployments))
+    rows = [{"name": d.name, "tiers": d.tiers, **result} for d, result in zip(router.deployments, results)]
+    gaps = [task for task in ("research", "translation")
+            if not [r for r in rows if task in r["tiers"] and r["state"] in ("ok", "busy")]]
+    message = ("Every task has at least one working model." if not gaps else
+               f"No working model for: {', '.join(gaps)}. Fix a key or plan above.")
+    return jsonify({"ok": not gaps, "rows": rows, "message": message})
+
+
+def main():
+    database.init_schema()
+    host = config.get("HOST", "127.0.0.1")
+    port = config.int_setting("PORT", 5050)
+    if config.embedded_worker():
+        import worker
+        worker.ensure_embedded()
+    print(f"Dashboard running at http://{host}:{port}")
+    try:
+        from waitress import serve
+        serve(app, host=host, port=port, threads=16)
+    except ImportError:
+        app.run(host=host, port=port, debug=False, threaded=True)
 
 
 if __name__ == "__main__":
-    db.init_db()
-    sender_worker.ensure_running()
-    import threading
-    threading.Thread(target=_warm_caches, daemon=True, name="warm-caches").start()
-    print("Dashboard running at http://127.0.0.1:5050")
-    print("Background sender worker started.")
-    app.run(host="127.0.0.1", port=5050, debug=False)
+    main()

@@ -118,10 +118,12 @@ def resolve_greeting_name(contact_name, company_name: str) -> str | None:
     return first_token[0].upper() + first_token[1:] if first_token else None
 
 
-def build_greeting(contact_name, company_name: str) -> str:
+def build_greeting(contact_name, company_name: str, lang: str = "en") -> str:
     """Returns the exact opening line to use, e.g. 'Dear Charly,' or
-    'Dear Rtone Team,'."""
+    'Dear Rtone Team,' — or, in French, 'Bonjour Charly,' / 'Madame, Monsieur,'."""
     first_name = resolve_greeting_name(contact_name, company_name)
+    if lang == "fr":
+        return f"Bonjour {first_name}," if first_name else "Madame, Monsieur,"
     if first_name:
         return f"Dear {first_name},"
     return f"Dear {company_name} Team,"

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Audit log · Admin{% endblock %}
+{% block content %}
+{% set admin_title = "Audit log" %}
+{% set admin_subtitle = "Sign-ins, account changes and admin actions — newest first" %}
+{% include "admin/_nav.html" %}
+<section class="table-section">
+  <div class="table-scroll">
+    <table class="app-table audit-table">
+      <thead><tr><th>When (UTC)</th><th>Action</th><th>By</th><th>On</th><th>Details</th><th>IP</th></tr></thead>
+      <tbody>
+        {% for e in entries %}
+        <tr class="{% if e.action.endswith('failed') %}row--problem{% endif %}">
+          <td class="cell-mono">{{ e.at[:19].replace("T", " ") }}</td>
+          <td><span class="chip">{{ e.action }}</span></td>
+          <td class="cell-mono">{{ emails.get(e.actor_user_id, e.actor_user_id or "—") }}</td>
+          <td class="cell-mono">{{ emails.get(e.target_user_id, e.target_user_id or "—") }}</td>
+          <td class="cell-mono audit-detail">{{ e.detail or "" }}</td>
+          <td class="cell-mono">{{ e.ip or "" }}</td>
+        </tr>
+        {% endfor %}
+        {% if not entries %}<tr><td colspan="6" class="cell-empty">Nothing yet.</td></tr>{% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

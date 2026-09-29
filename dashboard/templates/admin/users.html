@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Users · Admin{% endblock %}
+{% block content %}
+{% set admin_title = "Users" %}
+{% set admin_subtitle = all_count ~ " account(s) · sign-up is " ~ {"approval": "open with approval", "open": "open to anyone", "closed": "closed (invite only)"}[signup_mode] %}
+{% include "admin/_nav.html" %}
+
+{% if pending_count %}
+<a class="notice notice--warn" href="{{ url_for('admin.users', status='pending') }}">
+  <strong>{{ pending_count }}</strong> account{{ "s" if pending_count != 1 }} waiting for your approval →
+</a>
+{% endif %}
+
+<div class="admin-grid">
+  <section class="panel">
+    <div class="panel-heading-row">
+      <h2>Accounts</h2>
+      <nav class="status-tabs status-tabs--compact">
+        {% for value, label in [("", "All"), ("pending", "Pending"), ("active", "Active"), ("suspended", "Suspended")] %}
+        <a class="status-tab{% if status_filter == value %} status-tab--active{% endif %}" href="{{ url_for('admin.users', status=value) }}">{{ label }}</a>
+        {% endfor %}
+      </nav>
+    </div>
+    <div class="table-scroll">
+      <table class="app-table admin-table">
+        <thead>
+          <tr><th>Account</th><th>Role</th><th>Status</th><th>Activity</th><th>Last sign-in</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          {% set use = usage.get(u.id, {}) %}
+          <tr>
+            <td>
+              <div class="cell-company">{{ u.full_name or "—" }}{% if u.id == current_user.id %} <span class="chip">you</span>{% endif %}</div>
+              <div class="cell-mono">{{ u.email }}</div>
+            </td>
+            <td><span class="chip{% if u.role == 'admin' %} chip--accent{% endif %}">{{ u.role }}</span></td>
+            <td>
+              <span class="status-pill status-{{ {'active': 'sent', 'pending': 'retry_wait', 'suspended': 'failed'}[u.status] }}">{{ u.status }}</span>
+              {% if u.locked_until and u.locked_until > now_iso %}<div class="row-error">locked after failed sign-ins</div>{% endif %}
+            </td>
+            <td class="cell-mono">
+              {{ use.get('listed', 0) }} listed · {{ use.get('ready', 0) }} ready · {{ use.get('sent', 0) }} sent
+              {% if use.get('bounced') %}<span class="text-danger">· {{ use.bounced }} bounced</span>{% endif %}
+              {% if use.get('running') %}<div class="field-hint">preparing now</div>{% endif %}
+            </td>
+            <td class="cell-mono">{{ u.last_login_at[:16].replace("T", " ") if u.last_login_at else "never" }}<div class="field-hint">{{ sessions.get(u.id, 0) }} active session(s)</div></td>
+            <td class="row-actions">
+              {% if u.status == 'pending' %}
+              <form method="post" action="{{ url_for('admin.approve', user_id=u.id, status=status_filter) }}" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="button button--primary button--sm">Approve</button>
+              </form>
+              {% endif %}
+              <details class="action-menu">
+                <summary class="button button--ghost button--sm">Manage</summary>
+                <div class="action-menu__panel">
+                  {% if u.status == 'active' and u.id != current_user.id %}
+                  <form method="post" action="{{ url_for('admin.suspend', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Suspend account</button></form>
+                  {% elif u.status == 'suspended' %}
+                  <form method="post" action="{{ url_for('admin.activate', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Reactivate account</button></form>
+                  {% endif %}
+                  {% if u.id != current_user.id %}
+                  <form method="post" action="{{ url_for('admin.change_role', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="role" value="{{ 'user' if u.role == 'admin' else 'admin' }}"><button>{{ "Make regular user" if u.role == 'admin' else "Make administrator" }}</button></form>
+                  <form method="post" action="{{ url_for('admin.reset_password', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Reset password…</button></form>
+                  {% endif %}
+                  {% if u.failed_logins %}
+                  <form method="post" action="{{ url_for('admin.unlock', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Clear failed sign-ins</button></form>
+                  {% endif %}
+                  <form method="post" action="{{ url_for('admin.sign_out', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Sign out everywhere</button></form>
+                  {% if u.id != current_user.id %}
+                  <form method="post" action="{{ url_for('admin.delete', user_id=u.id) }}" class="danger-zone">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <label class="field-hint" for="del-{{ u.id }}">Delete permanently — type <strong>{{ u.email }}</strong>:</label>
+                    <input id="del-{{ u.id }}" name="confirm_email" type="text" autocomplete="off" placeholder="{{ u.email }}">
+                    <button class="text-danger">Delete account and all its data</button>
+                  </form>
+                  {% endif %}
+                </div>
+              </details>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if not users %}<tr><td colspan="6" class="cell-empty">No accounts here.</td></tr>{% endif %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Add a user</h2>
+    <p class="section-copy">They get a temporary password (shown once) and must choose their own at first sign-in.</p>
+    <form method="post" action="{{ url_for('admin.create_user') }}" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-group"><label for="new-name">Full name</label><input id="new-name" name="full_name" type="text" maxlength="120" required></div>
+      <div class="form-group"><label for="new-email">Email</label><input id="new-email" name="email" type="email" maxlength="320" required></div>
+      <div class="form-group"><label for="new-role">Role</label>
+        <select id="new-role" name="role"><option value="user">User</option><option value="admin">Administrator</option></select>
+      </div>
+      <button class="button button--primary" type="submit">Create account</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

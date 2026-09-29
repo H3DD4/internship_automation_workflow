@@ -16,60 +16,51 @@
       <input type="checkbox" id="auto-refresh-toggle" checked>
       live updates
     </label>
-    <a class="button button--ghost button--sm settings-button{% if not setup.prep_ready %} settings-button--attention{% endif %}"
-       href="{{ url_for('settings_page') }}" title="Keys, files, Gmail, pacing">
-      <svg class="settings-button__icon" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="3.2"/>
-        <path d="M12 2.5v2.2M12 19.3v2.2M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/>
-      </svg>
-      Settings
-    </a>
   </div>
 </header>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-{% if messages %}
-<div class="flash-stack" id="flash-stack">
-  {% for category, message in messages %}<div class="flash flash--{{ category }}">{{ message }}</div>{% endfor %}
-</div>
-{% endif %}
-{% endwith %}
+{% include "_flashes.html" %}
 
-{# ── Guided setup: shown until the workspace can actually do something ── #}
+{# ── Guided setup: shown until the workspace can send ── #}
 {% if not setup.send_ready %}
 <section class="checklist{% if setup.prep_ready %} checklist--partial{% endif %}">
   <span class="eyebrow">Getting started</span>
-  <h2>{% if setup.prep_ready %}Almost there — you can prepare drafts now{% else %}Three things to set up{% endif %}</h2>
-  <p class="section-copy">{% if setup.prep_ready %}Preparation works. Connect Gmail and add your CV when you're ready to actually send.{% else %}Open <a class="detail-link" href="{{ url_for('settings_page') }}">Settings</a> to fill these in.{% endif %}</p>
-  <ul class="checklist-items">
+  <h2>{% if setup.prep_ready %}Almost there — you can prepare drafts now{% else %}Four steps to your first applications{% endif %}</h2>
+  <p class="section-copy">{% if setup.prep_ready %}Preparation works. Connect your email and add your CV when you're ready to send.{% else %}Each step takes a minute or two. Nothing is ever sent without you reviewing it first.{% endif %}</p>
+  <ol class="checklist-items">
     <li class="checklist-item checklist-item--{{ 'done' if setup.has_api_key else 'todo' }}">
       <span class="checklist-mark">{{ "✓" if setup.has_api_key else "1" }}</span>
-      <span class="checklist-text">AI key for research + writing
-        {% if not setup.has_api_key %}<span class="checklist-note">Pick a provider (Groq, OpenCode, OpenRouter…) and paste its key in Settings.</span>{% endif %}
-      </span>
+      <span class="checklist-text"><a href="{{ url_for('settings_page') }}#s-ai">Add your AI key</a>
+        <span class="checklist-note">Your own key (Groq has a free tier) — it researches each company and reads your CV.</span></span>
     </li>
-    <li class="checklist-item checklist-item--{{ 'done' if setup.has_profile_and_files else 'todo' }}">
-      <span class="checklist-mark">{{ "✓" if setup.has_profile_and_files else "2" }}</span>
-      <span class="checklist-text">Your name, target role, and companies file
-        {% if setup.companies_name %}<span class="checklist-note">{{ setup.companies_name }}{% if setup.companies_rows %} — {{ setup.companies_rows }} row(s){% endif %}</span>{% endif %}
-      </span>
+    <li class="checklist-item checklist-item--{{ 'done' if setup.has_profile else 'todo' }}">
+      <span class="checklist-mark">{{ "✓" if setup.has_profile else "2" }}</span>
+      <span class="checklist-text"><a href="{{ url_for('profile.page') }}">Build your profile from your CV</a>
+        <span class="checklist-note">{% if setup.has_profile %}Style: {{ setup.template_name }} · {{ setup.languages | map('upper') | join(' + ') }}{% else %}The AI drafts it from your CV; you check every sentence and pick an email style.{% endif %}</span></span>
+    </li>
+    <li class="checklist-item checklist-item--{{ 'done' if setup.has_companies else 'todo' }}">
+      <span class="checklist-mark">{{ "✓" if setup.has_companies else "3" }}</span>
+      <span class="checklist-text"><a href="{{ url_for('settings_page') }}#s-files">Import your companies list</a>
+        <span class="checklist-note">{% if setup.has_companies %}{{ setup.companies_rows }} companies{% else %}A CSV or Excel file with an email column.{% endif %}</span></span>
     </li>
     <li class="checklist-item checklist-item--{{ 'done' if (setup.has_gmail and setup.cv_name) else 'todo' }}">
-      <span class="checklist-mark">{{ "✓" if (setup.has_gmail and setup.cv_name) else "3" }}</span>
-      <span class="checklist-text">Gmail + CV <span class="checklist-note">Only needed to send — drafting works without them.</span></span>
+      <span class="checklist-mark">{{ "✓" if (setup.has_gmail and setup.cv_name) else "4" }}</span>
+      <span class="checklist-text"><a href="{{ url_for('settings_page') }}#s-gmail">Connect your email and add your CV</a>
+        <span class="checklist-note">Only needed to send — drafting works without them.</span></span>
     </li>
-  </ul>
+  </ol>
 </section>
 {% else %}
 <div class="workspace-bar">
   <div class="workspace-bar__facts">
-    <span class="workspace-bar__fact"><span class="dot" style="background:var(--st-sent)"></span> Workspace ready</span>
-    <span class="workspace-bar__fact">Sending as <strong>{{ setup.oauth_email or setup.gmail_address }}</strong>{% if setup.has_gmail_oauth %} (OAuth){% endif %}</span>
+    <span class="workspace-bar__fact"><span class="dot" style="background:var(--st-sent)"></span> Ready</span>
+    <span class="workspace-bar__fact">Sending as <strong>{{ setup.from_address }}</strong></span>
     <span class="workspace-bar__fact">CV <strong>{{ setup.cv_name }}</strong></span>
-    <span class="workspace-bar__fact">List <strong>{{ setup.companies_name }}</strong></span>
-    <span class="workspace-bar__fact">Model <strong>{{ setup.ai_model }}</strong></span>
+    <span class="workspace-bar__fact">List <strong>{{ setup.companies_rows }}</strong></span>
+    <span class="workspace-bar__fact">Style <strong>{{ setup.template_name }}</strong></span>
+    <span class="workspace-bar__fact">Language <strong>{{ {"auto": "auto (EN/FR per company)", "en": "English", "fr": "French"}[setup.language_mode] }}</strong></span>
   </div>
-  <a class="detail-link" href="{{ url_for('settings_page') }}">Edit settings →</a>
+  <a class="detail-link" href="{{ url_for('settings_page') }}">Settings →</a>
 </div>
 {% endif %}
 
@@ -164,7 +155,7 @@
     <p class="empty-hint"><a href="{{ url_for('index') }}">Clear filters</a> to see everything.</p>
     {% else %}
     <p>No companies yet.</p>
-    <p class="empty-hint">Start the preparation engine below, or run <code>python main.py --limit 10</code>.</p>
+    <p class="empty-hint">{% if not setup.has_companies %}<a href="{{ url_for('settings_page') }}#s-files">Import your companies list</a>, then start preparation below.{% else %}Start preparation below — drafts appear here as they're ready.{% endif %}</p>
     {% endif %}
   </div>
   {% endif %}
@@ -230,6 +221,7 @@
     </details>
   </div>
   <form class="run-form" action="{{ url_for('run_pipeline') }}" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label class="batch-limit-label">Batch size
       <input type="number" name="batch_limit" class="batch-limit-input" min="1" placeholder="All" title="Leave empty to prepare every company that still needs work">
     </label>
@@ -241,8 +233,8 @@
     <button class="button button--danger" id="stop-prep-btn" formaction="{{ url_for('stop_pipeline') }}"
             formmethod="post" type="submit" {% if not run_state.running %}hidden{% endif %}
             {% if run_state.stop_requested %}disabled{% endif %}>{{ "Stopping…" if run_state.stop_requested else "Stop safely" }}</button>
-    <span class="field-hint" id="run-state-note" aria-live="polite">{% if run_state.running and run_state.stop_requested %}Finishing the companies already in progress, then stopping.{% endif %}</span>
-    {% if not setup.prep_ready %}<span class="field-hint">Add an AI key, your profile, and a companies file in <a href="{{ url_for('settings_page') }}">Settings</a> first.</span>{% endif %}
+    <span class="field-hint" id="run-state-note" aria-live="polite">{% if run_state.running and run_state.stop_requested %}Finishing the companies already in progress, then stopping.{% elif run_state.queued %}Queued — starting in a moment.{% endif %}</span>
+    {% if not setup.prep_ready %}<span class="field-hint">Finish steps 1–3 above first.</span>{% endif %}
   </form>
 </section>
 
@@ -251,10 +243,10 @@
     <span class="eyebrow">Background</span>
     <h2>Bounce check</h2>
     <p class="section-copy">Gmail often accepts a send even for a dead mailbox, then reports it later as a bounce email. Those companies turn red as <strong class="text-danger">Not delivered</strong>.
-    {% if bounce_check.auto_minutes %}Your inbox is scanned automatically every {{ bounce_check.auto_minutes }} min for 3 days after each send.{% endif %}</p>
+    {% if bounce_check.available and bounce_check.auto_minutes %}Your inbox is scanned automatically every {{ bounce_check.auto_minutes }} min for 3 days after each send.{% elif not bounce_check.available %}Needs inbox access: sign in with Google with “Read email”, or save an app password in Settings.{% endif %}</p>
   </div>
   <div class="run-form">
-    <button class="button button--primary" type="button" id="check-bounces-btn" {% if not setup.has_gmail %}disabled{% endif %}>Check bounces now</button>
+    <button class="button button--primary" type="button" id="check-bounces-btn" {% if not bounce_check.available %}disabled title="Needs Google sign-in with inbox access, or a saved app password"{% endif %}>Check bounces now</button>
     <span class="field-hint" id="bounce-last-check" data-last-at="{{ bounce_check.last_at or '' }}">
       {% if bounce_check.last_error %}<span class="text-danger">Last check failed: {{ bounce_check.last_error }}</span>
       {% elif not bounce_check.last_at %}Not checked yet.{% endif %}

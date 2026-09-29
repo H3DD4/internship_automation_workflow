@@ -19,6 +19,20 @@
     <button class="button button--ghost fav-toggle{% if application.favorite %} fav-toggle--on{% endif %}"
             id="favorite-detail-btn" type="button" data-app-id="{{ application.id }}"
             aria-pressed="{{ 'true' if application.favorite else 'false' }}">{{ "★ Favorite" if application.favorite else "☆ Add to favorites" }}</button>
+    {% if application.subject and languages_available | length > 1 %}
+    {# EN | FR: rewrites this company's email in the other language — instant,
+       from your approved wording, no AI. #}
+    <div class="lang-switch" role="group" aria-label="Email language" id="lang-switch"
+         data-app-id="{{ application.id }}" data-editable="{{ 'yes' if application.editable or application.status in ('researched', 'pending') else '' }}">
+      {% for lang in languages_available %}
+      <button type="button" class="lang-switch__option{% if application.language == lang %} lang-switch__option--active{% endif %}"
+              data-lang="{{ lang }}" aria-pressed="{{ 'true' if application.language == lang else 'false' }}"
+              title="Write this email in {{ language_labels[lang] }}">{{ lang | upper }}</button>
+      {% endfor %}
+    </div>
+    {% elif application.language %}
+    <span class="lang-chip lang-chip--{{ application.language }}" title="Written in {{ language_labels[application.language] }}">{{ application.language | upper }}</span>
+    {% endif %}
     <span class="status-pill status-{{ application.status }} status-pill--lg">{{ application.status_label }}</span>
     {% if application.sendable %}
     <button class="button button--primary send-detail-btn" id="send-detail-btn"
@@ -26,7 +40,7 @@
     {% endif %}
     {% if application.editable or application.status in ('researched', 'pending') %}
     <button class="button button--ghost" id="regenerate-btn" data-app-id="{{ application.id }}" type="button"
-            title="Rebuild this draft from the saved research and your current specializations.json — instant, no AI">Rebuild draft</button>
+            title="Rebuild this draft from the saved research and your current profile and style — instant, no AI">Rebuild draft</button>
     {% endif %}
     {% if application.status == 'skipped' %}
     <button class="button button--ghost" id="unskip-detail-btn" data-app-id="{{ application.id }}" type="button">Un-skip</button>
@@ -38,13 +52,7 @@
 
 <span class="field-hint" id="detail-action-result" aria-live="polite"></span>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-{% if messages %}
-<div class="flash-stack">
-  {% for category, message in messages %}<div class="flash flash--{{ category }}">{{ message }}</div>{% endfor %}
-</div>
-{% endif %}
-{% endwith %}
+{% include "_flashes.html" %}
 
 {% if application.error_message %}
 <div class="error-box">
@@ -86,7 +94,7 @@
           {% if cv_info %}
           <div class="attachment-chip">📎 {{ cv_info.name }} <span class="field-hint">{{ cv_info.size_kb }} KB</span></div>
           {% else %}
-          <div class="attachment-chip attachment-chip--missing">⚠ No CV attached — add one in the workspace setup before sending.</div>
+          <div class="attachment-chip attachment-chip--missing">⚠ No CV yet — <a href="{{ url_for('settings_page') }}#s-files">add one in Settings</a> before sending.</div>
           {% endif %}
         </div>
       </div>
@@ -100,6 +108,7 @@
         <form class="email-editor" id="email-editor"
               action="{{ url_for('edit_email', app_id=application.id) }}" method="post"
               data-app-id="{{ application.id }}" data-status="{{ application.status }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <label for="subject">Subject</label>
           <input id="subject" type="text" name="subject" value="{{ application.subject or '' }}" required>
           <label for="body">Message</label>
@@ -119,7 +128,7 @@
     {% else %}
     <section class="panel">
       <h2>Email</h2>
-      <p class="cell-empty">No draft yet. Run preparation — or, if research is already done, hit Regenerate.</p>
+      <p class="cell-empty">No draft yet. Run preparation — or, if research is already done, use “Rebuild draft”.</p>
     </section>
     {% endif %}
 
