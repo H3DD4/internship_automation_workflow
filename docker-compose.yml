@@ -40,7 +40,9 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "127.0.0.1:${APP_PORT:-5050}:8000"
+      # 127.0.0.1 = this computer only. APP_BIND=0.0.0.0 in .env opens it to
+      # your local network (e.g. to try it on a phone).
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-5050}:8000"
     environment:
       APP_ENV: production
       DATABASE_URL: postgresql+psycopg://internship:${POSTGRES_PASSWORD}@db:5432/internship
