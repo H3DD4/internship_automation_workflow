@@ -41,15 +41,25 @@ class RunConflict(RuntimeError):
     pass
 
 
-def request_run(user_id: int, limit: int | None = None) -> int:
+def request_run(user_id: int, limit: int | None = None, targets: list | None = None) -> int:
+    """targets: application ids — a re-scan run that only does those."""
     with database.tx() as conn:
         busy = conn.execute(select(prep_runs.c.id).where(
             prep_runs.c.user_id == int(user_id), prep_runs.c.status.in_(ACTIVE))).first()
         if busy:
             raise RunConflict("A preparation run is already in progress.")
         return conn.execute(prep_runs.insert().values(
-            user_id=int(user_id), status="requested", limit_n=limit, created_at=_now(), log=""
+            user_id=int(user_id), status="requested", limit_n=limit, created_at=_now(), log="",
+            targets=json.dumps(sorted(int(i) for i in targets)) if targets else None,
         ).returning(prep_runs.c.id)).scalar_one()
+
+
+def targets_of(run: dict) -> list | None:
+    try:
+        value = json.loads(run.get("targets") or "null")
+    except (TypeError, ValueError):
+        return None
+    return [int(i) for i in value] if isinstance(value, list) and value else None
 
 
 def request_stop(user_id: int) -> bool:

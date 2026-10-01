@@ -9,9 +9,9 @@
             data-app-id="{{ a.id }}" aria-pressed="{{ 'true' if a.favorite else 'false' }}"
             aria-label="{{ 'Remove ' ~ a.company_name ~ ' from favorites' if a.favorite else 'Add ' ~ a.company_name ~ ' to favorites' }}"
             title="{{ 'Remove from favorites' if a.favorite else 'Add to favorites' }}">{{ "★" if a.favorite else "☆" }}</button>
-    {% if a.sendable %}
+    {% if a.sendable or a.rescannable %}
     <input type="checkbox" class="row-select-cb" data-app-id="{{ a.id }}"
-           aria-label="Select {{ a.company_name }}">
+           data-sendable="{{ '1' if a.sendable else '' }}" aria-label="Select {{ a.company_name }}">
     {% endif %}
   </td>
   <td class="cell-mono">{{ a.id }}</td>

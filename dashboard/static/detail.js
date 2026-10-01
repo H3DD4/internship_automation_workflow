@@ -29,6 +29,21 @@
     el.style.color = ok === undefined ? "" : (ok ? "var(--st-sent)" : "var(--st-failed)");
   }
 
+  // ── Re-scan this company ─────────────────────────────────────────────────
+  const rescanBtn = $("rescan-detail-btn");
+  if (rescanBtn) {
+    rescanBtn.addEventListener("click", async () => {
+      if (!window.confirm("Re-scan this company?\n\nIts research and draft are cleared and done " +
+          "again from scratch with your AI key. Any edits you made to this draft are lost.")) return;
+      rescanBtn.disabled = true;
+      setResult("Starting…");
+      const data = await postJSON("/api/rescan", { app_ids: [+rescanBtn.dataset.appId] });
+      setResult(data.message, !!data.ok);
+      if (data.ok) setTimeout(() => window.location.reload(), 1200);
+      else rescanBtn.disabled = false;
+    });
+  }
+
   // ── Preview / Edit tabs ──────────────────────────────────────────────────
   const tabs = Array.from(document.querySelectorAll(".detail-tab"));
   tabs.forEach((tab) => {

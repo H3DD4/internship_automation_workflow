@@ -42,6 +42,10 @@
     <button class="button button--ghost" id="regenerate-btn" data-app-id="{{ application.id }}" type="button"
             title="Rebuild this draft from the saved research and your current profile and style — instant, no AI">Rebuild draft</button>
     {% endif %}
+    {% if application.rescannable %}
+    <button class="button button--ghost" id="rescan-detail-btn" data-app-id="{{ application.id }}" type="button"
+            title="Read their website again and write a new draft — uses your AI key">↻ Re-scan</button>
+    {% endif %}
     {% if application.status == 'skipped' %}
     <button class="button button--ghost" id="unskip-detail-btn" data-app-id="{{ application.id }}" type="button">Un-skip</button>
     {% elif application.status not in ('sent', 'queued', 'sending') %}

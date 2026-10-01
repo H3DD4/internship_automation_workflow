@@ -98,8 +98,10 @@
   const checkboxes = () => Array.from(document.querySelectorAll(".row-select-cb"));
   const checkedIds = () => checkboxes().filter((c) => c.checked).map((c) => +c.dataset.appId);
 
+  // Only companies with a finished draft can be sent; any selected company
+  // can be re-scanned.
   function selectedRecipients() {
-    return checkboxes().filter((c) => c.checked).map((c) => {
+    return checkboxes().filter((c) => c.checked && c.dataset.sendable === "1").map((c) => {
       const row = c.closest("tr");
       return { id: +c.dataset.appId, company: row.dataset.company, email: row.dataset.email };
     });
@@ -109,10 +111,17 @@
     const ids = checkedIds();
     if (!batchBar) return;
     batchBar.hidden = ids.length === 0;
-    if (countEl) countEl.textContent = `${ids.length} selected`;
-    if (estimateEl && ids.length) {
-      const mins = Math.max(1, Math.round((ids.length * state.avgDelay) / 60));
-      const capNote = (state.capRemaining !== null && ids.length > state.capRemaining)
+    const sendable = selectedRecipients().length;
+    if (countEl) {
+      countEl.textContent = sendable === ids.length
+        ? `${ids.length} selected`
+        : `${ids.length} selected · ${sendable} ready to send`;
+    }
+    const sendBtn = $("send-selected-btn");
+    if (sendBtn && !state.sending) sendBtn.disabled = sendable === 0;
+    if (estimateEl && sendable) {
+      const mins = Math.max(1, Math.round((sendable * state.avgDelay) / 60));
+      const capNote = (state.capRemaining !== null && sendable > state.capRemaining)
         ? ` · only ${state.capRemaining} left in today's cap`
         : "";
       estimateEl.textContent = `≈ ${mins} min at current pacing${capNote}`;
@@ -256,6 +265,35 @@
     if (!data.ok) throw new Error(data.message);
     renderFavoriteCounts(data.favorites_total, data.favorites_sendable);
     return data;
+  }
+
+  // ── Re-scan: research and write the selected companies again ─────────────
+  const rescanBtn = $("rescan-selected-btn");
+  if (rescanBtn) {
+    rescanBtn.addEventListener("click", async () => {
+      const ids = checkedIds();
+      if (!ids.length) return;
+      const n = ids.length;
+      if (!window.confirm(`Re-scan ${n} compan${n === 1 ? "y" : "ies"}?\n\n` +
+          "Their research and drafts are cleared and done again from scratch with your AI key. " +
+          "Any edits you made to these drafts are lost. Sent and skipped companies are left alone.")) return;
+      rescanBtn.disabled = true;
+      try {
+        const data = await postJSON("/api/rescan", { app_ids: ids });
+        showToast(`${data.ok ? "↻" : "✗"} ${data.message}`, data.ok ? 1 : 0);
+        setTimeout(hideToast, 4500);
+        if (data.ok) {
+          checkboxes().forEach((c) => { c.checked = false; });
+          updateBatchBar();
+          refresh();
+        }
+      } catch (err) {
+        showToast(`✗ ${err.message}`, 0);
+        setTimeout(hideToast, 4000);
+      } finally {
+        rescanBtn.disabled = false;
+      }
+    });
   }
 
   const favoriteSelectedBtn = $("favorite-selected-btn");

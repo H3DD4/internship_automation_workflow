@@ -326,7 +326,7 @@ a.notice:hover { background: #FFEFC9; }
   #app-table thead tr { display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
   #app-table thead th { display: none; padding: 0; border: 0; background: none; width: auto !important; }
   #app-table thead th:first-child { display: flex; align-items: center; gap: 10px; }
-  #app-table thead th:first-child::after { content: "Select all sendable"; font: 500 13px var(--font-ui); color: var(--text-muted); }
+  #app-table thead th:first-child::after { content: "Select all"; font: 500 13px var(--font-ui); color: var(--text-muted); }
   #app-table tbody { display: block; }
   #app-table tbody tr {
     display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center;

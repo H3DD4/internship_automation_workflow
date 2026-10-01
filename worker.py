@@ -42,7 +42,7 @@ RECOVERY_SECONDS = 30
 
 
 def execute_prep_run(user_id: int, role: str, *, limit: int | None = None,
-                     stop_check=None, include_all: bool = False) -> dict:
+                     stop_check=None, include_all: bool = False, app_ids: list | None = None) -> dict:
     """Research and draft a user's companies. Prints progress (captured by
     the caller's log sink). Returns the pipeline's result counts."""
     import drafting
@@ -64,8 +64,13 @@ def execute_prep_run(user_id: int, role: str, *, limit: int | None = None,
         raise drafting.NotReady("No AI provider has a key yet — add one in Settings.")
     print()
 
-    rows, skipped = pipeline.select_rows(user_id, limit=limit, include_all=include_all)
     data = db.for_user(user_id)
+    if app_ids:
+        # A re-scan: only the companies the user picked, whatever their place in the list.
+        rows, skipped = data.rows_for_ids(app_ids), 0
+        print(f"Re-scanning {len(rows)} selected compan{'y' if len(rows) == 1 else 'ies'}.")
+    else:
+        rows, skipped = pipeline.select_rows(user_id, limit=limit, include_all=include_all)
     if skipped:
         print(f"Skipping {skipped} already-prepared or sent row(s) from your list.")
     print(f"Preparing {len(rows)} this run ({data.count_needing_preparation()} still need work in the database).")
@@ -170,7 +175,7 @@ class Worker:
                 if not user or user["status"] != "active":
                     raise drafting.NotReady("This account is not active.")
                 summary = execute_prep_run(
-                    user_id, user["role"], limit=run.get("limit_n"),
+                    user_id, user["role"], limit=run.get("limit_n"), app_ids=runs.targets_of(run),
                     stop_check=lambda: self.stop_event.is_set() or runs.stop_requested(run_id))
                 user_stopped = runs.stop_requested(run_id)
                 if user_stopped or self.stop_event.is_set():

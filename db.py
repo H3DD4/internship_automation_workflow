@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 import database
@@ -80,6 +80,15 @@ def no_cv_match_condition():
             & applications.c.hook_status.is_not(None)
             & applications.c.hook_status.not_in(NOT_CHECKED_HOOK_STATUSES)
             & (areas.is_(None) | areas.in_(["", "[]"])))
+
+
+# Statuses a company can be re-scanned from: nothing is on its way out, and
+# it hasn't been sent or deliberately skipped.
+RESCANNABLE_STATUSES = frozenset({"pending", "researched", "ready", "failed"})
+# Everything research and drafting wrote, cleared by a re-scan.
+_RESEARCH_FIELDS = ("industry", "mission_or_focus", "tone_of_voice", "talking_points",
+                    "matched_extra_mentions", "match_reasons", "company_hook", "hook_original",
+                    "hook_evidence", "hook_status", "subject", "body", "language", "error_message")
 
 
 # Statuses from which an application can be queued for sending.
@@ -585,6 +594,55 @@ class UserData:
         with database.read() as conn:
             return {row.key for row in conn.execute(select(cache_entries.c.key).where(
                 cache_entries.c.user_id == self.user_id, cache_entries.c.kind == kind))}
+
+    def cache_delete(self, kind: str, keys: list) -> None:
+        if not keys:
+            return
+        with database.tx() as conn:
+            conn.execute(delete(cache_entries).where(
+                cache_entries.c.user_id == self.user_id, cache_entries.c.kind == kind,
+                cache_entries.c.key.in_(list(keys))))
+
+    def reset_for_rescan(self, app_ids: list) -> list:
+        """Forget the research and draft of these companies so the next run
+        does them again from scratch. Only companies in a re-scannable state
+        are touched; returns the ids that were reset."""
+        import cache_store
+        ids = sorted({int(i) for i in app_ids})
+        if not ids:
+            return []
+        with database.read() as conn:
+            rows = conn.execute(select(applications.c.id, applications.c.email).where(
+                applications.c.user_id == self.user_id, applications.c.id.in_(ids),
+                applications.c.status.in_(list(RESCANNABLE_STATUSES)))).all()
+        if not rows:
+            return []
+        reset_ids = [row.id for row in rows]
+        keys = [cache_store._key(row.email) for row in rows]
+        with database.tx() as conn:
+            conn.execute(update(applications).where(
+                applications.c.user_id == self.user_id, applications.c.id.in_(reset_ids),
+                applications.c.status.in_(list(RESCANNABLE_STATUSES))
+            ).values(status="pending", updated_at=_now(), **{f: None for f in _RESEARCH_FIELDS}))
+        self.cache_delete("research", keys)
+        self.cache_delete("draft", keys)
+        for app_id in reset_ids:
+            self.log_event(app_id, "research", "Re-scan requested — research and draft cleared")
+        return reset_ids
+
+    def rows_for_ids(self, app_ids: list) -> list:
+        """(company_name, email, website, contact_name) for these companies,
+        the shape the pipeline takes, in id order."""
+        ids = sorted({int(i) for i in app_ids})
+        if not ids:
+            return []
+        with database.read() as conn:
+            rows = conn.execute(select(applications.c.company_name, applications.c.email,
+                                       applications.c.website, applications.c.contact_name)
+                                .where(applications.c.user_id == self.user_id,
+                                       applications.c.id.in_(ids))
+                                .order_by(applications.c.id)).all()
+        return [tuple(row) for row in rows]
 
     def cache_put(self, kind: str, key: str, data: dict) -> None:
         with database.tx() as conn:

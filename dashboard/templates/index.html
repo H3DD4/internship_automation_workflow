@@ -145,7 +145,7 @@
     <table class="app-table" id="app-table">
       <thead>
         <tr>
-          <th><input type="checkbox" id="select-all-cb" title="Select all sendable rows on this page"></th>
+          <th><input type="checkbox" id="select-all-cb" title="Select every company on this page"></th>
           <th>ID</th>
           <th>Company</th>
           <th class="col-email">Email</th>
@@ -190,6 +190,8 @@
     <span id="selected-count">0 selected</span>
     <span class="field-hint" id="selected-estimate"></span>
     <button class="button button--primary" id="send-selected-btn" type="button">Send selected</button>
+    <button class="button button--ghost" id="rescan-selected-btn" type="button"
+            title="Research and write these companies again from scratch">↻ Re-scan</button>
     <button class="button button--ghost" id="favorite-selected-btn" type="button">★ Add to favorites</button>
     <button class="button button--ghost" id="deselect-all-btn" type="button">Deselect all</button>
   </div>

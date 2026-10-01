@@ -298,6 +298,7 @@ def _decorate_rows(applications: list) -> list:
             msg = msg.removeprefix("Not delivered — ")
         a["error_short"] = (msg[:80] + "…") if len(msg) > 80 else msg
         a["sendable"] = bool(a["status"] in db.SENDABLE_STATUSES and a.get("subject"))
+        a["rescannable"] = a["status"] in db.RESCANNABLE_STATUSES
         a["not_checked"] = a.get("hook_status") in db.NOT_CHECKED_HOOK_STATUSES
         a["no_cv_match"] = bool(a["status"] in db.REVIEW_STATUSES and a.get("hook_status")
                                 and not a["not_checked"] and not a["matched_extra_mentions_list"])
@@ -508,6 +509,38 @@ def run_pipeline():
     return redirect(url_for("index"))
 
 
+@app.post("/api/rescan")
+def api_rescan():
+    """Research and draft these companies again from scratch — after an API
+    error, a fixed key, or to check a match again. Starts a run for just
+    them when none is running."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        ids = [int(i) for i in (payload.get("app_ids") or [])][:1000]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Invalid selection."}), 400
+    if not ids:
+        return jsonify({"ok": False, "message": "Select at least one company."}), 400
+    if not _setup_state()["prep_ready"]:
+        return jsonify({"ok": False, "message": "Add your AI key and profile in Settings first."}), 400
+    reset = data().reset_for_rescan(ids)
+    if not reset:
+        return jsonify({"ok": False, "message": "Nothing to re-scan: sent, queued and skipped "
+                                                "companies are left as they are."}), 400
+    note = f" ({len(ids) - len(reset)} sent, queued or skipped left as they are.)" if len(reset) < len(ids) else ""
+    try:
+        runs.request_run(g.user["id"], targets=reset)
+    except runs.RunConflict:
+        return jsonify({"ok": True, "started": False, "reset": len(reset),
+                        "message": f"{len(reset)} reset. A preparation run is already going — they'll be "
+                                   f"done by the next one.{note}"})
+    if config.embedded_worker():
+        import worker
+        worker.ensure_embedded()
+    return jsonify({"ok": True, "started": True, "reset": len(reset),
+                    "message": f"Re-scanning {len(reset)} compan{'y' if len(reset) == 1 else 'ies'}.{note}"})
+
+
 @app.post("/stop")
 def stop_pipeline():
     if runs.request_stop(g.user["id"]):
@@ -626,6 +659,7 @@ def company_detail(app_id):
     application["status_label"] = STATUS_LABELS.get(application["status"], application["status"])
     application["sendable"] = bool(application["status"] in db.SENDABLE_STATUSES and application.get("subject"))
     application["editable"] = application["status"] in EDITABLE_STATUSES
+    application["rescannable"] = application["status"] in db.RESCANNABLE_STATUSES
     application["language"] = application.get("language") or ("en" if application.get("subject") else "")
     method = mail_service.sending_method(g.cfg)
     _, spec_en, spec_fr = profiles.specs_for(g.user["id"])

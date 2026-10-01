@@ -273,11 +273,14 @@ prep_runs = Table(
     Column("worker_id", String(64)),
     Column("summary", Text),
     Column("log", Text, nullable=False, server_default=""),
+    # JSON list of application ids: a re-scan run that only redoes these.
+    # NULL = the whole list, as usual.
+    Column("targets", Text),
     Index("idx_prep_runs_status", "status"),
     Index("idx_prep_runs_user", "user_id", "id"),
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # ---------------------------------------------------------------------------
 # Engine
@@ -382,6 +385,11 @@ def _migrate(conn) -> None:
             conn.execute(text("ALTER TABLE users ADD COLUMN username VARCHAR(64)"))
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username ON users (username)"))
         conn.execute(text("INSERT INTO schema_version (version) VALUES (2)"))
+    if version < 3:
+        columns = {c["name"] for c in inspect(conn).get_columns("prep_runs")}
+        if "targets" not in columns:
+            conn.execute(text("ALTER TABLE prep_runs ADD COLUMN targets TEXT"))
+        conn.execute(text("INSERT INTO schema_version (version) VALUES (3)"))
 
 
 def _dialect_insert(conn, table):
