@@ -1,0 +1,20 @@
+{% extends "auth/_layout.html" %}
+{% block title %}Account requested · Internix{% endblock %}
+{% block auth_switch %}<a href="{{ url_for('auth.login') }}">Log in →</a>{% endblock %}
+{% block auth_head %}
+{% if pending %}
+<h1>Almost there</h1>
+<p>Your account request was received.</p>
+{% else %}
+<h1>Account created</h1>
+<p>You can log in now.</p>
+{% endif %}
+{% endblock %}
+{% block auth_card %}
+{% if pending %}
+<p class="section-copy">An administrator approves new accounts — you can log in as soon as yours is approved. Signing up with Google skips the wait.</p>
+{% else %}
+<p class="section-copy">Everything is ready. Log in to add your CV and your first companies.</p>
+{% endif %}
+<p class="auth-foot"><a class="button button--primary button--block" href="{{ url_for('auth.login') }}">Go to log in</a></p>
+{% endblock %}

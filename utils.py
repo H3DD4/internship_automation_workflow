@@ -8,6 +8,7 @@ is resolved in code (deterministic, testable) rather than left to the AI
 to guess, since AI guessing here would be inconsistent across 20k+ rows.
 """
 
+import sys
 import json
 import re
 
@@ -117,10 +118,36 @@ def resolve_greeting_name(contact_name, company_name: str) -> str | None:
     return first_token[0].upper() + first_token[1:] if first_token else None
 
 
-def build_greeting(contact_name, company_name: str) -> str:
-    """Returns the exact opening line to use, e.g. 'Hello Charly,' or
-    'Hello Rtone team,'."""
+def build_greeting(contact_name, company_name: str, lang: str = "en") -> str:
+    """Returns the exact opening line to use, e.g. 'Dear Charly,' or
+    'Dear Rtone Team,' — or, in French, 'Bonjour Charly,' / 'Madame, Monsieur,'."""
     first_name = resolve_greeting_name(contact_name, company_name)
+    if lang == "fr":
+        return f"Bonjour {first_name}," if first_name else "Madame, Monsieur,"
     if first_name:
-        return f"Hello {first_name},"
-    return f"Hello {company_name} team,"
+        return f"Dear {first_name},"
+    return f"Dear {company_name} Team,"
+
+
+def make_console_encoding_safe():
+    """Never let an unprintable character in company data kill a run.
+
+    Windows consoles default to a legacy code page (cp1252 here), which has no
+    mapping for characters that turn up in scraped company names all the time —
+    a zero-width space, a CJK character, an emoji. `print()`-ing one raises
+    UnicodeEncodeError from deep inside a worker thread, and because the
+    pipeline's own error handler prints the same name, the handler raises too
+    and the company disappears from the run without ever being counted.
+
+    Switching the streams to errors="replace" keeps the console's encoding
+    (so nothing else about the output changes) and turns an unmappable
+    character into "?" instead of an exception.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue  # redirected to something that isn't a TextIOWrapper
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError):
+            pass

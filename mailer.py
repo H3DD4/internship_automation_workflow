@@ -1,166 +1,155 @@
 """
-Mailer: sends the final email — prefers Gmail API (OAuth) when a valid
-token.json exists, falls back to Gmail SMTP + App Password otherwise.
+Mailer: sends one email through the user's chosen method —
 
-Anti-spam / deliverability basics handled here:
-- Proper MIME headers (From, To, Subject, Date, Message-ID, Reply-To) so the
-  email looks like a normal, well-formed message rather than a bulk-mailer artifact.
-- Plain-text body (no sketchy HTML/tracking pixels/link-shorteners that trigger filters).
-- Real, correctly-typed PDF attachment.
-- Classifies errors so we know the difference between:
-    - "recipient address rejected" (typo'd/dead mailbox) -> status 'failed', don't retry
-    - "temporary/transient" (server busy, connection issue) -> caller may retry later
-    - "auth failed" (bad credentials / revoked token) -> surfaces a clear error
+  * Gmail API with the user's Google sign-in (OAuth),
+  * Gmail SMTP with an app password,
+  * any other provider's SMTP server (university, Outlook, custom domain).
 
-Actual send pacing (delays between emails, daily caps) is handled by the
-orchestrator (main.py), not here.
+Deliverability basics handled here:
+- Proper MIME headers (From with display name, To, Subject, Date, Message-ID,
+  Reply-To) so the message looks like a normal, well-formed email.
+- Plain-text body (no HTML, tracking pixels or link shorteners).
+- The CV as a real, correctly-typed attachment.
+- Errors classified so the sender knows the difference between:
+    - "recipient rejected" (dead mailbox) -> failed, don't retry
+    - "temporary" (server busy, network)  -> retry later
+    - "auth failed" (bad password, revoked token) -> account-wide, halt the job
+
+Pacing (delays, daily caps) is the sender worker's job, not this module's.
 """
 
+import base64
 import smtplib
 import ssl
-import mimetypes
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
-from pathlib import Path
+from email.utils import formataddr, formatdate, make_msgid
 
 
 class PermanentSendError(Exception):
-    """Recipient/address-level failure — retrying won't help (e.g. mailbox doesn't exist)."""
-    pass
+    """Recipient/address-level failure — retrying won't help."""
 
 
 class TransientSendError(Exception):
     """Network/server-level failure — could succeed on retry later."""
-    pass
 
 
 class AuthenticationError(PermanentSendError):
-    """
-    Gmail login itself failed (bad credentials or revoked OAuth token). This is
-    account-wide, not per-recipient — unlike a bad address, it will fail for
-    EVERY company, so the caller must not treat it like an ordinary
-    PermanentSendError (which only kills the one company being sent to).
-    Deliberately a subclass of PermanentSendError so any old code that only
-    catches PermanentSendError still catches this too, but callers that care
-    about the distinction (see pipeline.py) can catch it specifically first.
-    """
-    pass
+    """The login itself failed (bad credentials or revoked OAuth token). It
+    will fail for EVERY company, so the caller halts the whole job instead of
+    burning through the queue. Subclasses PermanentSendError so code that
+    only knows that class still catches it."""
+
+
+GMAIL_SMTP = ("smtp.gmail.com", 465, "ssl")
+
+
+def build_message(*, from_address: str, display_name: str, to_email: str, subject: str,
+                  body: str, attachment: dict | None, reply_to: str | None = None) -> EmailMessage:
+    """`attachment` is {"filename", "content_type", "content"} (the CV)."""
+    msg = EmailMessage()
+    msg["From"] = formataddr((display_name, from_address)) if display_name and "@" in from_address else from_address
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=from_address.split("@")[-1] if "@" in from_address else "localhost")
+    msg["Reply-To"] = reply_to or from_address
+    msg.set_content(body)
+    if attachment:
+        maintype, subtype = (attachment.get("content_type") or "application/pdf").split("/", 1)
+        msg.add_attachment(attachment["content"], maintype=maintype, subtype=subtype,
+                           filename=attachment["filename"])
+    return msg
 
 
 def _classify_smtp_error(e: Exception) -> Exception:
-    # NOTE: smtplib.SMTPAuthenticationError is a SUBCLASS of
-    # smtplib.SMTPResponseException. This check must come first, or an auth
-    # failure falls into the generic SMTPResponseException branch below and
-    # (since Gmail's auth-failure code, 535, isn't in the permanent-code
-    # list) gets silently misclassified as a transient error — every company
-    # in the run would then be marked "retry_later" instead of surfacing a
-    # clear "check your Gmail credentials" failure.
+    # smtplib.SMTPAuthenticationError is a SUBCLASS of SMTPResponseException,
+    # so it must be checked first — otherwise Gmail's 535 falls into the
+    # generic branch below and every company goes "retry later" instead of
+    # surfacing "check your password".
     if isinstance(e, smtplib.SMTPAuthenticationError):
-        return AuthenticationError(
-            f"Gmail authentication failed — check GMAIL_ADDRESS/GMAIL_APP_PASSWORD in .env: {e}"
-        )
-
+        return AuthenticationError(f"The mail server rejected the login — check the address "
+                                   f"and (app) password in Settings: {e}")
     if isinstance(e, smtplib.SMTPRecipientsRefused):
         return PermanentSendError(f"Recipient refused (likely invalid/dead mailbox): {e}")
-
     if isinstance(e, smtplib.SMTPResponseException):
         code = getattr(e, "smtp_code", None)
         if code in (550, 551, 553, 554):
             return PermanentSendError(f"SMTP {code}: recipient rejected — {e}")
         return TransientSendError(f"SMTP {code}: temporary error — {e}")
-
     if isinstance(e, (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError,
-                       ConnectionError, TimeoutError, OSError)):
+                      ConnectionError, TimeoutError, OSError)):
         return TransientSendError(f"Connection/server issue: {e}")
-
     return TransientSendError(f"Unclassified send error: {e}")
 
 
-def _send_via_smtp(gmail_address: str, gmail_app_password: str, to_email: str,
-                   subject: str, body: str, cv_path: Path,
-                   reply_to: str = None) -> None:
-    """Send via SMTP + App Password (legacy / fallback path)."""
-    msg = EmailMessage()
-    msg["From"] = gmail_address
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = make_msgid(domain=gmail_address.split("@")[-1])
-    msg["Reply-To"] = reply_to or gmail_address
-    msg.set_content(body)
-
-    ctype, _ = mimetypes.guess_type(str(cv_path))
-    maintype, subtype = (ctype or "application/pdf").split("/", 1)
-    msg.add_attachment(
-        cv_path.read_bytes(),
-        maintype=maintype,
-        subtype=subtype,
-        filename=cv_path.name,
-    )
-
+def send_via_smtp(msg: EmailMessage, *, host: str, port: int, security: str,
+                  username: str, password: str) -> str:
+    """Returns the Message-ID header (SMTP assigns no server id)."""
     context = ssl.create_default_context()
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=30) as server:
-            server.login(gmail_address, gmail_app_password)
-            server.send_message(msg)
+        if security == "starttls":
+            with smtplib.SMTP(host, port, timeout=30) as server:
+                server.starttls(context=context)
+                server.login(username, password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP_SSL(host, port, context=context, timeout=30) as server:
+                server.login(username, password)
+                server.send_message(msg)
+    except (smtplib.SMTPException, OSError) as e:
+        raise _classify_smtp_error(e) from e
+    return msg["Message-ID"]
+
+
+def check_smtp_login(*, host: str, port: int, security: str, username: str, password: str) -> None:
+    """Log in and out — nothing is sent. Raises the classified error."""
+    context = ssl.create_default_context()
+    try:
+        if security == "starttls":
+            with smtplib.SMTP(host, port, timeout=20) as server:
+                server.starttls(context=context)
+                server.login(username, password)
+        else:
+            with smtplib.SMTP_SSL(host, port, context=context, timeout=20) as server:
+                server.login(username, password)
     except (smtplib.SMTPException, OSError) as e:
         raise _classify_smtp_error(e) from e
 
 
-def _send_via_oauth(to_email: str, subject: str, body: str, cv_path: Path,
-                    reply_to: str = None) -> None:
-    """Send via Gmail API using the stored OAuth token (preferred path)."""
+def _classify_oauth_error(e: Exception) -> Exception:
+    """Map a Gmail API failure by its actual HTTP status (not by words in the
+    message, which misclassified ordinary failures as auth failures)."""
     try:
-        from google_auth_helper import send_email_via_gmail_api
-        send_email_via_gmail_api(
-            to_email=to_email,
-            subject=subject,
-            body=body,
-            cv_file_path=str(cv_path),
-            reply_to=reply_to,
-        )
-    except Exception as e:
-        err_str = str(e).lower()
-        # Token revoked / expired and couldn't refresh → auth error
-        if any(k in err_str for k in ("token", "invalid_grant", "unauthorized",
-                                       "credentials", "authoris", "oauth")):
-            raise AuthenticationError(
-                f"OAuth token is invalid or revoked — reconnect Google account in the dashboard: {e}"
-            ) from e
-        # Recipient-level errors from Gmail API
-        if "invalid to" in err_str or "recipient" in err_str:
-            raise PermanentSendError(f"Gmail API rejected recipient: {e}") from e
-        raise TransientSendError(f"Gmail API send error: {e}") from e
-
-
-def send_email(gmail_address: str, gmail_app_password: str, to_email: str,
-               subject: str, body: str, cv_file_path: str,
-               reply_to: str = None) -> None:
-    """
-    Sends one email.
-    - If a valid OAuth token exists → uses Gmail API (no password needed).
-    - Otherwise → falls back to SMTP + App Password.
-
-    Raises PermanentSendError, AuthenticationError, or TransientSendError on
-    failure (never a raw library exception), so the caller can decide what to do.
-    """
-    cv_path = Path(cv_file_path)
-    if not cv_path.exists():
-        raise PermanentSendError(f"CV file not found at '{cv_file_path}' — check CV_FILE_PATH in .env")
-
-    # Prefer OAuth when a token is present
-    try:
-        from google_auth_helper import get_credentials, token_exists
-        if token_exists() and get_credentials() is not None:
-            _send_via_oauth(to_email, subject, body, cv_path, reply_to)
-            return
+        from google.auth.exceptions import RefreshError
     except ImportError:
-        pass  # google libraries not installed — fall through to SMTP
+        RefreshError = ()
+    if RefreshError and isinstance(e, RefreshError):
+        return AuthenticationError(f"Google sign-in expired or was revoked — sign in with Google "
+                                   f"again in Settings: {e}")
+    try:
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        HttpError = None
+    if HttpError is not None and isinstance(e, HttpError):
+        status = getattr(getattr(e, "resp", None), "status", None)
+        if status in (401, 403):
+            return AuthenticationError(f"Gmail API rejected the request ({status}) — sign in with "
+                                       f"Google again in Settings: {e}")
+        if status == 400:
+            return PermanentSendError(f"Gmail API rejected the request (400, likely a bad recipient): {e}")
+        if status == 429 or (isinstance(status, int) and status >= 500):
+            return TransientSendError(f"Gmail API temporary error ({status}): {e}")
+        return TransientSendError(f"Gmail API error ({status}): {e}")
+    return TransientSendError(f"Gmail API send error: {e}")
 
-    # SMTP fallback
-    if not gmail_address or not gmail_app_password:
-        raise AuthenticationError(
-            "No OAuth token and no GMAIL_APP_PASSWORD configured — "
-            "connect your Google account via the dashboard or add an app password."
-        )
-    _send_via_smtp(gmail_address, gmail_app_password, to_email, subject, body, cv_path, reply_to)
+
+def send_via_gmail_api(msg: EmailMessage, credentials) -> str:
+    """Returns the Gmail-assigned message id."""
+    try:
+        from googleapiclient.discovery import build
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
+        result = service.users().messages().send(userId="me", body={"raw": raw}).execute()
+        return result.get("id", "")
+    except Exception as e:
+        raise _classify_oauth_error(e) from e

@@ -1,0 +1,47 @@
+{# Table rows for the applications table. Rendered both by the full page and
+   by /api/overview for live refresh, so the two can never drift apart. #}
+{% for a in applications %}
+<tr class="{% if a.status in ('bounced', 'failed') %}row--problem{% endif %}" data-status="{{ a.status }}" data-app-id="{{ a.id }}" data-company="{{ a.company_name }}" data-email="{{ a.email }}">
+  <td class="cell-select">
+    {# Any company can be starred, whatever its status — the list is for
+       interest, and sending simply skips the ones that aren't ready. #}
+    <button class="fav-btn{% if a.favorite %} fav-btn--on{% endif %}" type="button"
+            data-app-id="{{ a.id }}" aria-pressed="{{ 'true' if a.favorite else 'false' }}"
+            aria-label="{{ 'Remove ' ~ a.company_name ~ ' from favorites' if a.favorite else 'Add ' ~ a.company_name ~ ' to favorites' }}"
+            title="{{ 'Remove from favorites' if a.favorite else 'Add to favorites' }}">{{ "★" if a.favorite else "☆" }}</button>
+    {% if a.sendable %}
+    <input type="checkbox" class="row-select-cb" data-app-id="{{ a.id }}"
+           aria-label="Select {{ a.company_name }}">
+    {% endif %}
+  </td>
+  <td class="cell-mono">{{ a.id }}</td>
+  <td class="cell-company">{{ a.company_name }}</td>
+  <td class="cell-mono col-email" title="{{ a.email }}">{{ a.email }}</td>
+  <td>
+    <span class="status-pill status-{{ a.status }}">{{ a.status_label }}</span>
+    {% if a.error_short %}
+    <div class="row-error" title="{{ a.error_message }}">{{ a.error_short }}</div>
+    {% endif %}
+  </td>
+  <td class="col-extras">
+    {% if a.matched_extra_mentions_list %}
+      {% for m in a.matched_extra_mentions_list %}<span class="chip" title="{{ m }}">{{ area_labels.get(m, m) if area_labels else m }}</span>{% endfor %}
+    {% else %}
+      <span class="cell-empty">—</span>
+    {% endif %}
+  </td>
+  <td class="cell-subject" title="{{ a.subject or '' }}">{% if a.language %}<span class="lang-chip lang-chip--{{ a.language }}">{{ a.language | upper }}</span> {% endif %}{{ a.subject or "—" }}</td>
+  <td class="cell-mono cell-time col-updated">{{ a.updated_short }}</td>
+  <td class="row-actions">
+    {% if a.sendable %}
+    <button class="button button--primary button--sm send-one-btn" data-app-id="{{ a.id }}" type="button">Send</button>
+    {% endif %}
+    {% if a.status == 'skipped' %}
+    <button class="button button--ghost button--sm unskip-btn" data-app-id="{{ a.id }}" type="button">Un-skip</button>
+    {% elif a.status not in ('sent', 'queued', 'sending') %}
+    <button class="button button--ghost button--sm skip-btn" data-app-id="{{ a.id }}" type="button" title="Leave this company out, reversibly">Skip</button>
+    {% endif %}
+    <a class="detail-link" href="{{ url_for('company_detail', app_id=a.id) }}">View</a>
+  </td>
+</tr>
+{% endfor %}

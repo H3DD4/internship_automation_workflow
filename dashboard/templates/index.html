@@ -1,149 +1,166 @@
 {% extends "base.html" %}
-{% block title %}Application Tracker{% endblock %}
+{% block title %}{% if grouped.ready %}({{ grouped.ready }} ready) {% endif %}Applications · Internix{% endblock %}
 {% block content %}
 
 <header class="topbar">
   <div>
-    <h1>Application Tracker</h1>
-    <p class="subtitle">Review emails, edit drafts, and send when ready</p>
+    <h1>Applications</h1>
+    <p class="subtitle">Research → review → send, one company at a time</p>
   </div>
   <div class="topbar-right">
-    {% if in_progress_count %}
-    <div class="live-note live-note--active">
-      <span class="dot dot--pulse"></span> {{ in_progress_count }} in progress
+    <div class="live-note{% if in_progress_count %} live-note--active{% endif %}" id="live-note">
+      <span class="dot{% if in_progress_count %} dot--pulse{% endif %}" id="live-dot"></span>
+      <span id="live-text">{% if in_progress_count %}{{ in_progress_count }} in progress{% else %}idle{% endif %}</span>
     </div>
-    {% else %}
-    <div class="live-note">
-      <span class="dot"></span> idle
-    </div>
-    {% endif %}
     <label class="refresh-toggle">
       <input type="checkbox" id="auto-refresh-toggle" checked>
-      auto-refresh
+      live updates
     </label>
   </div>
 </header>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-{% if messages %}
-<div class="flash-stack">
-  {% for category, message in messages %}<div class="flash flash--{{ category }}">{{ message }}</div>{% endfor %}
+{% include "_flashes.html" %}
+
+{# ── Guided setup: shown until the workspace can send ── #}
+{% if not setup.send_ready %}
+<section class="checklist{% if setup.prep_ready %} checklist--partial{% endif %}">
+  <span class="eyebrow">Getting started</span>
+  <h2>{% if setup.prep_ready %}Almost there — you can prepare drafts now{% else %}Four steps to your first applications{% endif %}</h2>
+  <p class="section-copy">{% if setup.prep_ready %}Preparation works. Connect your email and add your CV when you're ready to send.{% else %}Each step takes a minute or two. Nothing is ever sent without you reviewing it first.{% endif %}</p>
+  <ol class="checklist-items">
+    <li class="checklist-item checklist-item--{{ 'done' if setup.has_api_key else 'todo' }}">
+      <span class="checklist-mark">{{ "✓" if setup.has_api_key else "1" }}</span>
+      <span class="checklist-text"><a href="{{ url_for('settings_page') }}#s-ai">Add your AI key</a>
+        <span class="checklist-note">Your own key (Groq has a free tier) — it researches each company and reads your CV.</span></span>
+    </li>
+    <li class="checklist-item checklist-item--{{ 'done' if setup.has_profile else 'todo' }}">
+      <span class="checklist-mark">{{ "✓" if setup.has_profile else "2" }}</span>
+      <span class="checklist-text"><a href="{{ url_for('profile.page') }}">Build your profile from your CV</a>
+        <span class="checklist-note">{% if setup.has_profile %}Style: {{ setup.template_name }} · {{ setup.languages | map('upper') | join(' + ') }}{% else %}The AI drafts it from your CV; you check every sentence and pick an email style.{% endif %}</span></span>
+    </li>
+    <li class="checklist-item checklist-item--{{ 'done' if setup.has_companies else 'todo' }}">
+      <span class="checklist-mark">{{ "✓" if setup.has_companies else "3" }}</span>
+      <span class="checklist-text"><a href="{{ url_for('settings_page') }}#s-files">Import your companies list</a>
+        <span class="checklist-note">{% if setup.has_companies %}{{ setup.companies_rows }} companies{% else %}A CSV or Excel file with an email column.{% endif %}</span></span>
+    </li>
+    <li class="checklist-item checklist-item--{{ 'done' if (setup.has_gmail and setup.cv_name) else 'todo' }}">
+      <span class="checklist-mark">{{ "✓" if (setup.has_gmail and setup.cv_name) else "4" }}</span>
+      <span class="checklist-text"><a href="{{ url_for('settings_page') }}#s-gmail">Connect your email and add your CV</a>
+        <span class="checklist-note">Only needed to send — drafting works without them.</span></span>
+    </li>
+  </ol>
+</section>
+{% else %}
+<div class="workspace-bar">
+  <div class="workspace-bar__facts">
+    <span class="workspace-bar__fact"><span class="dot" style="background:var(--st-sent)"></span> Ready</span>
+    <span class="workspace-bar__fact">Sending as <strong>{{ setup.from_address }}</strong></span>
+    <span class="workspace-bar__fact">CV <strong>{{ setup.cv_name }}</strong></span>
+    <span class="workspace-bar__fact">List <strong>{{ setup.companies_rows }}</strong></span>
+    <span class="workspace-bar__fact">Style <strong>{{ setup.template_name }}</strong></span>
+    <span class="workspace-bar__fact">Language <strong>{{ {"auto": "auto (EN/FR per company)", "en": "English", "fr": "French"}[setup.language_mode] }}</strong></span>
+  </div>
+  <a class="detail-link" href="{{ url_for('settings_page') }}">Settings →</a>
 </div>
 {% endif %}
-{% endwith %}
 
-<section class="cap-bar-section">
-  <div class="cap-bar-label">
-    <span>Sent today</span>
-    <span class="cell-mono">{{ sent_today }} / {{ max_per_day }}</span>
-  </div>
-  <div class="cap-bar-track">
-    <div class="cap-bar-fill{% if sent_today >= max_per_day %} cap-bar-fill--full{% endif %}"
-         style="width: {{ (100 * sent_today / max_per_day) if max_per_day else 0 }}%"></div>
-  </div>
-</section>
-
-<section class="stats-row">
-  {% for label, value in stat_cards %}
-  <div class="stat-card{% if label == 'Total companies' %} stat-card--primary{% endif %}">
-    <div class="stat-value">{{ value }}</div>
-    <div class="stat-label">{{ label }}</div>
-  </div>
+{# ── Funnel: the five pipeline stages, each filtering the table ── #}
+<section class="funnel" id="funnel" data-cap-remaining="{{ cap_remaining }}"
+         data-avg-delay="{{ ((setup.min_delay | int) + (setup.max_delay | int)) // 2 }}">
+  {% for card in funnel %}
+  <a class="funnel-card funnel-card--{{ card.key }}{% if filter_status == card.filter %} funnel-card--active{% endif %}"
+     href="{{ url_for('index', status=card.filter, q=filter_q) }}" data-funnel-key="{{ card.key }}">
+    <div class="funnel-card__value" data-funnel-value>{{ card.value }}</div>
+    <div class="funnel-card__label">{{ card.label }}</div>
+    {% if card.key == 'sent' %}
+    <div class="funnel-card__meta" data-cap-text>{{ sent_today }} / {{ max_per_day }} today</div>
+    <div class="funnel-mini-track"><div class="funnel-mini-fill" data-cap-fill
+         style="width: {{ (100 * sent_today / max_per_day) if max_per_day else 0 }}%"></div></div>
+    {% elif card.key == 'to_prepare' and card.value %}
+    <div class="funnel-card__meta">{{ pending_prep }} still need a draft</div>
+    {% elif card.key == 'problems' %}
+    <div class="funnel-card__meta funnel-card__meta--danger" data-undelivered-text {% if not bounced_count %}hidden{% endif %}>{{ bounced_count }} not delivered</div>
+    {% endif %}
+  </a>
   {% endfor %}
 </section>
 
-{% if run_state.running or total_count or run_state.log_tail %}
-<section class="progress-section">
-  <div class="progress-heading"><span>Preparation progress</span><strong>{{ completed_count }} / {{ total_count }} tracked</strong></div>
-  <div class="cap-bar-track"><div class="cap-bar-fill" style="width: {{ (100 * completed_count / total_count) if total_count else 0 }}%"></div></div>
-  {% if run_state.running %}<p class="section-copy">Preparation engine running — page refreshes every 5s. Already-prepared emails are skipped automatically.</p>{% elif run_state.stop_requested %}<p class="section-copy">Stop requested. Completed drafts remain in the table below.</p>{% endif %}
-  {% if run_state.log_tail %}<pre class="email-body" style="max-height: 220px; margin-top: 12px;">{{ run_state.log_tail }}</pre>{% endif %}
-</section>
-{% endif %}
+{# Red alert whenever sent emails came back undelivered (bounce notices). #}
+<a class="delivery-alert" id="delivery-alert" href="{{ url_for('index', status='bounced') }}"
+   {% if not bounced_count %}hidden{% endif %}>
+  <span class="delivery-alert__icon" aria-hidden="true">!</span>
+  <span><strong data-undelivered-count>{{ bounced_count }}</strong> email<span data-undelivered-plural>{{ "s" if bounced_count != 1 else "" }}</span> not delivered — the address was rejected by the company's mail server. Click to see which.</span>
+</a>
 
 <section class="table-section">
-  <div class="section-heading" style="margin-bottom: 12px;">
-    <div>
-      <span class="eyebrow">Applications</span>
-      <h2>Email tracker</h2>
-      <p class="section-copy">{{ table_total }} in database{% if pending_prep %} · {{ pending_prep }} still need preparation{% endif %}. Each row has a stable ID — re-runs skip finished emails.</p>
-    </div>
-  </div>
-  {% if applications %}
+  <nav class="status-tabs" id="status-tabs">
+    {% for value, label in status_tabs %}
+    <a class="status-tab{% if filter_status == value %} status-tab--active{% endif %}{% if value == 'favorites' %} status-tab--favorites{% endif %}"
+       href="{{ url_for('index', status=value, q=filter_q) }}">{{ label }}{% if value == 'favorites' %}
+      {# Always present, so starring can update it without a reload. #}
+      <span class="status-tab__count" data-favorites-count {% if not grouped.get('favorites') %}hidden{% endif %}>{{ grouped.get('favorites') }}</span>{% elif value and grouped.get(value) %}
+      <span class="status-tab__count">{{ grouped.get(value) }}</span>{% endif %}</a>
+    {% endfor %}
+  </nav>
+
   <form class="table-controls" method="get" action="{{ url_for('index') }}">
-    <input type="text" name="q" class="search-box" value="{{ filter_q }}"
+    <input type="hidden" name="status" value="{{ filter_status }}">
+    <input type="search" name="q" class="search-box" value="{{ filter_q }}"
            placeholder="Search by company or email…" autocomplete="off">
-    <select name="status" class="status-filter">
-      <option value=""{% if not filter_status %} selected{% endif %}>All statuses</option>
-      <option value="ready"{% if filter_status == 'ready' %} selected{% endif %}>Ready to send</option>
-      <option value="researched"{% if filter_status == 'researched' %} selected{% endif %}>Researched (needs write)</option>
-      <option value="sent"{% if filter_status == 'sent' %} selected{% endif %}>Sent</option>
-      <option value="failed"{% if filter_status == 'failed' %} selected{% endif %}>Failed</option>
-      <option value="queued"{% if filter_status == 'queued' %} selected{% endif %}>Queued</option>
-      <option value="retry_wait"{% if filter_status == 'retry_wait' %} selected{% endif %}>Retry later</option>
-      <option value="bounced"{% if filter_status == 'bounced' %} selected{% endif %}>Bounced</option>
-      <option value="pending"{% if filter_status == 'pending' %} selected{% endif %}>Pending</option>
-      <option value="researching"{% if filter_status == 'researching' %} selected{% endif %}>Researching</option>
-      <option value="writing"{% if filter_status == 'writing' %} selected{% endif %}>Writing</option>
-      <option value="sending"{% if filter_status == 'sending' %} selected{% endif %}>Sending</option>
-    </select>
-    <button class="button button--ghost button--sm" type="submit">Filter</button>
-    <span class="visible-count">Page {{ table_page }}/{{ table_pages }} · {{ table_total }} total</span>
+    <button class="button button--ghost button--sm" type="submit">Search</button>
+    {% if filter_q or filter_status %}<a class="button button--ghost button--sm" href="{{ url_for('index') }}">Clear</a>{% endif %}
+    <span class="visible-count" data-table-meta>{{ table_total }} row(s) · page {{ table_page }}/{{ table_pages }}</span>
   </form>
-  <table class="app-table" id="app-table">
-    <thead>
-      <tr>
-        <th><input type="checkbox" id="select-all-cb" title="Select all sendable on this page"></th>
-        <th>ID</th>
-        <th>Company</th>
-        <th>Email</th>
-        <th>Status</th>
-        <th>Extra mentions</th>
-        <th>Subject line</th>
-        <th>Updated</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for a in applications %}
-      <tr data-search="{{ (a.company_name ~ ' ' ~ a.email) | lower }}"
-          data-status="{{ a.status }}" data-app-id="{{ a.id }}">
-        <td>
-          {% if a.status in ('ready', 'failed', 'retry_wait', 'retry_later') and a.subject %}
-          <input type="checkbox" class="row-select-cb" data-app-id="{{ a.id }}">
-          {% endif %}
-        </td>
-        <td class="cell-mono">{{ a.id }}</td>
-        <td class="cell-company">{{ a.company_name }}</td>
-        <td class="cell-mono">{{ a.email }}</td>
-        <td>
-          <span class="status-pill status-{{ a.status }}">{{ a.status_label }}</span>
-          {% if a.error_short %}
-          <div class="row-error" title="{{ a.error_message }}">{{ a.error_short }}</div>
-          {% endif %}
-        </td>
-        <td>
-          {% if a.matched_extra_mentions_list %}
-            {% for m in a.matched_extra_mentions_list %}<span class="chip">{{ m }}</span>{% endfor %}
-          {% else %}
-            <span class="cell-empty">—</span>
-          {% endif %}
-        </td>
-        <td class="cell-subject">{{ a.subject or "—" }}</td>
-        <td class="cell-mono cell-time">{{ a.updated_at[:16].replace("T", " ") if a.updated_at else "—" }}</td>
-        <td class="row-actions">
-          {% if a.status in ('ready', 'failed', 'retry_wait', 'retry_later') and a.subject %}
-          <button class="button button--primary button--sm send-one-btn"
-                  data-app-id="{{ a.id }}" type="button">Send</button>
-          {% endif %}
-          <a class="detail-link" href="{{ url_for('company_detail', app_id=a.id) }}">View →</a>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% if table_pages > 1 %}
-  <nav class="pagination" aria-label="Table pages">
+
+  {% if filter_status == 'favorites' %}
+  {# The favorites view's own action: send every ready favorite in one go,
+     across all pages, through the same confirm dialog as any other send. #}
+  <div class="favorites-bar">
+    <span class="favorites-bar__text">
+      <strong data-favorites-sendable>{{ favorites_sendable }}</strong> of your
+      <span data-favorites-total>{{ favorites_total }}</span> favorites
+      {{ "is" if favorites_sendable == 1 else "are" }} ready to send.
+      {% if not favorites_total %}Star companies with ☆ in any tab to add them here.{% endif %}
+    </span>
+    <button class="button button--primary" type="button" id="send-favorites-btn"
+            {% if not favorites_sendable %}disabled{% endif %}>Send ready favorites</button>
+  </div>
+  {% endif %}
+
+  <div class="table-scroll">
+    <table class="app-table" id="app-table">
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="select-all-cb" title="Select all sendable rows on this page"></th>
+          <th>ID</th>
+          <th>Company</th>
+          <th class="col-email">Email</th>
+          <th>Status</th>
+          <th class="col-extras">CV areas</th>
+          <th>Subject line</th>
+          <th class="col-updated">Updated</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="app-tbody">
+        {% include "_rows.html" %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if not applications %}
+  <div class="empty-state" id="empty-state">
+    {% if filter_q or filter_status %}
+    <p>No companies match this filter.</p>
+    <p class="empty-hint"><a href="{{ url_for('index') }}">Clear filters</a> to see everything.</p>
+    {% else %}
+    <p>No companies yet.</p>
+    <p class="empty-hint">{% if not setup.has_companies %}<a href="{{ url_for('settings_page') }}#s-files">Import your companies list</a>, then start preparation below.{% else %}Start preparation below — drafts appear here as they're ready.{% endif %}</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <nav class="pagination" id="pagination" {% if table_pages <= 1 %}hidden{% endif %} aria-label="Table pages">
     {% if table_page > 1 %}
     <a class="button button--ghost button--sm" href="{{ url_for('index', page=table_page - 1, q=filter_q, status=filter_status) }}">← Prev</a>
     {% endif %}
@@ -152,27 +169,36 @@
     <a class="button button--ghost button--sm" href="{{ url_for('index', page=table_page + 1, q=filter_q, status=filter_status) }}">Next →</a>
     {% endif %}
   </nav>
-  {% endif %}
-  {% else %}
-  <div class="empty-state">
-    <p>No companies match this filter.</p>
-    <p class="empty-hint">Start the preparation engine below, or run <code>python main.py --limit 10</code>.</p>
-  </div>
-  {% endif %}
 </section>
 
-<div class="batch-actions" id="batch-actions" style="display: none;">
+<div class="batch-actions" id="batch-actions" hidden>
   <div class="batch-actions-inner">
     <span id="selected-count">0 selected</span>
-    <button class="button button--primary" id="send-selected-btn" type="button">Send Selected</button>
+    <span class="field-hint" id="selected-estimate"></span>
+    <button class="button button--primary" id="send-selected-btn" type="button">Send selected</button>
+    <button class="button button--ghost" id="favorite-selected-btn" type="button">★ Add to favorites</button>
     <button class="button button--ghost" id="deselect-all-btn" type="button">Deselect all</button>
   </div>
 </div>
 
-<div class="send-toast" id="send-toast" style="display: none;">
+<div class="send-toast" id="send-toast" hidden>
   <div class="send-toast-inner">
-    <span id="send-toast-text">Sending...</span>
+    <span id="send-toast-text">Sending…</span>
     <div class="send-toast-bar"><div class="send-toast-fill" id="send-toast-fill"></div></div>
+  </div>
+</div>
+
+{# ── Confirm dialog for sends (replaces window.confirm, which showed no detail) ── #}
+<div class="modal-backdrop" id="confirm-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h3 id="confirm-title">Send these applications?</h3>
+    <p class="modal-copy" id="confirm-copy"></p>
+    <ul class="modal-list" id="confirm-list"></ul>
+    <p class="modal-warn" id="confirm-warn" hidden></p>
+    <div class="modal-actions">
+      <button class="button button--ghost" id="confirm-cancel" type="button">Cancel</button>
+      <button class="button button--primary" id="confirm-ok" type="button">Send now</button>
+    </div>
   </div>
 </div>
 
@@ -180,396 +206,58 @@
   <div>
     <span class="eyebrow">Background</span>
     <h2>Preparation engine</h2>
-    <p class="section-copy">Research + write emails only. Does <strong>not</strong> send — use the table above to review, edit, and send. Skips emails already prepared (matched by ID in the database).</p>
+    <p class="section-copy">Researches each company and drafts its email. Never sends — review and send from the table above. Already-prepared companies are skipped.</p>
+    <div class="progress-heading" style="margin-top:12px;">
+      <span>Prepared</span>
+      <strong data-prep-progress>{{ total_count - pending_prep }} / {{ total_count }}</strong>
+    </div>
+    <div class="cap-bar-track">
+      <div class="cap-bar-fill" data-prep-fill
+           style="width: {{ (100 * (total_count - pending_prep) / total_count) if total_count else 0 }}%"></div>
+    </div>
+    <details class="log-panel" id="log-panel" {% if run_state.running %}open{% endif %}>
+      <summary class="log-panel-toggle">▸ Activity log</summary>
+      <pre class="log-output" id="log-output">{{ run_state.log_tail or "Nothing logged yet." }}</pre>
+    </details>
   </div>
   <form class="run-form" action="{{ url_for('run_pipeline') }}" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label class="batch-limit-label">Batch size
-      <input type="number" name="batch_limit" class="batch-limit-input" min="1" placeholder="All pending" title="Leave empty to prepare every row that still needs work">
+      <input type="number" name="batch_limit" class="batch-limit-input" min="1" placeholder="All" title="Leave empty to prepare every company that still needs work">
     </label>
-    <button class="button button--primary" type="submit" {% if not setup.ready or run_state.running %}disabled{% endif %}>{{ "Preparing…" if run_state.running else "Start preparation" }}</button>
-    {% if run_state.running %}<button class="button button--danger" formaction="{{ url_for('stop_pipeline') }}" formmethod="post" type="submit">Stop safely</button>{% endif %}
+    {# Kept live by app.js from /api/overview: the page used to show
+       "Preparing…" until a manual reload, even after the run had stopped. #}
+    <button class="button button--primary" type="submit" id="start-prep-btn"
+            data-prep-ready="{{ 'yes' if setup.prep_ready else '' }}"
+            {% if not setup.prep_ready or run_state.running %}disabled{% endif %}>{{ "Preparing…" if run_state.running else "Start preparation" }}</button>
+    <button class="button button--danger" id="stop-prep-btn" formaction="{{ url_for('stop_pipeline') }}"
+            formmethod="post" type="submit" {% if not run_state.running %}hidden{% endif %}
+            {% if run_state.stop_requested %}disabled{% endif %}>{{ "Stopping…" if run_state.stop_requested else "Stop safely" }}</button>
+    <span class="field-hint" id="run-state-note" aria-live="polite">{% if run_state.running and run_state.stop_requested %}Finishing the companies already in progress, then stopping.{% elif run_state.queued %}Queued — starting in a moment.{% endif %}</span>
+    {% if not setup.prep_ready %}<span class="field-hint">Finish steps 1–3 above first.</span>{% endif %}
   </form>
-  <p class="field-hint" style="margin-top:8px;">Or run manually: <code>python main.py --limit 10</code></p>
 </section>
 
-<details class="setup-collapse">
-<summary class="setup-collapse-toggle">Workspace setup (credentials, companies file, CV)</summary>
-<section class="workspace-section">
-  <div class="section-heading">
-    <div>
-      <span class="eyebrow">Workspace setup</span>
-      <h2>Everything the pipeline needs</h2>
-      <p class="section-copy">Keep your credentials, company list, and CV together in this private local workspace.</p>
-    </div>
-    <div class="setup-status{% if setup.ready %} setup-status--ready{% endif %}">
-      <span class="dot"></span>{{ "Ready to run" if setup.ready else "Setup incomplete" }}
-    </div>
+<section class="run-section">
+  <div>
+    <span class="eyebrow">Background</span>
+    <h2>Bounce check</h2>
+    <p class="section-copy">Gmail often accepts a send even for a dead mailbox, then reports it later as a bounce email. Those companies turn red as <strong class="text-danger">Not delivered</strong>.
+    {% if bounce_check.available and bounce_check.auto_minutes %}Your inbox is scanned automatically every {{ bounce_check.auto_minutes }} min for 3 days after each send.{% elif not bounce_check.available %}Needs inbox access: sign in with Google with “Read email”, or save an app password in Settings.{% endif %}</p>
   </div>
-  <form class="setup-form" action="{{ url_for('setup') }}" method="post" enctype="multipart/form-data">
-    <div class="form-group form-group--wide">
-      <label for="ai-key">BAI API key</label>
-      <div class="input-row">
-        <input id="ai-key" name="ai_api_key" type="password" placeholder="{{ 'Saved locally — enter to replace' if setup.has_api_key else 'Paste your provider key' }}" autocomplete="off">
-        <button class="button button--ghost" type="button" id="validate-ai-btn">Validate</button>
-      </div>
-      <span class="field-hint"><a href="https://chat.b.ai/key" target="_blank" rel="noreferrer">Open provider key portal</a>. {% if setup.has_api_key %}Saved locally.{% else %}Used for research and drafting.{% endif %}</span>
-      <span class="field-hint validation-result" id="ai-validation-result" aria-live="polite"></span>
-    </div>
-    <div class="form-group">
-      <label for="ai-model">Agent model</label>
-      <select id="ai-model" name="ai_model">
-        {% for model in ["hy3", "mimo-v2.5", "glm-5.3-flash", "qwen3.8-flash"] %}<option value="{{ model }}"{% if setup.ai_model == model %} selected{% endif %}>{{ model }}</option>{% endfor %}
-      </select>
-    </div>
-    <div class="form-group form-group--wide">
-      <label for="ai-base-url">AI API base URL</label>
-      <input id="ai-base-url" name="ai_base_url" value="{{ setup.ai_base_url }}" placeholder="https://api.b.ai/v1">
-      <span class="field-hint">The key portal and the inference API are separate URLs.</span>
-    </div>
-
-    {# ── Google OAuth section ── #}
-    <div class="form-group form-group--wide gmail-section">
-      <label>Gmail account</label>
-
-      {% if setup.has_gmail_oauth %}
-      {# ── CONNECTED STATE ── #}
-      <div class="google-connected-card" id="google-connected-card">
-        <div class="google-connected-left">
-          <svg class="google-icon-sm" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-          <div>
-            <div class="google-connected-email">{{ setup.oauth_email }}</div>
-            <div class="google-connected-label">Connected via Google OAuth · emails sent using Gmail API</div>
-          </div>
-        </div>
-        <a href="{{ url_for('oauth_disconnect') }}" class="button button--ghost button--sm" id="google-disconnect-btn">Disconnect</a>
-      </div>
-      {% else %}
-      {# ── DISCONNECTED STATE ── #}
-      <div class="google-connect-card" id="google-connect-card">
-        <div class="google-connect-desc">
-          Sign in with Google to send emails directly from your Gmail — no app password needed.
-          {% if setup.has_gmail_smtp %}<br><span style="color:#8A93A3;font-size:11px;">App password is also saved as a fallback.</span>{% endif %}
-        </div>
-        <a href="{{ url_for('oauth_start') }}" class="button-google" id="google-connect-btn">
-          <svg class="google-icon" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84z"/></svg>
-          Sign in with Google
-        </a>
-        <span class="field-hint validation-result" id="gmail-oauth-result" aria-live="polite"></span>
-      </div>
-
-      {# ── App Password fallback (collapsible) ── #}
-      <details class="smtp-fallback" {% if not setup.has_gmail_oauth %}{% endif %}>
-        <summary class="smtp-fallback-toggle">Use App Password instead (manual / fallback)</summary>
-        <div class="smtp-fallback-body">
-          <div class="form-group" style="margin-top:10px;">
-            <label for="gmail-address">Gmail address</label>
-            <input id="gmail-address" name="gmail_address" type="email" value="{{ setup.gmail_address }}" placeholder="you@gmail.com" autocomplete="email">
-          </div>
-          <div class="form-group" style="margin-top:8px;">
-            <label for="gmail-password">Gmail app password</label>
-            <div class="input-row">
-              <input id="gmail-password" name="gmail_app_password" type="password"
-                     placeholder="{{ 'Saved locally — enter to replace' if setup.has_gmail_smtp else 'xxxx xxxx xxxx xxxx' }}"
-                     autocomplete="new-password">
-              <button class="button button--ghost" type="button" id="validate-gmail-btn">Validate</button>
-            </div>
-            <span class="field-hint">Create at <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">myaccount.google.com/apppasswords</a> (requires 2-Step Verification).</span>
-            <span class="field-hint validation-result" id="gmail-validation-result" aria-live="polite"></span>
-          </div>
-        </div>
-      </details>
-      {% endif %}
-    </div>
-
-    <div class="form-group">
-      <label for="your-name">Your name</label>
-      <input id="your-name" name="your_name" value="{{ setup.name }}" placeholder="Your full name">
-    </div>
-    <div class="form-group">
-      <label for="target-role">Target role</label>
-      <input id="target-role" name="target_role" value="{{ setup.target_role }}" placeholder="Security engineering intern">
-    </div>
-    <div class="form-group">
-      <label for="companies-file">Companies CSV or Excel</label>
-      <input id="companies-file" name="companies_file" type="file" accept=".csv,.xlsx,.xls">
-      <span class="field-hint">{% if setup.companies_name %}Current: {{ setup.companies_name }}{% if setup.companies_rows %} — {{ setup.companies_rows }} row(s){% endif %} (upload a new file to replace){% else %}Required column: email{% endif %}</span>
-    </div>
-    <div class="form-group">
-      <label for="cv-file">CV attachment</label>
-      <input id="cv-file" name="cv_file" type="file" accept=".pdf,.doc,.docx">
-      <span class="field-hint">{% if setup.cv_name %}Current: {{ setup.cv_name }}{% if setup.cv_size_kb %} — {{ setup.cv_size_kb }} KB{% endif %} (upload a new file to replace){% else %}Attached to every application{% endif %}</span>
-    </div>
-    <div class="form-actions">
-      <button class="button button--primary" type="submit">Save workspace</button>
-      {% if run_state.running %}<span class="run-label"><span class="dot dot--pulse"></span> Pipeline is running</span>{% endif %}
-    </div>
-  </form>
+  <div class="run-form">
+    <button class="button button--primary" type="button" id="check-bounces-btn" {% if not bounce_check.available %}disabled title="Needs Google sign-in with inbox access, or a saved app password"{% endif %}>Check bounces now</button>
+    <span class="field-hint" id="bounce-last-check" data-last-at="{{ bounce_check.last_at or '' }}">
+      {% if bounce_check.last_error %}<span class="text-danger">Last check failed: {{ bounce_check.last_error }}</span>
+      {% elif not bounce_check.last_at %}Not checked yet.{% endif %}
+    </span>
+    <span class="field-hint" id="check-bounces-result" aria-live="polite"></span>
+  </div>
 </section>
-</details>
 
-<script>
-// --- Inline credential validation (no save, no reload, no lost typing) ---
-(function () {
-  const val = (id) => (document.getElementById(id) || {}).value || "";
-  const gmailFields = ["gmail-address", "gmail-password"];
-  const aiFields = ["ai-key", "ai-base-url", "ai-model"];
 
-  function shakeInputs(fieldIds) {
-    fieldIds.forEach((id) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.classList.remove("shake");
-      // Force reflow so re-adding the class triggers animation again
-      void el.offsetWidth;
-      el.classList.add("input-error", "shake");
-      el.addEventListener("animationend", () => el.classList.remove("shake"), { once: true });
-    });
-  }
+{% endblock %}
 
-  function clearErrorInputs(fieldIds) {
-    fieldIds.forEach((id) => {
-      const el = document.getElementById(id);
-      if (el) el.classList.remove("input-error", "shake");
-    });
-  }
-
-  function clearOnInput(resultId, fieldIds) {
-    const result = document.getElementById(resultId);
-    if (!result) return;
-    fieldIds.forEach((id) => {
-      const field = document.getElementById(id);
-      if (field) field.addEventListener("input", () => {
-        result.textContent = "";
-        result.classList.remove("validation-result--ok", "validation-result--bad");
-        clearErrorInputs(fieldIds);
-      });
-    });
-  }
-
-  function wireValidate(buttonId, resultId, endpoint, buildPayload, errorFieldIds) {
-    const button = document.getElementById(buttonId);
-    const result = document.getElementById(resultId);
-    if (!button || !result) return;
-    button.addEventListener("click", async () => {
-      result.textContent = "Checking…";
-      result.classList.remove("validation-result--ok", "validation-result--bad");
-      clearErrorInputs(errorFieldIds || []);
-      button.disabled = true;
-      try {
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify(buildPayload()),
-        });
-        const data = await response.json();
-        result.textContent = (data.ok ? "✓ " : "✗ ") + data.message;
-        result.classList.add(data.ok ? "validation-result--ok" : "validation-result--bad");
-        if (!data.ok && errorFieldIds) {
-          shakeInputs(errorFieldIds);
-        } else if (data.ok) {
-          clearErrorInputs(errorFieldIds || []);
-        }
-      } catch (err) {
-        result.textContent = "✗ Could not reach the dashboard server — is it still running?";
-        result.classList.add("validation-result--bad");
-        if (errorFieldIds) shakeInputs(errorFieldIds);
-      } finally {
-        button.disabled = false;
-      }
-    });
-    // Validation only tested what was typed at click time; clear it on next edit.
-    clearOnInput(resultId, buttonId === "validate-gmail-btn" ? gmailFields : aiFields);
-  }
-
-  wireValidate("validate-gmail-btn", "gmail-validation-result", "/api/validate-gmail", () => ({
-    gmail_address: val("gmail-address").trim(),
-    gmail_app_password: val("gmail-password").trim(),
-  }), gmailFields);
-  wireValidate("validate-ai-btn", "ai-validation-result", "/api/validate-ai", () => ({
-    ai_api_key: val("ai-key").trim(),
-    ai_base_url: val("ai-base-url").trim(),
-    ai_model: val("ai-model").trim(),
-  }), aiFields);
-})();
-
-// --- Auto-refresh, pauses itself while you're typing anywhere (search OR setup form) ---
-(function () {
-  const REFRESH_MS = 5000;
-  const toggle = document.getElementById("auto-refresh-toggle");
-  const stored = localStorage.getItem("dashboardAutoRefresh");
-  if (stored !== null) toggle.checked = stored === "true";
-
-  toggle.addEventListener("change", () => {
-    localStorage.setItem("dashboardAutoRefresh", toggle.checked);
-    if (toggle.checked) scheduleRefresh();
-  });
-
-  // If the user typed anything into the setup form but hasn't saved yet,
-  // a reload would wipe it — never auto-refresh in that state.
-  let setupDirty = false;
-  const setupForm = document.querySelector(".setup-form");
-  if (setupForm) {
-    setupForm.addEventListener("input", () => { setupDirty = true; });
-    // Saved successfully -> server re-renders the page anyway, clear the flag.
-    setupForm.addEventListener("submit", () => { setupDirty = false; });
-  }
-
-  let timer = null;
-  function scheduleRefresh() {
-    if (timer) clearTimeout(timer);
-    if (!toggle.checked) return;
-    timer = setTimeout(() => {
-      const active = document.activeElement;
-      const typingInFilter = active && active.closest(".table-controls");
-      const typingInSetup = setupForm && setupForm.contains(active);
-      // Don't yank the page away mid-typing, and never discard unsaved setup input.
-      if (typingInFilter || typingInSetup || setupDirty) { scheduleRefresh(); return; }
-      window.location.reload();
-    }, REFRESH_MS);
-  }
-  scheduleRefresh();
-
-  // If the user focuses a setup field after a refresh was already scheduled,
-  // that scheduled reload must not fire while they type.
-  document.addEventListener("focusin", (e) => {
-    if (setupForm && setupForm.contains(e.target)) {
-      if (timer) clearTimeout(timer);
-      scheduleRefresh();
-    }
-  });
-})();
-
-// --- Checkbox selection + send via job queue ---
-(function () {
-  const selectAllCb = document.getElementById("select-all-cb");
-  const batchBar = document.getElementById("batch-actions");
-  const countEl = document.getElementById("selected-count");
-  const sendBtn = document.getElementById("send-selected-btn");
-  const deselectBtn = document.getElementById("deselect-all-btn");
-  const toast = document.getElementById("send-toast");
-  const toastText = document.getElementById("send-toast-text");
-  const toastFill = document.getElementById("send-toast-fill");
-  if (!selectAllCb) return;
-
-  function cbs() { return Array.from(document.querySelectorAll(".row-select-cb")); }
-  function checked() { return cbs().filter(c => c.checked).map(c => +c.dataset.appId); }
-
-  function updateBar() {
-    const ids = checked();
-    batchBar.style.display = ids.length ? "flex" : "none";
-    countEl.textContent = ids.length + " selected";
-  }
-
-  selectAllCb.addEventListener("change", () => {
-    cbs().filter(c => c.closest("tr").style.display !== "none")
-         .forEach(c => { c.checked = selectAllCb.checked; });
-    updateBar();
-  });
-  document.addEventListener("change", e => {
-    if (e.target.classList.contains("row-select-cb")) updateBar();
-  });
-  deselectBtn.addEventListener("click", () => {
-    cbs().forEach(c => { c.checked = false; });
-    selectAllCb.checked = false;
-    updateBar();
-  });
-
-  function showToast(text, pct) {
-    toast.style.display = "flex";
-    toastText.textContent = text;
-    toastFill.style.width = (pct * 100) + "%";
-  }
-  function hideToast() { toast.style.display = "none"; }
-
-  async function createSendJob(appIds) {
-    showToast("Creating send job...", 0);
-    sendBtn.disabled = true;
-
-    try {
-      const resp = await fetch("/api/send-job", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ app_ids: appIds }),
-      });
-      const data = await resp.json();
-      if (!data.ok) {
-        showToast("✗ " + data.message, 0);
-        setTimeout(hideToast, 3000);
-        sendBtn.disabled = false;
-        return;
-      }
-      pollJobProgress(data.job_id, data.total);
-    } catch (err) {
-      showToast("✗ Network error: " + err.message, 0);
-      setTimeout(hideToast, 4000);
-      sendBtn.disabled = false;
-    }
-  }
-
-  async function pollJobProgress(jobId, total) {
-    const poll = async () => {
-      try {
-        const resp = await fetch(`/api/send-job/${jobId}`);
-        const data = await resp.json();
-        if (!data.ok) return;
-
-        const done = data.sent + data.failed;
-        const pct = total > 0 ? done / total : 0;
-        showToast(
-          `Sending: ${data.sent} sent, ${data.failed} failed, ` +
-          `${data.queued + data.sending} remaining`,
-          pct
-        );
-
-        (data.items || []).forEach(item => {
-          const row = document.querySelector(`tr[data-app-id="${item.app_id}"]`);
-          if (!row) return;
-          const pill = row.querySelector(".status-pill");
-          if (pill) {
-            pill.className = "status-pill status-" + item.status;
-            const labels = {sent:"Sent", failed:"Failed", sending:"Sending",
-                           queued:"Queued", retry_wait:"Retry later"};
-            pill.textContent = labels[item.status] || item.status;
-          }
-          if (item.status === "sent") {
-            const cb = row.querySelector(".row-select-cb");
-            if (cb) { cb.checked = false; cb.disabled = true; }
-            const btn = row.querySelector(".send-one-btn");
-            if (btn) btn.remove();
-          }
-        });
-
-        if (data.status === "completed") {
-          showToast(`✓ Done: ${data.sent} sent, ${data.failed} failed.`, 1);
-          setTimeout(() => { hideToast(); window.location.reload(); }, 2500);
-          sendBtn.disabled = false;
-          updateBar();
-          return;
-        }
-        setTimeout(poll, 2000);
-      } catch (err) {
-        setTimeout(poll, 3000);
-      }
-    };
-    poll();
-  }
-
-  sendBtn.addEventListener("click", () => {
-    const ids = checked();
-    if (!ids.length) return;
-    if (!confirm(`Send ${ids.length} email(s) now?`)) return;
-    createSendJob(ids);
-  });
-
-  document.addEventListener("click", e => {
-    const btn = e.target.closest(".send-one-btn");
-    if (!btn) return;
-    if (!confirm("Send this email now?")) return;
-    btn.disabled = true;
-    btn.textContent = "Sending…";
-    createSendJob([+btn.dataset.appId]);
-  });
-})();
-</script>
-
+{% block scripts %}
+<script src="{{ asset('app.js') }}"></script>
 {% endblock %}

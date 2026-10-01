@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Profile · Internix{% endblock %}
+{% block content %}
+
+<header class="topbar">
+  <div>
+    <h1>Your profile</h1>
+    <p class="subtitle">Everything your emails say about you — from your CV, checked, in English and French</p>
+  </div>
+  <div class="topbar-right">
+    <div class="setup-status{% if profile.spec_en %} setup-status--ready{% endif %}">
+      <span class="dot"></span>{{ "In use" if profile.spec_en else "Not set up yet" }}
+    </div>
+  </div>
+</header>
+
+{% include "_flashes.html" %}
+
+{% if not has_ai_key %}
+<div class="notice notice--warn">The CV analysis runs on your own AI key — <a href="{{ url_for('settings_page') }}#s-ai">add one in Settings</a> first (Groq's is free).</div>
+{% endif %}
+
+<div class="profile-steps">
+
+  {# ── 1. From the CV ──────────────────────────────────────────────── #}
+  <details class="settings-card profile-step" id="step-cv" {% if not facts and mode != 'custom' %}open{% endif %}>
+    <summary class="profile-step__summary">
+      <span class="profile-step__num">1</span>
+      <span><strong>{{ "Start from your CV" if not facts else "Analyse your CV again" }}</strong>
+        <span class="field-hint">The AI drafts your profile from your CV only. You check every sentence next.</span></span>
+    </summary>
+    <form class="settings-grid" action="{{ url_for('profile.analyze') }}" method="post" enctype="multipart/form-data" id="analyze-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-group form-group--wide">
+        <label for="cv-file">Your CV (PDF or DOCX)</label>
+        <input id="cv-file" name="cv_file" type="file" accept=".pdf,.docx" {% if not cv %}required{% endif %}>
+        <span class="field-hint">{% if cv %}Leave empty to use <strong>{{ cv.name }}</strong>.{% else %}Also becomes the attachment of every application.{% endif %}</span>
+      </div>
+      <div class="form-group">
+        <label for="full-name">Your name, as it signs the emails</label>
+        <input id="full-name" name="full_name" type="text" maxlength="120" required
+               value="{{ (facts or {}).get('full_name') or current_user.full_name }}">
+      </div>
+      <div class="form-group">
+        <label for="kind">What you're looking for</label>
+        <select id="kind" name="kind">
+          {% set current_kind = ((facts or {}).get('internship') or {}).get('kind', 'end_of_study') %}
+          {% for key, k in kinds.items() %}<option value="{{ key }}" {% if key == current_kind %}selected{% endif %}>{{ k.role_en }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="start-month">Starting</label>
+        {% set intern = (facts or {}).get('internship') or {} %}
+        <div class="input-row">
+          <select id="start-month" name="start_month" required>
+            {% for m in months %}<option value="{{ loop.index }}" {% if intern.get('month') == loop.index %}selected{% endif %}>{{ m }}</option>{% endfor %}
+          </select>
+          <select name="start_year" required aria-label="Start year">
+            {% for y in range(this_year, this_year + 3) %}<option value="{{ y }}" {% if intern.get('year') == y %}selected{% endif %}>{{ y }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="duration">Duration (months, optional)</label>
+        <input id="duration" name="duration" type="number" min="1" max="36" value="{{ intern.get('duration') or '' }}">
+      </div>
+      <div class="form-group form-group--wide">
+        <label class="check-control"><input type="checkbox" name="open_to_hire" {% if intern.get('open_to_hire', True) %}checked{% endif %}> Say I'm open to staying with the team afterwards</label>
+      </div>
+      <div class="form-actions">
+        <button class="button button--primary" type="submit" id="analyze-btn" {% if not has_ai_key %}disabled{% endif %}>Analyse my CV</button>
+        <span class="field-hint" id="analyze-note">Takes 20–60 seconds.{% if facts %} Replaces the profile below.{% endif %}</span>
+      </div>
+    </form>
+  </details>
+
+  {# ── 2. Style and language ───────────────────────────────────────── #}
+  {% if facts or mode == 'custom' %}
+  <section class="settings-card profile-step" id="step-style">
+    <div class="profile-step__summary profile-step__summary--static">
+      <span class="profile-step__num">2</span>
+      <span><strong>Email style &amp; language</strong>
+        <span class="field-hint">The style sets the wording around your facts. Preview it on a real company from your list before choosing.</span></span>
+    </div>
+    <div class="template-grid" role="radiogroup" aria-label="Email style">
+      {% if mode == 'custom' %}
+      <label class="template-card{% if template_id == 'custom' %} template-card--active{% endif %}">
+        <input type="radio" name="template_id" value="custom" {% if template_id == 'custom' %}checked{% endif %}>
+        <strong>Your own wording</strong>
+        <span class="field-hint">The hand-tuned wording already on your account — kept exactly as it is.</span>
+      </label>
+      {% endif %}
+      {% for t in templates %}
+      <label class="template-card{% if template_id == t.id %} template-card--active{% endif %}{% if not facts %} template-card--disabled{% endif %}">
+        <input type="radio" name="template_id" value="{{ t.id }}" {% if template_id == t.id %}checked{% endif %} {% if not facts %}disabled{% endif %}>
+        <strong>{{ t.name }}</strong>
+        <span class="field-hint">{{ t.description }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    {% if mode == 'custom' and not facts %}<p class="field-hint">The other styles need a CV profile — use step 1 to create one. Your own wording stays available.</p>{% endif %}
+    <div class="settings-grid">
+      <div class="form-group">
+        <label for="language-mode">Language</label>
+        <select id="language-mode">
+          <option value="auto" {% if language_mode == 'auto' %}selected{% endif %}>Automatic — French for French-speaking companies, English otherwise</option>
+          <option value="en" {% if language_mode == 'en' %}selected{% endif %}>Always English</option>
+          <option value="fr" {% if language_mode == 'fr' %}selected{% endif %}>Always French</option>
+        </select>
+        <span class="field-hint">Automatic reads each company's own website. You can still switch any single email with the EN | FR button on its page.</span>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="button button--primary" type="button" id="save-style-btn">Save style &amp; language</button>
+      <button class="button button--ghost" type="button" id="preview-btn">Preview</button>
+      <span class="field-hint validation-result" id="style-result" aria-live="polite"></span>
+    </div>
+    <div class="preview-pair" id="preview-pair" hidden>
+      <article class="email-preview"><div class="email-preview__headers"><span class="email-preview__key">EN</span><span class="email-preview__val email-preview__subject" data-preview-subject="en"></span></div><div class="email-preview__body" data-preview-body="en"></div></article>
+      <article class="email-preview"><div class="email-preview__headers"><span class="email-preview__key">FR</span><span class="email-preview__val email-preview__subject" data-preview-subject="fr"></span></div><div class="email-preview__body" data-preview-body="fr"></div></article>
+    </div>
+  </section>
+  {% endif %}
+
+  {# ── 3. The editor ──────────────────────────────────────────────── #}
+  {% if facts %}
+  <section class="settings-card profile-step" id="editor">
+    <div class="profile-step__summary profile-step__summary--static">
+      <span class="profile-step__num">3</span>
+      <span><strong>Check and edit what the emails say</strong>
+        <span class="field-hint">Every sentence below can appear in an email under your name. Anything mentioning a number or a name your CV doesn't contain is flagged in amber — fix it, or tick “This is true”.</span></span>
+    </div>
+    <div id="profile-editor" class="profile-editor"></div>
+    <div class="form-actions sticky-actions">
+      <button class="button button--primary" type="button" id="save-profile-btn">Save profile</button>
+      <span class="field-hint validation-result" id="profile-result" aria-live="polite"></span>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if mode == 'custom' %}
+  <details class="settings-card profile-step" id="custom-wording">
+    <summary class="profile-step__summary">
+      <span class="profile-step__num">✎</span>
+      <span><strong>Edit your own wording (advanced)</strong>
+        <span class="field-hint">The hand-written specification, in English and French. Checked by composing a sample email before it's saved.</span></span>
+    </summary>
+    <div class="settings-grid">
+      <div class="form-group form-group--wide"><label for="spec-en">English</label>
+        <textarea id="spec-en" class="code-area" rows="16" spellcheck="false">{{ profile.spec_en | tojson(indent=2) if profile.spec_en else "" }}</textarea></div>
+      <div class="form-group form-group--wide"><label for="spec-fr">French</label>
+        <textarea id="spec-fr" class="code-area" rows="16" spellcheck="false">{{ profile.spec_fr | tojson(indent=2) if profile.spec_fr else "" }}</textarea></div>
+    </div>
+    <div class="form-actions">
+      <button class="button button--primary" type="button" id="save-custom-btn">Save wording</button>
+      <span class="field-hint validation-result" id="custom-result" aria-live="polite"></span>
+    </div>
+  </details>
+  {% endif %}
+</div>
+
+<script type="application/json" id="profile-data">{{ {"facts": facts, "flags": flags} | tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ asset('profile.js') }}"></script>
+{% endblock %}

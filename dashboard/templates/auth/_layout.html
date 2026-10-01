@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% set bare = true %}
+{% from "_brand.html" import logo with context %}
+{# Logo top-left, the way to the other page top-right, one card in the middle. #}
+{% block bare %}
+<div class="auth">
+  <header class="auth__top">
+    <a href="{{ url_for('index') }}" aria-label="Internix home">{{ logo(26) }}</a>
+    <p class="auth__switch">{% block auth_switch %}{% endblock %}</p>
+  </header>
+  <main class="auth__main">
+    <div class="auth__head">{% block auth_head %}{% endblock %}</div>
+    <section class="auth-card">
+      {% block auth_card %}{% endblock %}
+    </section>
+    {% block auth_after %}
+    <ul class="auth-trust">
+      <li>Nothing sent without your review</li>
+      <li>Your keys are encrypted</li>
+      <li>English &amp; French</li>
+    </ul>
+    {% endblock %}
+  </main>
+</div>
+{% endblock %}

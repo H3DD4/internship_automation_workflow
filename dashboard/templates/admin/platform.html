@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Platform · Internix admin{% endblock %}
+{% block content %}
+{% set admin_title = "Platform" %}
+{% set admin_subtitle = "Settings that apply to every account" %}
+{% include "admin/_nav.html" %}
+
+<div class="settings-stack">
+  <section class="settings-card">
+    <div class="settings-card__head">
+      <h2>Who can sign up</h2>
+      <p class="section-copy">New accounts never see anyone else's data, whichever you choose.</p>
+    </div>
+    <form method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="signup">
+      {% for value, label, hint in [
+        ("approval", "Anyone can request an account — I approve each one", "Password sign-ups wait under Users → Pending. People who sign up with Google are verified by Google and start right away."),
+        ("open", "Anyone can sign up and start right away", "For an open beta."),
+        ("closed", "Nobody — I create every account myself", "Invite only.")] %}
+      <label class="choice"><input type="radio" name="signup_mode" value="{{ value }}" {% if signup_mode == value %}checked{% endif %}>
+        <span><strong>{{ label }}</strong><span class="field-hint">{{ hint }}</span></span></label>
+      {% endfor %}
+      <div><button class="button button--primary" type="submit">Save</button></div>
+    </form>
+  </section>
+
+  <section class="settings-card">
+    <div class="settings-card__head">
+      <h2>Sign in with Google</h2>
+      <p class="section-copy">One Google OAuth client for the whole platform — users just click “Sign in with Google” to send from their Gmail. Without it they can still send with an app password or any SMTP server.</p>
+    </div>
+    <p class="setup-status{% if google_configured %} setup-status--ready{% endif %}"><span class="dot"></span>{{ "Configured (stored encrypted)" if google_configured else "Not configured" }}</p>
+    <ol class="oauth-steps">
+      <li>In <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Google Cloud Console</a>, enable the <strong>Gmail API</strong> for your project.</li>
+      <li>On the <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">OAuth consent screen</a>, choose <em>External</em>. While the app is in <em>Testing</em>, add each user's Gmail as a test user (max 100; sign-ins expire after 7 days). Publish and verify the app to open it to everyone.</li>
+      <li>Create a <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">client</a> of type <strong>Web application</strong> with this authorised redirect URI:<br><code class="copyable">{{ redirect_uri }}</code></li>
+      <li>Download its JSON and upload it here.</li>
+    </ol>
+    <form method="post" enctype="multipart/form-data" class="oauth-upload">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="google_client">
+      <input type="file" name="client_secret" accept="application/json,.json">
+      <button class="button button--ghost button--sm" type="submit">Upload client JSON</button>
+    </form>
+    {% if google_configured %}
+    <form method="post" class="inline-form" style="margin-top:10px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="google_client_remove">
+      <button class="button button--danger button--sm" type="submit">Remove client</button>
+    </form>
+    {% endif %}
+    <form method="post" class="stack-form" style="margin-top:18px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="google_scope">
+      <label class="choice"><input type="checkbox" name="google_inbox_read" value="on" {% if google_inbox_read %}checked{% endif %}>
+        <span><strong>Also ask for “Read email” (bounce detection through Google)</strong>
+        <span class="field-hint">This is a <em>restricted</em> Gmail permission: a public app needs Google's yearly security assessment to use it. Leave it off for a public launch — users can still detect bounces with an app password.</span></span></label>
+      <div><button class="button button--primary" type="submit">Save</button></div>
+    </form>
+  </section>
+</div>
+{% endblock %}

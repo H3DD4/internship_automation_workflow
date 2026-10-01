@@ -1,10 +1,19 @@
-pandas>=2.0.0
-openpyxl>=3.1.0
-python-dotenv>=1.0.0
-anthropic>=0.34.0
-beautifulsoup4>=4.12.0
-requests>=2.31.0
-flask>=3.0.0
-google-auth>=2.20.0
-google-auth-oauthlib>=1.0.0
-google-api-python-client>=2.90.0
+# Pinned to the versions the test suite passes with; bump deliberately.
+flask==3.1.3
+sqlalchemy==2.1.1
+psycopg[binary]==3.3.6
+argon2-cffi==25.1.0
+cryptography==50.0.1
+python-dotenv==1.2.3
+requests==2.34.2
+beautifulsoup4==4.15.0
+pandas==3.0.5
+openpyxl==3.1.5
+defusedxml==0.7.1
+pypdf==6.19.0
+google-auth==2.58.0
+google-auth-oauthlib==1.4.1
+google-api-python-client==2.200.0
+# Web servers: waitress runs everywhere (local Windows), gunicorn in the Linux image.
+waitress==3.0.2
+gunicorn==23.0.0; sys_platform != "win32"
