@@ -1109,11 +1109,15 @@ def _finish_google_login(creds, granted: set):
         if mode == "closed":
             return fail("Sign-up is closed on this platform — ask the administrator for an account.")
         import secrets as _secrets
+        # Google has verified who owns this address, so the account is ready
+        # at once and the visitor lands inside the app. The approval queue
+        # is for password sign-ups, whose address nobody has checked.
         uid = accounts.create_user(email, _secrets.token_urlsafe(32), full_name=claims.get("name") or "",
-                                   status="active" if mode == "open" else "pending")
+                                   status="active")
         accounts.audit("register_google", target=uid, ip=security.client_ip(),
-                       detail={"status": "active" if mode == "open" else "pending"})
+                       detail={"status": "active", "signup_mode": mode})
         user = accounts.get_user(uid)
+        session["welcome"] = True
     cfg = UserConfig(user["id"], user["role"])
     sending = _store_google_token(cfg, creds, email, granted)
     if user["status"] == "pending":
@@ -1126,7 +1130,9 @@ def _finish_google_login(creds, granted: set):
                          last_login_at=accounts._now())
     token, _ = accounts.create_session(user["id"], security.client_ip(), request.headers.get("User-Agent", ""))
     accounts.audit("login_google", actor=user["id"], ip=security.client_ip())
-    if not sending:
+    if session.pop("welcome", False):
+        flash("Welcome to Internix — your account is ready. Follow the four steps below to prepare your first applications.", "success")
+    elif not sending:
         flash("Signed in. To send from this Gmail, connect it in Settings → Email account.", "success")
     response = redirect(session.pop("oauth_next", None) or url_for("index"))
     security.set_session_cookie(response, token)

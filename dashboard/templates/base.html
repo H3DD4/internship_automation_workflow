@@ -3,15 +3,15 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>{% block title %}Internix{% endblock %}</title>
   <meta name="description" content="Internix researches every company and writes internship applications from your own CV — in English or French — for you to review and send.">
   {% if current_user %}<meta name="csrf-token" content="{{ csrf_token() }}">{% endif %}
   <link rel="icon" type="image/svg+xml" href="{{ asset('brand/icon.svg') }}">
-  <meta name="theme-color" content="#F5F2E9">
+  <meta name="theme-color" content="#FFFFFF">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ asset('style.css') }}">
   <link rel="stylesheet" href="{{ asset('internix.css') }}">
   {% block head %}{% endblock %}
@@ -39,53 +39,49 @@
   </script>
   {% endif %}
 </head>
-<body class="{% block body_class %}{% if current_user and not bare %}has-shell{% else %}is-bare{% endif %}{% endblock %}">
+<body class="{% block body_class %}{% if current_user and not bare %}has-appbar{% else %}is-bare{% endif %}{% endblock %}">
   {% if current_user and not bare %}
   {% set ep = request.endpoint or '' %}
-  <div class="shell">
-    <aside class="sidebar" aria-label="Main navigation">
-      <a class="sidebar__brand" href="{{ url_for('index') }}">{{ logo(24) }}</a>
-      <nav class="sidebar__nav">
-        <span class="sidebar__label">Workspace</span>
-        <a class="navlink{% if ep in ('index', 'company_detail') %} navlink--active{% endif %}" href="{{ url_for('index') }}">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.5 2.5 10.8 13.2"/><path d="m21.5 2.5-6.8 19-3.9-8.3-8.3-3.9z"/></svg>
-          <span>Applications</span>
-        </a>
-        <a class="navlink{% if ep.startswith('profile.') %} navlink--active{% endif %}" href="{{ url_for('profile.page') }}">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg>
-          <span>Profile &amp; style</span>
-        </a>
-        <a class="navlink{% if ep == 'settings_page' %} navlink--active{% endif %}" href="{{ url_for('settings_page') }}">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
-          <span>Settings</span>
-        </a>
-        {% if current_user.role == 'admin' %}
-        <span class="sidebar__label">Administration</span>
-        <a class="navlink{% if ep == 'admin.users' %} navlink--active{% endif %}" href="{{ url_for('admin.users') }}">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.5c0-2.2-1.8-4-4-4H7c-2.2 0-4 1.8-4 4V20"/><circle cx="9.5" cy="7.5" r="3.5"/><path d="M21 20v-1.5a4 4 0 0 0-3-3.9M16 4.1a3.5 3.5 0 0 1 0 6.8"/></svg>
-          <span>Users</span>
-          {% if pending_approvals %}<span class="navlink__badge" title="Waiting for approval">{{ pending_approvals }}</span>{% endif %}
-        </a>
-        <a class="navlink{% if ep == 'admin.platform' %} navlink--active{% endif %}" href="{{ url_for('admin.platform') }}">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v6c0 4.6 3.2 7.9 7.5 9 4.3-1.1 7.5-4.4 7.5-9V6z"/><path d="m9 12 2 2 4-4"/></svg>
-          <span>Platform</span>
-        </a>
-        <a class="navlink{% if ep == 'admin.audit' %} navlink--active{% endif %}" href="{{ url_for('admin.audit') }}">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h11a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H8"/><path d="M4 4h1v16H4zM9 9h7M9 13h7M9 17h4"/></svg>
-          <span>Audit log</span>
-        </a>
-        {% endif %}
-      </nav>
-      <details class="sidebar__user">
-        <summary>
-          <span class="avatar" aria-hidden="true">{{ (current_user.full_name or current_user.username or current_user.email)[:1] | upper }}</span>
-          <span class="sidebar__who">
-            <strong>{{ current_user.full_name or current_user.username or current_user.email }}</strong>
-            <span>{{ "Administrator" if current_user.role == 'admin' else current_user.email }}</span>
-          </span>
-          <svg class="sidebar__chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+  {% set who = current_user.full_name or current_user.username or current_user.email %}
+  {# The three workspace pages plus, for the administrator, the admin area.
+     Rendered twice: in the top bar, and as the bottom tab bar on phones. #}
+  {% macro nav_items(kind) %}
+    <a class="{{ kind }}__link{% if ep in ('index', 'company_detail') %} is-active{% endif %}" href="{{ url_for('index') }}"{% if ep in ('index', 'company_detail') %} aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.5 2.5 10.8 13.2"/><path d="m21.5 2.5-6.8 19-3.9-8.3-8.3-3.9z"/></svg>
+      <span>Applications</span>
+    </a>
+    <a class="{{ kind }}__link{% if ep.startswith('profile.') %} is-active{% endif %}" href="{{ url_for('profile.page') }}"{% if ep.startswith('profile.') %} aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg>
+      <span>{{ "Profile" if kind == "tabbar" else "Profile & style" }}</span>
+    </a>
+    <a class="{{ kind }}__link{% if ep == 'settings_page' %} is-active{% endif %}" href="{{ url_for('settings_page') }}"{% if ep == 'settings_page' %} aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+      <span>Settings</span>
+    </a>
+    {% if current_user.role == 'admin' %}
+    <a class="{{ kind }}__link{% if ep.startswith('admin.') %} is-active{% endif %}" href="{{ url_for('admin.users') }}"{% if ep.startswith('admin.') %} aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v6c0 4.6 3.2 7.9 7.5 9 4.3-1.1 7.5-4.4 7.5-9V6z"/><path d="m9 12 2 2 4-4"/></svg>
+      <span>Admin</span>
+      {% if pending_approvals %}<span class="nav-badge" title="Waiting for approval">{{ pending_approvals }}</span>{% endif %}
+    </a>
+    {% endif %}
+  {% endmacro %}
+
+  <header class="appbar">
+    <div class="appbar__inner">
+      <a class="appbar__brand" href="{{ url_for('index') }}" aria-label="Internix home">{{ logo(22) }}</a>
+      <nav class="appbar__nav" aria-label="Main navigation">{{ nav_items("appbar") }}</nav>
+      <details class="usermenu" data-menu>
+        <summary class="usermenu__toggle" aria-label="Account menu">
+          <span class="avatar" aria-hidden="true">{{ who[:1] | upper }}</span>
+          <span class="usermenu__name">{{ who }}</span>
+          <svg class="usermenu__chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
         </summary>
-        <div class="sidebar__menu">
+        <div class="usermenu__panel">
+          <div class="usermenu__who">
+            <strong>{{ who }}</strong>
+            <span>{{ "Administrator" if current_user.role == 'admin' else current_user.email }}</span>
+          </div>
           <a href="{{ url_for('auth.change_password') }}">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.7-8.7M16.5 6.5l2.5 2.5"/></svg>Change password</a>
           <a href="{{ url_for('settings_page') }}#s-account">
@@ -96,13 +92,15 @@
           </form>
         </div>
       </details>
-    </aside>
-    <main class="main">
-      <div class="page">
-        {% block content %}{% endblock %}
-      </div>
-    </main>
-  </div>
+    </div>
+  </header>
+  <main class="main">
+    <div class="page">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+  <nav class="tabbar" aria-label="Main navigation">{{ nav_items("tabbar") }}</nav>
+  <script src="{{ asset('shell.js') }}" defer></script>
   {% else %}
   {% block bare %}
   <div class="page page--bare">

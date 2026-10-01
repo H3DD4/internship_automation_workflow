@@ -1,7 +1,5 @@
 /* ---- Tokens ----
-   Type: Plus Jakarta Sans for UI text, IBM Plex Mono for data (emails, timestamps,
-   counts). One family in two voices, so data reads as data without the page
-   looking like two designs stitched together.
+   Type: Inter for UI text and data, Familjen Grotesk for headings.
    Every status gets its OWN hue: ready/researching/writing/sending used to
    share one teal, which made the table's most important distinction — is this
    draft waiting for me, or is the machine still working on it? — invisible.
@@ -9,34 +7,34 @@
 :root {
   color-scheme: light;
 
-  /* Internix brand — from the logo: cream ground, navy ink, periwinkle
-     blue, amber. Warm and low-glare: the page is cream, never pure white;
-     cards are white so content lifts off it gently. */
+  /* Internix brand — from the logo: navy ink, periwinkle blue, amber. The
+     page is a cool near-white; structure comes from hairline borders, not
+     from shadows or tinted grounds. */
   --cream: #F5F2E9;
   --navy: #0F1126;
   --navy-2: #1A1D3A;
   --blue: #666EFF;
   --amber: #F4B544;
-  --amber-soft: #FDF1D8;
+  --amber-soft: #FFF6E0;
   --amber-ink: #8A5A00;
 
-  --bg: #F5F2E9;
+  --bg: #FCFCFD;
   --surface: #FFFFFF;
-  --surface-2: #FBF9F4;
-  --surface-3: #F1EDE3;
+  --surface-2: #F7F8FA;
+  --surface-3: #EEF0F4;
   --field: #FFFFFF;
-  --border: #E5E0D2;
-  --border-soft: #EEEADF;
-  --text: #0F1126;
-  --text-2: #33364F;
-  --text-muted: #5F627A;
-  --text-dim: #8E90A3;
+  --border: #DFE2E9;
+  --border-soft: #ECEEF2;
+  --text: #191C2E;
+  --text-2: #3A3F52;
+  --text-muted: #6A7082;
+  --text-dim: #9AA0AE;
 
   /* The brand blue, deepened just enough for white text to pass contrast. */
   --accent: #4A56E8;
-  --accent-hover: #3B4ADB;
+  --accent-hover: #3A45CC;
   --accent-ink: #FFFFFF;
-  --accent-soft: #ECEDFE;
+  --accent-soft: #EEF0FF;
   --grad-brand: linear-gradient(180deg, #6B79FE 0%, #3B4ADB 100%);
 
   /* One hue per pipeline stage. "Waiting for YOU" (ready) is the brand
@@ -54,15 +52,20 @@
   --warn: #A86A06;
   --st-skipped: #A5A7B8;
 
-  --font-ui: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: var(--font-mono);
+  /* Inter for everything read, Familjen Grotesk for headings. Data (emails,
+     counts, timestamps) stays in the UI face with tabular digits; only logs
+     and code use a monospace. */
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-head: "Familjen Grotesk", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-code: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
 
-  --radius: 12px;
-  --radius-sm: 9px;
-  --radius-lg: 18px;
-  --shadow-sm: 0 1px 2px rgba(15, 17, 38, .04);
-  --shadow: 0 1px 2px rgba(15, 17, 38, .04), 0 4px 14px rgba(15, 17, 38, .05);
-  --shadow-lg: 0 18px 48px rgba(15, 17, 38, .14), 0 4px 12px rgba(15, 17, 38, .06);
+  --radius: 8px;
+  --radius-sm: 4px;
+  --radius-lg: 8px;
+  --shadow-sm: 0 1px 1px rgba(25, 28, 46, .05);
+  --shadow: 0 1px 2px rgba(25, 28, 46, .05);
+  --shadow-lg: 0 20px 25px -5px rgba(25, 28, 46, .08), 0 8px 10px -6px rgba(25, 28, 46, .05);
 }
 
 * { box-sizing: border-box; }
@@ -1188,42 +1191,6 @@ h2 { letter-spacing: -0.01em; }
    ===================================================================== */
 
 .page { padding-top: 32px; }
-
-/* ---- App navigation ---- */
-.appnav { position: sticky; top: 0; z-index: 30; background: color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter: saturate(1.4) blur(8px); border-bottom: 1px solid var(--border); }
-.appnav__inner { max-width: 1320px; margin: 0 auto; padding: 0 32px; height: 56px; display: flex; align-items: center; gap: 28px; }
-.appnav__brand { display: flex; align-items: center; gap: 9px; color: var(--accent); font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
-.appnav__brand:hover { text-decoration: none; }
-.appnav__brand svg, .auth-brand svg { width: 26px; height: 26px; }
-.appnav__brand span { color: var(--text); }
-.appnav__links { display: flex; gap: 4px; flex: 1; }
-.appnav__link { color: var(--text-muted); font-size: 13.5px; font-weight: 500; padding: 7px 12px; border-radius: var(--radius-sm); }
-.appnav__link:hover { color: var(--text); background: var(--surface-3); text-decoration: none; }
-.appnav__link--active { color: var(--accent); background: var(--accent-soft); }
-.appnav__badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 999px;
-  background: var(--warn); color: #fff; font: 600 11px/18px var(--font-mono); text-align: center; }
-
-.usermenu { position: relative; }
-.usermenu__toggle { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 8px 4px 4px;
-  border-radius: 999px; border: 1px solid var(--border); background: var(--surface); }
-.usermenu__toggle::-webkit-details-marker { display: none; }
-.usermenu__avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff; display: grid;
-  place-items: center; font-weight: 600; font-size: 13px; }
-.usermenu__name { font-size: 13px; color: var(--text-2); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.usermenu__panel { position: absolute; right: 0; top: calc(100% + 8px); min-width: 240px; background: var(--surface);
-  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-lg); padding: 6px; display: grid; }
-.usermenu__email { font-size: 12px; color: var(--text-dim); padding: 8px 10px 10px; border-bottom: 1px solid var(--border-soft); margin-bottom: 4px; overflow-wrap: anywhere; }
-.usermenu__panel a, .usermenu__panel button { display: block; width: 100%; text-align: left; padding: 8px 10px; font: inherit;
-  font-size: 13.5px; color: var(--text-2); background: none; border: 0; border-radius: var(--radius-sm); cursor: pointer; }
-.usermenu__panel a:hover, .usermenu__panel button:hover { background: var(--surface-3); text-decoration: none; }
-.usermenu__panel form { margin: 0; }
-
-@media (max-width: 720px) {
-  .appnav__inner { padding: 0 16px; gap: 12px; }
-  .usermenu__name { display: none; }
-  .page { padding: 24px 16px 72px; }
-}
 
 /* ---- Sign-in pages ---- */
 .auth-wrap { min-height: calc(100vh - 160px); display: grid; place-items: center; }

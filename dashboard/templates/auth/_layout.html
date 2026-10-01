@@ -1,26 +1,25 @@
 {% extends "base.html" %}
 {% set bare = true %}
 {% from "_brand.html" import logo with context %}
+{# Logo top-left, the way to the other page top-right, one card in the middle. #}
 {% block bare %}
-<div class="auth-split">
-  <aside class="auth-aside">
-    <a href="{{ url_for('index') }}" aria-label="Internix home">{{ logo(30, dark=true) }}</a>
-    <div>
-      <h2>Internship applications that <em>sound like you</em>.</h2>
-      <p>Internix reads each company's website, matches it to your CV and writes the email — in English or French. You review every word before anything is sent.</p>
-      <ul class="auth-points">
-        <li>Built from your CV, checked sentence by sentence — nothing invented</li>
-        <li>French for French-speaking companies, English for everyone else</li>
-        <li>Sent from your own Gmail, paced to protect your reputation</li>
-      </ul>
-    </div>
-    <div class="auth-quote">Your keys and passwords are encrypted. Your drafts are visible to you alone.</div>
-  </aside>
-  <main class="auth-main">
+<div class="auth">
+  <header class="auth__top">
+    <a href="{{ url_for('index') }}" aria-label="Internix home">{{ logo(26) }}</a>
+    <p class="auth__switch">{% block auth_switch %}{% endblock %}</p>
+  </header>
+  <main class="auth__main">
+    <div class="auth__head">{% block auth_head %}{% endblock %}</div>
     <section class="auth-card">
-      <a class="auth-brand-mobile" href="{{ url_for('index') }}">{{ logo(26) }}</a>
       {% block auth_card %}{% endblock %}
     </section>
+    {% block auth_after %}
+    <ul class="auth-trust">
+      <li>Nothing sent without your review</li>
+      <li>Your keys are encrypted</li>
+      <li>English &amp; French</li>
+    </ul>
+    {% endblock %}
   </main>
 </div>
 {% endblock %}

@@ -144,11 +144,17 @@ def test_an_existing_user_signs_in_with_google_and_sending_is_connected(google, 
     assert json.loads(cfg.secret("GOOGLE_TOKEN"))["refresh_token"] == "rt"
 
 
-def test_a_new_person_signing_up_with_google_waits_for_approval(google, app_module):
-    page = _google_round_trip(app_module.app.test_client()).data.decode()
+def test_a_new_person_signing_up_with_google_lands_inside_the_app(google, app_module):
+    # Approval mode (the default here): Google has verified the address, so
+    # the account is created, signed in and connected in one step.
+    c = app_module.app.test_client()
+    response = _google_round_trip(c)
+    assert response.status_code == 302 and response.headers["Location"] in ("/", f"{LOCAL}/")
     user = accounts.get_user_by_email("student@gmail.com")
-    assert user["status"] == "pending" and user["full_name"] == "Student One"
-    assert "approves" in page
+    assert user["status"] == "active" and user["role"] == "user" and user["full_name"] == "Student One"
+    home = c.get("/", base_url=LOCAL).data.decode()
+    assert "Welcome to Internix" in home and "Getting started" in home
+    assert UserConfig(user["id"]).get("GMAIL_ADDRESS") == "student@gmail.com"
 
 
 def test_open_sign_up_with_google_signs_in_at_once(google, app_module):

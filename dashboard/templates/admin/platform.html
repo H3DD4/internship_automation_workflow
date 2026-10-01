@@ -15,7 +15,7 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="action" value="signup">
       {% for value, label, hint in [
-        ("approval", "Anyone can request an account — I approve each one", "Recommended. Requests appear under Users → Pending."),
+        ("approval", "Anyone can request an account — I approve each one", "Password sign-ups wait under Users → Pending. People who sign up with Google are verified by Google and start right away."),
         ("open", "Anyone can sign up and start right away", "For an open beta."),
         ("closed", "Nobody — I create every account myself", "Invite only.")] %}
       <label class="choice"><input type="radio" name="signup_mode" value="{{ value }}" {% if signup_mode == value %}checked{% endif %}>

@@ -5,4 +5,9 @@
     <p class="subtitle">{{ admin_subtitle }}</p>
   </div>
 </header>
+<nav class="admin-tabs" aria-label="Admin sections">
+  <a{% if request.endpoint == 'admin.users' %} class="is-active" aria-current="page"{% endif %} href="{{ url_for('admin.users') }}">Users</a>
+  <a{% if request.endpoint == 'admin.platform' %} class="is-active" aria-current="page"{% endif %} href="{{ url_for('admin.platform') }}">Platform</a>
+  <a{% if request.endpoint == 'admin.audit' %} class="is-active" aria-current="page"{% endif %} href="{{ url_for('admin.audit') }}">Audit log</a>
+</nav>
 {% include "_flashes.html" %}
