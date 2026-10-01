@@ -63,9 +63,13 @@ If the text doesn't describe what they do (cookie banner, login page, error
 page, or too little text), set both "hook" and "hook_evidence" to "".
 
 Answer with ONLY this JSON object and nothing else:
-{{"areas": [], "hook": "", "hook_evidence": "", "industry": "", "summary": ""}}
+{{"areas": [], "hook": "", "hook_evidence": "", "industry": "", "summary": "", "organisation": ""}}
 
 "industry": 2-5 words. "summary": one sentence on what they do, from the text.
+"organisation": the name of the company that owns this website, copied exactly
+as the text writes it. If the site presents a product, give the company behind
+the product (e.g. "Connect-i", not its product "Opigno"). "" if the text doesn't
+say.
 Rules: never add a number, name, product, client, award or date that is not
 in the text. Write "your", never "their" or "our".
 """
@@ -563,6 +567,9 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
         "site_chars": len(site_text),
         # en | fr | other | "" — decides which language the email is written in.
         "site_language": detect_language(site_text),
+        # The company's own name as its website writes it ("" when unsure);
+        # see utils.name_for_email.
+        "site_company_name": "",
     }
     if not site_text:
         return _with_display_fields(context)
@@ -607,7 +614,19 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
         if value and support_ratio(value, site_text) >= 0.5:
             context[target] = value
 
+    context["site_company_name"] = verify_site_name(str(answer.get("organisation") or ""), site_text)
     return _with_display_fields(context)
+
+
+def verify_site_name(name: str, site_text: str) -> str:
+    """The website's own name for its company, kept only when it appears
+    word for word in the text — never a name the model made up."""
+    dashes = str.maketrans({c: "-" for c in "‐‑‒–—−"})
+    name = " ".join(name.translate(dashes).split()).strip(" .,;:\"'")
+    if not name or len(name) > 60 or len(name.split()) > 6:
+        return ""
+    page = " ".join((site_text or "").translate(dashes).split()).lower()
+    return name if name.lower() in page else ""
 
 
 def _with_display_fields(context: dict) -> dict:

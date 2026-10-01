@@ -619,8 +619,11 @@ def company_detail(app_id):
     application["language"] = application.get("language") or ("en" if application.get("subject") else "")
     method = mail_service.sending_method(g.cfg)
     _, spec_en, spec_fr = profiles.specs_for(g.user["id"])
+    import pipeline as pipeline_module
+    research = pipeline_module._load_research(g.user["id"], application["email"], application) or {}
     return render_template(
         "detail.html", application=application, events=events,
+        email_name=drafting.email_company_name(application, research),
         earlier_events=earlier_events, current_events=current_events,
         earlier_failed=sum(1 for e in earlier_events if e["error_summary"]),
         talking_points=_json(application["talking_points"], "[]"),

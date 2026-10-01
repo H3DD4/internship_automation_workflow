@@ -118,6 +118,73 @@ def resolve_greeting_name(contact_name, company_name: str) -> str | None:
     return first_token[0].upper() + first_token[1:] if first_token else None
 
 
+# Mailbox providers: an address there says nothing about the company's name.
+_MAIL_PROVIDERS = {"gmail", "googlemail", "yahoo", "hotmail", "outlook", "live", "icloud", "me",
+                   "protonmail", "proton", "gmx", "orange", "laposte", "free", "wanadoo", "aol",
+                   "web", "t-online", "bluewin", "hispeed", "sfr", "yandex", "mail", "zoho"}
+
+
+def _squash(text: str) -> str:
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]", "", plain)
+
+
+def _domain_label(website: str, email: str) -> str:
+    """The distinctive part of the company's domain: 'connect-i' for
+    https://www.connect-i.ch, or for aminck@connect-i.ch when there's no site."""
+    host = re.sub(r"^[a-z]+://", "", (website or "").strip().lower()).split("/")[0].split(":")[0]
+    if not host and "@" in (email or ""):
+        host = email.rsplit("@", 1)[1].strip().lower()
+    labels = [part for part in host.split(".") if part and part != "www"]
+    if len(labels) < 2:
+        return ""
+    # example.co.uk -> example; example.ch -> example
+    label = labels[-3] if len(labels) >= 3 and len(labels[-2]) <= 3 and len(labels[-1]) == 2 else labels[-2]
+    return "" if label in _MAIL_PROVIDERS else label
+
+
+def _matches_domain(name: str, label: str) -> bool:
+    name_key, label_key = _squash(name), _squash(label)
+    if not name_key or len(label_key) < 2:
+        return False
+    if label_key in name_key or name_key in label_key:
+        return True
+    words = [_squash(w) for w in re.split(r"[\s\-&,./()+]+", name or "")]
+    words = [w for w in words if w and w not in _NAME_FILLER]
+    if any(len(w) >= 3 and w in label_key for w in words):
+        return True
+    # "Euro Tech Conseil" -> etcinfo.fr
+    initials = "".join(w[0] for w in words)
+    return len(initials) >= 2 and label_key.startswith(initials)
+
+
+_NAME_FILLER = {"the", "and", "for", "des", "les", "and", "und", "der", "die", "das", "von", "van",
+                "of", "de", "du", "la", "le", "et", "in", "en", "sa", "ag", "gmbh", "sas", "sarl",
+                "ltd", "inc", "llc", "bv", "nv", "srl", "spa", "group", "groupe", "france"}
+
+
+def name_for_email(list_name: str, site_name: str | None, website: str = "", email: str = "") -> str:
+    """The company name to write in the email.
+
+    Usually the name from the user's own list. But lists gathered by scanning
+    sometimes hold a product instead of the company ("Opigno LMS" for
+    Connect-i, whose product it is), and the email then praises the product
+    for the company's other work. When the website names its owner, that
+    name matches the domain, and the list's name doesn't, the website wins.
+    """
+    list_name = (list_name or "").strip()
+    site_name = (site_name or "").strip()
+    if not site_name or not list_name:
+        return list_name or site_name
+    if _squash(site_name) == _squash(list_name):
+        return list_name
+    label = _domain_label(website, email)
+    if label and _matches_domain(site_name, label) and not _matches_domain(list_name, label):
+        return site_name
+    return list_name
+
+
 def build_greeting(contact_name, company_name: str, lang: str = "en") -> str:
     """Returns the exact opening line to use, e.g. 'Dear Charly,' or
     'Dear Rtone Team,' — or, in French, 'Bonjour Charly,' / 'Madame, Monsieur,'."""

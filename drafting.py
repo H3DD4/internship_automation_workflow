@@ -13,7 +13,7 @@ import language
 import profiles
 from agents.composer import compose_email
 from user_config import UserConfig
-from utils import build_greeting
+from utils import build_greeting, name_for_email
 
 
 class NotReady(RuntimeError):
@@ -72,8 +72,16 @@ def compose_for(dcfg: DraftingConfig, app: dict, research: dict | None,
     language (the EN/FR switch); otherwise the usual rule decides."""
     lang = pick_language(dcfg, app, research, override=lang)
     spec = dcfg.specs[lang]
-    greeting = build_greeting(app.get("contact_name"), app["company_name"], lang)
+    company = email_company_name(app, research)
+    greeting = build_greeting(app.get("contact_name"), company, lang)
     draft = compose_email(spec, language.research_for_language(research, lang),
-                          app["company_name"], greeting, dcfg.applicant_name,
+                          company, greeting, dcfg.applicant_name,
                           dcfg.target_roles[lang], lang)
     return {**draft, "language": lang}
+
+
+def email_company_name(app: dict, research: dict | None) -> str:
+    """The name the email uses: the list's, unless the website shows the list
+    holds a product name instead of the company (see utils.name_for_email)."""
+    return name_for_email(app.get("company_name") or "", (research or {}).get("site_company_name"),
+                          app.get("website") or "", app.get("email") or "")

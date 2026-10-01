@@ -135,6 +135,9 @@
     <section class="panel">
       <h2>Company research</h2>
       <dl class="fact-list">
+        {% if email_name and email_name != application.company_name %}
+        <dt>Name in email</dt><dd><strong>{{ email_name }}</strong> <span class="field-hint">— the website's own name; your list says “{{ application.company_name }}”, which looks like one of their products.</span></dd>
+        {% endif %}
         <dt>Industry</dt><dd>{{ application.industry or "unknown" }}</dd>
         <dt>Focus</dt><dd>{{ application.mission_or_focus or "—" }}</dd>
         <dt>Tone detected</dt><dd>{{ application.tone_of_voice or "unknown" }}</dd>
