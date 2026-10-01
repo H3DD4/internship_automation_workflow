@@ -604,6 +604,71 @@ PROVIDERS = {
     },
 }
 
+# What the Settings page tells a student about each provider: one line on
+# why to pick it, whether it has a free tier, and the steps to a key. Plain
+# words — most users have never made an API key before.
+PROVIDER_GUIDES = {
+    "groq": {"free": True, "badge": "Start here",
+             "blurb": "Free and fast. The easiest first key — sign in with Google or GitHub.",
+             "steps": ["Sign in on Groq's site", "Click “Create API Key” and copy it", "Paste it here and press Connect"]},
+    "gemini": {"free": True, "badge": "Free",
+               "blurb": "Free with any Google account. Good at reading French and German websites.",
+               "steps": ["Sign in to Google AI Studio", "Click “Create API key” and copy it", "Paste it here and press Connect"]},
+    "mistral": {"free": True, "badge": "Free plan",
+                "blurb": "European, strong in French, German and Italian. Activate the free “Experiment” plan first.",
+                "steps": ["Create an account on Mistral's console", "Choose the free “Experiment” plan",
+                          "Create an API key, paste it here and press Connect"]},
+    "openrouter": {"free": True, "badge": "Many models",
+                   "blurb": "One key for hundreds of models. Those ending in “:free” cost nothing.",
+                   "steps": ["Sign in on OpenRouter", "Open “Keys” and create one", "Paste it here and press Connect"]},
+    "opencode": {"free": False, "badge": "Paid",
+                 "blurb": "Prepaid credits; models from several companies behind one key.",
+                 "steps": ["Sign in on OpenCode", "Add credits and create a key", "Paste it here and press Connect"]},
+    "custom": {"free": False, "badge": "Advanced",
+               "blurb": "Any OpenAI-compatible endpoint, e.g. a model you host yourself.",
+               "steps": ["Enter the endpoint's base URL", "Paste its API key", "Press Connect"]},
+}
+PROVIDER_ORDER = ["groq", "gemini", "mistral", "openrouter", "opencode", "custom"]
+
+# /models lists everything a key can reach — speech, embeddings, images,
+# video, OCR, moderation. Only chat models can research a company.
+_NOT_CHAT = re.compile(
+    r"embed|whisper|tts|audio|speech|transcri|realtime|(^|[-/])live([-/]|$)|translate|image|imagen|veo|"
+    r"lyria|robotics|ocr|moderation|guard|orpheus|voxtral|codestral|code-fim|vibe-cli|leanstral|"
+    r"(^|/)aqa$|computer-use|deep-research|antigravity|nano-banana|omni|customtools|dall-e|sora|rerank|"
+    r"playai|clip", re.IGNORECASE)
+
+
+def chat_model_ids(model_ids) -> list:
+    """The chat models among a provider's /models ids, without Google's
+    "models/" prefix, sorted and unique."""
+    out = set()
+    for raw in model_ids or []:
+        model = str(raw).strip()
+        if model.startswith("models/"):
+            model = model[len("models/"):]
+        if model and not _NOT_CHAT.search(model):
+            out.add(model)
+    return sorted(out)
+
+
+def recommended_models(provider: str, available) -> list:
+    """The models worth ticking by default: the ones measured in the pool
+    (model_router.POOL) and the provider's suggestions, when it still serves
+    them; on OpenRouter, a few free ones."""
+    from model_router import POOL
+    available = list(available or [])
+    preset = PROVIDERS.get(provider, {})
+    wanted = [m for m, *_ in POOL.get(provider, [])] + [preset.get("default_model") or ""] \
+        + list(preset.get("suggested_models") or [])
+    picks = [m for m in dict.fromkeys(wanted) if m and m in available]
+    if not picks and provider == "openrouter":
+        picks = [m for m in available if m.endswith(":free")][:3]
+    if not picks:
+        picks = available[:2]
+    return picks
+
+
 DEFAULT_PROVIDER = "groq"
 DEFAULT_BASE_URL = PROVIDERS[DEFAULT_PROVIDER]["base_url"]
 DEFAULT_MODEL = PROVIDERS[DEFAULT_PROVIDER]["default_model"]

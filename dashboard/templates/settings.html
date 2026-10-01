@@ -19,7 +19,7 @@
 <div class="settings-layout">
   <nav class="settings-nav" id="settings-nav" aria-label="Settings sections">
     {% set nav = [
-      ("s-ai", "AI provider & model", setup.has_api_key),
+      ("s-ai", "AI models", setup.has_api_key),
       ("s-files", "CV & companies", setup.cv_name and setup.has_companies),
       ("s-gmail", "Email account", setup.has_gmail),
       ("s-sending", "Sending pace", True),
@@ -36,75 +36,86 @@
 
   <div class="settings-main">
 
-    {# ── AI provider ───────────────────────────────────────────────────── #}
+    {# ── AI models ─────────────────────────────────────────────────────── #}
     <section class="settings-card" id="s-ai">
       <div class="settings-card__head">
-        <h2>AI provider &amp; model</h2>
-        <p class="section-copy">Your own key, so your usage never competes with anyone else's. It researches each company and reads your CV — the emails themselves are assembled from your approved wording, not written by the model.</p>
+        <h2>AI models</h2>
+        <p class="section-copy">Internix uses AI to read each company's website and compare it with your CV. You connect your <strong>own free key</strong>, so your usage never competes with anyone else's. The emails themselves are built from your approved wording, not written by the AI.</p>
       </div>
-      <form class="setup-form settings-grid" action="{{ url_for('save_settings') }}" method="post" autocomplete="off">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="section" value="ai">
-        <div class="form-group">
-          <label for="ai-provider">Provider</label>
-          <select id="ai-provider" name="ai_provider">
-            {% for pid, p in providers.items() %}<option value="{{ pid }}"
-              data-base-url="{{ p.base_url }}" data-portal="{{ p.key_portal }}"
-              data-default-model="{{ p.default_model }}"
-              data-suggested="{{ p.suggested_models | join(',') }}"
-              data-key-saved="{{ 'yes' if setup.saved_provider_keys.get(pid) else '' }}"
-              {% if setup.ai_provider == pid %} selected{% endif %}>{{ p.label }}{% if setup.saved_provider_keys.get(pid) %} · key saved{% endif %}</option>{% endfor %}
-          </select>
-          <span class="field-hint">Groq has a free tier. Every provider with a key joins your pool.</span>
-        </div>
-        <div class="form-group">
-          <label for="ai-key">API key for this provider</label>
-          <div class="input-row">
-            <input id="ai-key" name="ai_api_key" type="password" autocomplete="off" maxlength="500"
-                   placeholder="{{ 'Saved — type to replace' if setup.saved_provider_keys.get(setup.ai_provider) else 'Paste your key' }}">
-            <button class="button button--ghost" type="button" id="validate-ai-btn">Test</button>
-          </div>
-          <span class="field-hint" id="ai-portal-hint">{% if providers[setup.ai_provider].key_portal %}<a href="{{ providers[setup.ai_provider].key_portal }}" target="_blank" rel="noreferrer">Get a key</a>. {% endif %}Stored encrypted.</span>
-          <span class="field-hint validation-result" id="ai-validation-result" aria-live="polite"></span>
-        </div>
-        <div class="form-group">
-          <label for="ai-model">Model</label>
-          <div class="input-row">
-            <input id="ai-model" name="ai_model" type="text" list="ai-model-options" autocomplete="off" maxlength="120"
-                   value="{{ setup.ai_model }}" placeholder="Load models, or type any model id">
-            <button class="button button--ghost" type="button" id="load-models-btn">Load models</button>
-          </div>
-          <datalist id="ai-model-options">
-            {% for m in providers[setup.ai_provider].suggested_models %}<option value="{{ m }}"></option>{% endfor %}
-          </datalist>
-          <span class="field-hint validation-result" id="models-result" aria-live="polite"></span>
-        </div>
-        <div class="form-group">
-          <label for="ai-base-url">API base URL</label>
-          <input id="ai-base-url" type="url" name="ai_base_url" value="{{ setup.ai_base_url }}" placeholder="https://…/v1" maxlength="300">
-          <span class="field-hint">Prefilled per provider. Change it only for a custom endpoint.</span>
-        </div>
-        <div class="form-group form-group--wide">
-          <label for="ai-fallbacks">Fallback models</label>
-          <input id="ai-fallbacks" type="text" name="ai_fallbacks" value="{{ setup.ai_fallbacks }}" placeholder="model-a, model-b" autocomplete="off" maxlength="1000">
-          <span class="field-hint">Tried when the main model answers with something unusable. Empty = the provider's defaults.</span>
-        </div>
-        <div class="form-group form-group--wide">
-          <label for="ai-translation-model">Translation model</label>
-          <input id="ai-translation-model" type="text" name="ai_translation_model" list="ai-model-options" maxlength="120"
-                 value="{{ setup.ai_translation_model }}" placeholder="Same as the research model" autocomplete="off">
-        </div>
-        <div class="form-actions">
-          <button class="button button--primary" type="submit">Save AI settings</button>
-          {% if setup.saved_provider_keys.get(setup.ai_provider) %}
-          <label class="check-control"><input type="checkbox" name="remove_key" value="on"> Delete this provider's saved key</label>
-          {% endif %}
-        </div>
-      </form>
 
-      <details class="pool-details" {% if pool | length > 1 %}open{% endif %}>
-        <summary class="smtp-fallback-toggle">Model pool ({{ pool | length }} model{{ "s" if pool | length != 1 }})</summary>
-        <p class="section-copy">Calls go to the best model that's free right now and move to another when one is rate-limited, out of quota or down.</p>
+      <div class="ai-tip">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/></svg>
+        <p><strong>Connect more than one, and tick several models.</strong> Free plans limit how many requests you can make per minute. Every provider and model you add joins your pool: when one is busy or out of free quota, Internix moves to the next by itself — so your preparation keeps going instead of waiting.</p>
+      </div>
+
+      {% set connected = provider_cards | selectattr("connected") | list %}
+      <p class="ai-summary" id="ai-summary">
+        {% if connected %}<strong>{{ connected | length }}</strong> provider{{ "s" if connected | length != 1 }} connected · <strong>{{ pool | length }}</strong> model{{ "s" if pool | length != 1 }} in your pool
+        {% else %}<strong>No provider connected yet.</strong> Start with Groq — it's free and takes about a minute.{% endif %}
+      </p>
+
+      <div class="provider-list">
+        {% for p in provider_cards %}
+        {% if p.id == "custom" %}<details class="provider-advanced"{% if p.connected %} open{% endif %}><summary>Advanced: your own OpenAI-compatible endpoint</summary>{% endif %}
+        <article class="provider-card{% if p.connected %} is-connected{% endif %}" data-provider="{{ p.id }}" data-label="{{ p.label }}">
+          <header class="provider-card__head">
+            <div class="provider-card__title">
+              <h3>{{ p.label if p.id != "custom" else "Custom endpoint" }}</h3>
+              <span class="provider-badge{% if p.free %} provider-badge--free{% endif %}">{{ p.badge }}</span>
+            </div>
+            <span class="provider-state" data-state>{% if p.connected %}<span class="dot dot--ok"></span>Connected{% else %}Not connected{% endif %}</span>
+          </header>
+          <p class="provider-card__blurb">{{ p.blurb }}</p>
+
+          <div class="provider-connect" data-connect {% if p.connected %}hidden{% endif %}>
+            <ol class="provider-steps">
+              {% for step in p.steps %}<li>{{ step }}</li>{% endfor %}
+            </ol>
+            <div class="provider-connect__row">
+              {% if p.portal %}
+              <a class="button button--primary" href="{{ p.portal }}" target="_blank" rel="noopener noreferrer">Get a {{ "free " if p.free }}key ↗</a>
+              {% endif %}
+              {% if p.id == "custom" %}
+              <input type="url" data-base-url placeholder="https://your-endpoint.example/v1" value="{{ p.base_url if p.base_url != '' }}" maxlength="300" aria-label="Endpoint base URL">
+              {% endif %}
+              <input type="password" data-key placeholder="Paste your {{ p.label if p.id != 'custom' else '' }} key here" autocomplete="off" maxlength="500" aria-label="{{ p.label }} API key">
+              <button class="button" type="button" data-connect-btn>Connect</button>
+            </div>
+          </div>
+
+          <div class="provider-models" data-models {% if not p.connected %}hidden{% endif %}>
+            <div class="provider-models__head">
+              <strong>Models in your pool</strong>
+              <span class="field-hint">Ticked models are used. Recommended ones are tested with Internix.</span>
+            </div>
+            <div class="model-list" data-model-list>
+              {% for m in p.models %}<label class="model-option"><input type="checkbox" value="{{ m }}" checked><span>{{ m }}</span></label>{% endfor %}
+            </div>
+            <button class="link-button" type="button" data-show-all hidden>Show all models</button>
+            <div class="provider-models__foot">
+              <button class="link-button" type="button" data-replace-key>Replace key</button>
+              <button class="link-button link-button--danger" type="button" data-disconnect>Remove {{ p.label if p.id != "custom" else "endpoint" }}</button>
+            </div>
+          </div>
+          <p class="field-hint validation-result" data-result aria-live="polite"></p>
+        </article>
+        {% if p.id == "custom" %}</details>{% endif %}
+        {% endfor %}
+      </div>
+
+      {% if pool %}
+      <div class="ai-primary">
+        <label for="ai-primary">Try first</label>
+        <select id="ai-primary">
+          {% for row in pool %}<option value="{{ row.name }}"{% if row.name == setup.ai_provider ~ '/' ~ setup.ai_model %} selected{% endif %}>{{ row.name }}</option>{% endfor %}
+        </select>
+        <span class="field-hint">Your favourite model. The others take over whenever it's busy.</span>
+      </div>
+      {% endif %}
+
+      <details class="pool-details">
+        <summary class="smtp-fallback-toggle">Check that every model answers ({{ pool | length }} model{{ "s" if pool | length != 1 }})</summary>
+        <p class="section-copy">Sends one tiny request to each model in your pool and shows which ones work right now.</p>
         <div class="table-scroll">
           <table class="app-table pool-table" id="pool-table">
             <thead><tr><th>Model</th><th>Used for</th><th>Live check</th></tr></thead>
@@ -112,14 +123,13 @@
               {% for row in pool %}
               <tr data-pool-name="{{ row.name }}"><td class="cell-mono">{{ row.name }}</td><td>{{ row.roles }}</td><td class="pool-state"><span class="field-hint">Not checked yet</span></td></tr>
               {% endfor %}
-              {% if not pool %}<tr><td colspan="3" class="cell-empty">No provider has a key yet.</td></tr>{% endif %}
+              {% if not pool %}<tr><td colspan="3" class="cell-empty">Connect a provider above first.</td></tr>{% endif %}
             </tbody>
           </table>
         </div>
         <div class="editor-actions">
           <button class="button button--ghost" type="button" id="check-pool-btn" {% if not pool %}disabled{% endif %}>Check all models</button>
           <span class="field-hint validation-result" id="pool-result" aria-live="polite"></span>
-          <span class="field-hint editor-hint">Uses one request per model.</span>
         </div>
       </details>
     </section>

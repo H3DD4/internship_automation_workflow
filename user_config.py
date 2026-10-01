@@ -49,6 +49,9 @@ SETTING_DEFAULTS = {
 }
 for _pid in PROVIDERS:
     SETTING_DEFAULTS[f"{_pid.upper()}_BASE_URL"] = ""
+    # The models ticked for this provider in Settings (comma-separated);
+    # empty = the measured defaults (model_router.POOL).
+    SETTING_DEFAULTS[f"AI_MODELS_{_pid.upper()}"] = ""
 
 # Secrets: stored encrypted, never sent back to a browser.
 SECRET_NAMES = {p["key_env"] for p in PROVIDERS.values()} | {"GMAIL_APP_PASSWORD", "GOOGLE_TOKEN"}

@@ -371,6 +371,28 @@ def _usable_key(value: str) -> bool:
     return bool(value) and "your_" not in value.lower() and "_here" not in value.lower()
 
 
+def selected_models(provider: str, env) -> list:
+    """The models the user ticked for a provider in Settings (AI_MODELS_<ID>),
+    or [] when they never chose — then the measured defaults apply."""
+    raw = str((env or {}).get(f"AI_MODELS_{provider.upper()}") or "")
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def pool_entries(provider: str, env) -> list:
+    """(model, tiers, reasoning, spacing) for each model of a provider in the
+    user's pool. A model measured in POOL keeps its tiers; any other model the
+    user picked joins as a second choice for research and a third for
+    translation — more models means fewer waits, never a worse first pick."""
+    measured = {entry[0]: entry for entry in POOL.get(provider, [])}
+    chosen = selected_models(provider, env)
+    if not chosen:
+        return list(POOL.get(provider, []))
+    spacing = POOL[provider][0][3] if POOL.get(provider) else 1.0
+    return [measured.get(model) or (model, {"research": 2, "translation": 3},
+                                    model.startswith("openai/gpt-oss"), spacing)
+            for model in chosen]
+
+
 def build_router(env=None, rate_limiter=None, **kwargs) -> ModelRouter:
     """A router over every provider that has a key in the environment.
 
@@ -400,7 +422,7 @@ def build_router(env=None, rate_limiter=None, **kwargs) -> ModelRouter:
         if not _usable_key(key) or not base_url:
             continue
         client = CompatibleAIClient(key, base_url, rate_limiter=rate_limiter)
-        entries = list(POOL.get(pid, []))
+        entries = pool_entries(pid, env)
         known = {model for model, *_ in entries}
         if pid == primary_provider and primary_model and primary_model not in known:
             entries.insert(0, (primary_model, {"research": 1, "translation": 1},

@@ -220,7 +220,7 @@ def _setup_state() -> dict:
     oauth = _oauth_status(cfg)
     oauth_connected, oauth_email, oauth_valid = oauth["connected"], oauth["email"], oauth["valid"]
     has_gmail = bool(method) and (method != "oauth" or oauth_valid)
-    has_api_key = bool(ai["api_key"])
+    has_api_key = bool(ai["api_key"]) or any(p["key_env"] in saved for p in PROVIDERS.values())
     prep_ready = has_api_key and has_profile and companies_rows > 0
     return {
         "prep_ready": prep_ready,
@@ -767,6 +767,7 @@ def api_update_draft():
 @app.get("/settings")
 def settings_page():
     return render_template("settings.html", setup=_setup_state(), pool=_pool_rows(),
+                           provider_cards=_provider_cards(),
                            oauth_redirect_uri=oauth_redirect_uri(),
                            bounce_check=_bounce_check_state(), providers=PROVIDERS,
                            sessions=accounts.count_sessions(g.user["id"]))
@@ -1305,6 +1306,163 @@ def api_validate_ai():
             return jsonify({"ok": False, "message": f"Model '{ai['model']}' not found on {ai['label']} (404)."})
         return jsonify({"ok": False, "message": f"{ai['label']} error: {text[:220]}"})
     return jsonify({"ok": True, "message": f"Works — {ai['label']} answered with model '{ai['model']}'."})
+
+
+# ---------------------------------------------------------------------------
+# AI providers, one card each: connect a key, tick models, pick which goes first
+# ---------------------------------------------------------------------------
+
+def _provider_base_url(pid: str) -> str:
+    env = g.cfg.ai_env()
+    return (str(env.get(f"{pid.upper()}_BASE_URL") or "").strip() or PROVIDERS[pid]["base_url"]).rstrip("/")
+
+
+def _provider_cards() -> list:
+    """What the AI section shows for each provider."""
+    from ai_client import PROVIDER_GUIDES, PROVIDER_ORDER
+    from model_router import pool_entries
+    env = g.cfg.ai_env()
+    saved = set(g.cfg.saved_secret_names())
+    cards = []
+    for pid in PROVIDER_ORDER:
+        preset, guide = PROVIDERS[pid], PROVIDER_GUIDES[pid]
+        connected = preset["key_env"] in saved
+        cards.append({"id": pid, "label": preset["label"], "portal": preset["key_portal"], **guide,
+                      "connected": connected, "base_url": _provider_base_url(pid) if pid == "custom" else "",
+                      "models": [m for m, *_ in pool_entries(pid, env)] if connected else []})
+    return cards
+
+
+def _model_choices(pid: str, live: list) -> list:
+    from ai_client import chat_model_ids, recommended_models
+    from model_router import selected_models
+    models = chat_model_ids(live)
+    recommended = recommended_models(pid, models)
+    chosen = selected_models(pid, g.cfg.ai_env()) or recommended
+    # A model picked earlier that the provider no longer lists stays visible
+    # (and selected) so nothing changes behind the user's back.
+    models = sorted(set(models) | set(chosen))
+    order = {m: i for i, m in enumerate(recommended)}
+    models.sort(key=lambda m: (m not in order, order.get(m, 0), m))
+    return [{"id": m, "recommended": m in recommended, "selected": m in chosen} for m in models]
+
+
+def _ensure_primary(cfg) -> None:
+    """The model tried first must belong to a connected provider and to its
+    ticked models; otherwise the first connected one takes its place."""
+    from model_router import pool_entries
+    env = cfg.ai_env()
+    saved = set(cfg.saved_secret_names())
+    current = (env.get("AI_PROVIDER") or "").strip().lower()
+    connected = [pid for pid in PROVIDERS if PROVIDERS[pid]["key_env"] in saved]
+    if not connected:
+        return
+    if current in connected:
+        models = [m for m, *_ in pool_entries(current, env)]
+        if not models or env.get("AI_MODEL") in models:
+            return
+        cfg.set_many({"AI_MODEL": models[0]})
+        return
+    pid = connected[0]
+    models = [m for m, *_ in pool_entries(pid, env)]
+    cfg.set_many({"AI_PROVIDER": pid, "AI_MODEL": models[0] if models else PROVIDERS[pid]["default_model"]})
+
+
+def _provider_or_400(pid: str):
+    if pid not in PROVIDERS:
+        abort(404)
+    if security.rate_limited(f"ai-providers:{g.user['id']}", 60, 600):
+        abort(429)
+    return PROVIDERS[pid]
+
+
+@app.post("/api/ai/<pid>/connect")
+def api_ai_connect(pid):
+    """Check a key by asking the provider for its models; save it only when
+    the provider accepts it."""
+    import safe_http
+    preset = _provider_or_400(pid)
+    payload = request.get_json(silent=True) or {}
+    key = str(payload.get("api_key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "message": "Paste your key first."}), 400
+    if len(key) > 500:
+        return jsonify({"ok": False, "message": "That key is too long."}), 400
+    base_url = preset["base_url"]
+    if pid == "custom":
+        base_url = str(payload.get("base_url") or "").strip().rstrip("/")[:300]
+        try:
+            safe_http.check_url(base_url)
+            if config.is_production() and not base_url.startswith("https://"):
+                raise safe_http.BlockedURL("Use an https:// address.")
+        except Exception as exc:
+            return jsonify({"ok": False, "message": f"That address can't be used: {exc}"}), 400
+    live, error = list_provider_models(base_url, key)
+    if error:
+        hint = f" Copy it again from {preset['label']}'s site." if "rejected" in error else ""
+        return jsonify({"ok": False, "message": error + hint}), 400
+    g.cfg.set_secret(preset["key_env"], key)
+    if pid == "custom":
+        g.cfg.set_many({"CUSTOM_BASE_URL": base_url})
+    choices = _model_choices(pid, live)
+    g.cfg.set_many({f"AI_MODELS_{pid.upper()}": ",".join(c["id"] for c in choices if c["selected"])})
+    _ensure_primary(g.cfg)
+    accounts.audit("ai_provider_connected", actor=g.user["id"], detail={"provider": pid})
+    picked = sum(1 for c in choices if c["selected"])
+    return jsonify({"ok": True, "models": choices,
+                    "message": f"Connected — {len(choices)} models available, {picked} recommended ones selected."})
+
+
+@app.get("/api/ai/<pid>/models")
+def api_ai_models(pid):
+    preset = _provider_or_400(pid)
+    key = g.cfg.secret(preset["key_env"])
+    if not key:
+        return jsonify({"ok": False, "message": "Not connected.", "models": []})
+    live, error = list_provider_models(_provider_base_url(pid), key)
+    if error:
+        from model_router import selected_models
+        chosen = selected_models(pid, g.cfg.ai_env())
+        return jsonify({"ok": False, "message": error, "rejected": "rejected" in error,
+                        "models": [{"id": m, "recommended": False, "selected": True} for m in chosen]})
+    return jsonify({"ok": True, "models": _model_choices(pid, live)})
+
+
+@app.post("/api/ai/<pid>/models")
+def api_ai_select_models(pid):
+    preset = _provider_or_400(pid)
+    if not g.cfg.secret(preset["key_env"]):
+        return jsonify({"ok": False, "message": "Connect this provider first."}), 400
+    raw = (request.get_json(silent=True) or {}).get("models") or []
+    models = list(dict.fromkeys(str(m).strip()[:120] for m in raw if str(m).strip()))[:30]
+    if not models:
+        return jsonify({"ok": False, "message": "Keep at least one model ticked, or remove the key."}), 400
+    g.cfg.set_many({f"AI_MODELS_{pid.upper()}": ",".join(models)})
+    _ensure_primary(g.cfg)
+    return jsonify({"ok": True, "message": f"Saved — {len(models)} {preset['label']} model"
+                                           f"{'s' if len(models) != 1 else ''} in your pool."})
+
+
+@app.post("/api/ai/<pid>/disconnect")
+def api_ai_disconnect(pid):
+    preset = _provider_or_400(pid)
+    g.cfg.delete_secret(preset["key_env"])
+    g.cfg.set_many({f"AI_MODELS_{pid.upper()}": ""})
+    _ensure_primary(g.cfg)
+    accounts.audit("ai_provider_disconnected", actor=g.user["id"], detail={"provider": pid})
+    return jsonify({"ok": True, "message": f"{preset['label']} removed."})
+
+
+@app.post("/api/ai/primary")
+def api_ai_primary():
+    """Which model is tried first (the others take over when it's busy)."""
+    from model_router import pool_entries
+    name = str((request.get_json(silent=True) or {}).get("model") or "")
+    pid, _, model = name.partition("/")
+    if pid not in PROVIDERS or model not in [m for m, *_ in pool_entries(pid, g.cfg.ai_env())]:
+        return jsonify({"ok": False, "message": "Pick one of the models in your pool."}), 400
+    g.cfg.set_many({"AI_PROVIDER": pid, "AI_MODEL": model})
+    return jsonify({"ok": True, "message": f"{model} is tried first."})
 
 
 def _pool_rows() -> list:

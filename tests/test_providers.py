@@ -142,7 +142,7 @@ def test_keys_are_never_sent_back_to_the_browser(client, user_id):
     UserConfig(user_id).set_secret("GROQ_API_KEY", "super-secret-groq-key")
     page = client.get("/settings").data.decode()
     assert "super-secret-groq-key" not in page
-    assert "key saved" in page
+    assert 'data-provider="groq" data-label="Groq"' in page and "Connected" in page
     assert "super-secret-groq-key" not in client.get("/").data.decode()
 
 
@@ -161,9 +161,8 @@ def test_tracker_links_to_settings_instead_of_inlining_the_form(client):
     assert 'href="/settings' in page
     assert 'name="ai_api_key"' not in page
     body = client.get("/settings").data.decode()
-    for field in ('name="ai_api_key"', 'id="companies-file"', 'name="cv_file"',
-                  'name="max_per_day"', 'name="research_workers"', 'name="ai_fallbacks"',
-                  'name="mail_method"'):
+    for field in ('data-provider="groq"', 'id="companies-file"', 'name="cv_file"',
+                  'name="max_per_day"', 'name="research_workers"', 'name="mail_method"'):
         assert field in body, field
 
 

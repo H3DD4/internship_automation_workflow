@@ -28,6 +28,129 @@
     return node;
   };
 
+  // ── AI models: one card per provider ─────────────────────────────────────
+  // Connect a key (checked against the provider before it's saved), then
+  // tick models from the provider's live list — nothing is typed by hand.
+  async function getJSON(url) {
+    const response = await fetch(url, { credentials: "same-origin" });
+    if (response.status === 401) { window.location.href = "/login"; return { ok: false, models: [] }; }
+    try { return await response.json(); } catch (_) { return { ok: false, models: [], message: `Server error (${response.status}).` }; }
+  }
+
+  function setResult(card, text, ok) {
+    const node = card.querySelector("[data-result]");
+    node.textContent = text || "";
+    node.classList.toggle("validation-result--ok", ok === true);
+    node.classList.toggle("validation-result--bad", ok === false);
+  }
+
+  function setState(card, text, kind) {
+    const node = card.querySelector("[data-state]");
+    node.innerHTML = "";
+    if (kind) node.appendChild(el("span", { class: `dot dot--${kind}` }));
+    node.appendChild(document.createTextNode(text));
+  }
+
+  function renderModels(card, models) {
+    const list = card.querySelector("[data-model-list]");
+    const showAll = card.querySelector("[data-show-all]");
+    list.innerHTML = "";
+    let hidden = 0;
+    models.forEach((m) => {
+      const label = el("label", { class: "model-option" + (m.recommended ? " model-option--rec" : "") });
+      const box = el("input", { type: "checkbox", value: m.id });
+      box.checked = !!m.selected;
+      label.appendChild(box);
+      label.appendChild(el("span", {}, m.id));
+      if (m.recommended) label.appendChild(el("em", { class: "model-tag" }, "Recommended"));
+      // Recommended and already-ticked models first; the rest on request.
+      if (!m.recommended && !m.selected) { label.hidden = true; label.dataset.extra = "1"; hidden += 1; }
+      list.appendChild(label);
+    });
+    showAll.hidden = hidden === 0;
+    showAll.textContent = `Show all models (${hidden} more)`;
+  }
+
+  let saveTimer = null;
+  async function saveSelection(card) {
+    const pid = card.dataset.provider;
+    const ticked = Array.from(card.querySelectorAll("[data-model-list] input:checked")).map((b) => b.value);
+    if (!ticked.length) {
+      setResult(card, "Keep at least one model ticked, or remove this provider.", false);
+      return;
+    }
+    const data = await post(`/api/ai/${pid}/models`, { models: ticked });
+    setResult(card, data.message, !!data.ok);
+  }
+
+  document.querySelectorAll(".provider-card").forEach((card) => {
+    const pid = card.dataset.provider;
+    const connectBox = card.querySelector("[data-connect]");
+    const modelsBox = card.querySelector("[data-models]");
+    const keyInput = card.querySelector("[data-key]");
+    const baseInput = card.querySelector("[data-base-url]");
+    const connectBtn = card.querySelector("[data-connect-btn]");
+
+    if (card.classList.contains("is-connected")) {
+      getJSON(`/api/ai/${pid}/models`).then((data) => {
+        if (data.models && data.models.length) renderModels(card, data.models);
+        if (!data.ok && data.rejected) {
+          setState(card, "Key rejected", "bad");
+          setResult(card, `${card.dataset.label} no longer accepts this key. Replace it below.`, false);
+          connectBox.hidden = false;
+        } else if (!data.ok && data.message) {
+          setResult(card, `Couldn't load the live model list: ${data.message}`, false);
+        }
+      });
+    }
+
+    connectBtn.addEventListener("click", async () => {
+      const key = keyInput.value.trim();
+      if (!key) { setResult(card, "Paste your key first.", false); keyInput.focus(); return; }
+      connectBtn.disabled = true;
+      connectBtn.textContent = "Checking…";
+      setResult(card, "");
+      const data = await post(`/api/ai/${pid}/connect`, { api_key: key, base_url: baseInput ? baseInput.value.trim() : "" });
+      connectBtn.disabled = false;
+      connectBtn.textContent = "Connect";
+      setResult(card, data.message, !!data.ok);
+      if (!data.ok) return;
+      keyInput.value = "";
+      // Reload so the summary, the pool and "Try first" include this provider.
+      setTimeout(() => window.location.reload(), 900);
+    });
+    keyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); connectBtn.click(); } });
+
+    modelsBox.addEventListener("change", (e) => {
+      if (e.target.type !== "checkbox") return;
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => saveSelection(card), 400);
+    });
+    card.querySelector("[data-show-all]").addEventListener("click", (e) => {
+      card.querySelectorAll("[data-extra]").forEach((n) => { n.hidden = false; });
+      e.currentTarget.hidden = true;
+    });
+    card.querySelector("[data-replace-key]").addEventListener("click", () => {
+      connectBox.hidden = false;
+      keyInput.focus();
+    });
+    card.querySelector("[data-disconnect]").addEventListener("click", async () => {
+      if (!window.confirm(`Remove ${card.dataset.label}? Its key is deleted and its models leave your pool.`)) return;
+      const data = await post(`/api/ai/${pid}/disconnect`, {});
+      if (data.ok) window.location.reload();
+      else setResult(card, data.message, false);
+    });
+  });
+
+  const primarySelect = $("ai-primary");
+  if (primarySelect) {
+    primarySelect.addEventListener("change", async () => {
+      const data = await post("/api/ai/primary", { model: primarySelect.value });
+      const hint = primarySelect.parentElement.querySelector(".field-hint");
+      if (hint) hint.textContent = data.ok ? `✓ ${data.message} The others take over whenever it's busy.` : `✗ ${data.message}`;
+    });
+  }
+
   // ── Email method: show only the fields that method needs ─────────────────
   const radios = Array.from(document.querySelectorAll('input[name="mail_method"]'));
   function paintMethod() {
