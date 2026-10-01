@@ -36,10 +36,16 @@ from user_config import UserConfig
 IMAP_HOST = "imap.gmail.com"
 
 FAILED_ADDRESS_PATTERNS = [
-    re.compile(r"Final-Recipient:\s*rfc822;\s*([^\s,]+@[^\s,]+)", re.IGNORECASE),
+    # The machine-readable report (RFC 3464; "utf8-addr" is RFC 6533).
+    re.compile(r"Final-Recipient:\s*(?:rfc822|utf-?8-addr);\s*([^\s,;<>]+@[^\s,;<>]+)", re.IGNORECASE),
+    re.compile(r"Original-Recipient:\s*(?:rfc822|utf-?8-addr);\s*([^\s,;<>]+@[^\s,;<>]+)", re.IGNORECASE),
+    # The human-readable text, which Gmail writes in the account's language.
     re.compile(r"The email account that you tried to reach[^\n]*?\b([\w.+-]+@[\w.-]+)", re.IGNORECASE),
     re.compile(r"failed permanently[^\n]*?\b([\w.+-]+@[\w.-]+)", re.IGNORECASE),
-    re.compile(r"Original-Recipient:\s*rfc822;\s*([^\s,]+@[^\s,]+)", re.IGNORECASE),
+    re.compile(r"(?:wasn't|was not|couldn't be) delivered to\s+(\S+@[\w.-]+)", re.IGNORECASE),
+    re.compile(r"n'est pas parvenu à\s+(\S+@[\w.-]+)", re.IGNORECASE),
+    re.compile(r"distribution de votre message à\s+(\S+@[\w.-]+)", re.IGNORECASE),
+    re.compile(r"Votre message à\s+(\S+@[\w.-]+)", re.IGNORECASE),
 ]
 
 BOUNCE_SENDER_HINTS = ["mailer-daemon", "postmaster", "mail delivery subsystem"]
@@ -47,33 +53,69 @@ BOUNCE_SENDER_HINTS = ["mailer-daemon", "postmaster", "mail delivery subsystem"]
 
 def _extract_failed_email(raw_message: str) -> str | None:
     for pattern in FAILED_ADDRESS_PATTERNS:
-        match = pattern.search(raw_message)
+        match = pattern.search(raw_message or "")
         if match:
-            return match.group(1).strip().rstrip(".,;")
+            return match.group(1).strip().strip("<>").rstrip(".,;:")
     return None
 
 
+_REPORT_TYPES = ("message/delivery-status", "message/global-delivery-status")
+
+
 def _get_body_text(msg) -> str:
+    """The notice's readable text plus its delivery report. Python parses a
+    report part into header blocks, so get_payload(decode=True) returns
+    nothing for it and its text must be rebuilt from the blocks — that is
+    where "Final-Recipient: rfc822; someone@company.com" lives."""
     parts = []
-    if msg.is_multipart():
-        for part in msg.walk():
-            content_type = part.get_content_type()
-            if content_type in ("text/plain", "message/delivery-status", "text/rfc822-headers"):
-                try:
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        parts.append(payload.decode(errors="ignore"))
-                except Exception:
-                    continue
-    else:
-        payload = msg.get_payload(decode=True)
-        if payload:
-            parts.append(payload.decode(errors="ignore"))
+    wanted = ("text/plain", "text/rfc822-headers", *_REPORT_TYPES)
+    for part in (msg.walk() if msg.is_multipart() else [msg]):
+        content_type = part.get_content_type()
+        if msg.is_multipart() and content_type not in wanted:
+            continue
+        try:
+            if content_type in _REPORT_TYPES and part.is_multipart():
+                blocks = [block for block in part.get_payload() if hasattr(block, "items")]
+                parts.append("\n".join(f"{k}: {v}" for block in blocks for k, v in block.items()))
+                continue
+            payload = part.get_payload(decode=True)
+            if payload:
+                parts.append(payload.decode(part.get_content_charset() or "utf-8", errors="ignore"))
+        except Exception:
+            continue
     return "\n".join(parts)
+
+
+def _failed_addresses(msg, body_text: str) -> list:
+    """Every address the notice says failed, most reliable first: the
+    X-Failed-Recipients header, then the report and the readable text."""
+    from email.header import decode_header, make_header
+    found = []
+    header = msg.get("X-Failed-Recipients") if msg is not None else None
+    if header:
+        try:
+            header = str(make_header(decode_header(header)))
+        except Exception:
+            header = str(header)
+        found += [a.strip().strip("<>") for a in re.split(r"[,\s]+", header) if "@" in a]
+    extracted = _extract_failed_email(body_text)
+    if extracted:
+        found.append(extracted)
+    return found
+
+
+def _address_keys(address: str) -> list:
+    """The forms an address may be stored in: as written, and with styled
+    Unicode letters (copied from web pages) folded to plain ones."""
+    import unicodedata
+    plain = address.strip().lower()
+    folded = unicodedata.normalize("NFKC", address).strip().lower()
+    return list(dict.fromkeys([plain, folded]))
 
 
 DIAGNOSTIC_PATTERNS = [
     re.compile(r"Diagnostic-Code:\s*smtp;\s*(.+)", re.IGNORECASE),
+    re.compile(r"(?:La réponse était|Réponse du serveur distant|a répondu)\s*:\s*(.+)", re.IGNORECASE),
     re.compile(r"(The email account that you tried to reach does not exist[^\n.]*)", re.IGNORECASE),
     re.compile(r"(Address not found[^\n]*)", re.IGNORECASE),
 ]
@@ -91,7 +133,7 @@ def _bounce_reason(body_text: str) -> str | None:
 
 
 
-def _record_bounce_if_sent(data, from_header: str, subject: str, body_text: str) -> bool:
+def _record_bounce_if_sent(data, from_header: str, subject: str, body_text: str, msg=None) -> bool:
     """Shared classify+match+update step for one candidate message, used by
     both the IMAP and Gmail-API paths. Returns True if a row was updated."""
     looks_like_bounce = (
@@ -101,14 +143,17 @@ def _record_bounce_if_sent(data, from_header: str, subject: str, body_text: str)
     if not looks_like_bounce:
         return False
 
-    failed_email = _extract_failed_email(body_text)
-    if not failed_email:
-        return False
-    failed_email = failed_email.strip().lower()
-
     # Scoped to this user: a bounce in their inbox can only ever mark one of
     # THEIR applications.
-    application = data.get_application_by_email(failed_email)
+    application, failed_email = None, ""
+    for candidate in _failed_addresses(msg, body_text):
+        for key in _address_keys(candidate):
+            application = data.get_application_by_email(key)
+            if application:
+                failed_email = key
+                break
+        if application:
+            break
     if not application:
         return False
 
@@ -147,7 +192,7 @@ def _check_bounces_via_imap(data, host: str, username: str, password: str, days_
                 continue
             msg = email.message_from_bytes(msg_data[0][1])
             if _record_bounce_if_sent(data, msg.get("From") or "", msg.get("Subject") or "",
-                                      _get_body_text(msg)):
+                                      _get_body_text(msg), msg):
                 updated += 1
         return updated
     finally:
@@ -174,7 +219,7 @@ def _check_bounces_via_gmail_api(data, credentials, days_back: int) -> int:
         raw = service.users().messages().get(userId="me", id=msg_id, format="raw").execute()
         msg = email.message_from_bytes(base64.urlsafe_b64decode(raw["raw"]))
         if _record_bounce_if_sent(data, msg.get("From") or "", msg.get("Subject") or "",
-                                  _get_body_text(msg)):
+                                  _get_body_text(msg), msg):
             updated += 1
     return updated
 

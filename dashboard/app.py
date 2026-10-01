@@ -78,7 +78,8 @@ STATUS_LABELS = {
 IN_PROGRESS_STATUSES = {"researching", "writing", "sending", "queued"}
 EDITABLE_STATUSES = frozenset({"ready", "failed", "retry_wait"})
 STATUS_TABS = [("", "All"), ("favorites", "★ Favorites"), ("to_prepare", "To prepare"),
-               ("ready", "Ready"), ("sent", "Sent"), ("problems", "Problems"), ("skipped", "Skipped")]
+               ("ready", "Ready"), ("sent", "Sent"), ("problems", "Problems"), ("skipped", "Skipped"),
+               ("no_match", "No CV match")]
 FUNNEL_CARDS = [("to_prepare", "To prepare", "to_prepare"), ("ready", "Ready to review", "ready"),
                 ("sending", "Sending", "sending"), ("sent", "Sent", "sent"),
                 ("problems", "Problems", "problems")]
@@ -297,6 +298,8 @@ def _decorate_rows(applications: list) -> list:
             msg = msg.removeprefix("Not delivered — ")
         a["error_short"] = (msg[:80] + "…") if len(msg) > 80 else msg
         a["sendable"] = bool(a["status"] in db.SENDABLE_STATUSES and a.get("subject"))
+        a["no_cv_match"] = bool(a["status"] in db.REVIEW_STATUSES and a.get("hook_status")
+                                and not a["matched_extra_mentions_list"])
         a["favorite"] = bool(a.get("favorite"))
         a["updated_short"] = (a["updated_at"][5:16].replace("T", " ") if a.get("updated_at") else "—")
         a["language"] = a.get("language") or ("en" if a.get("subject") else "")
@@ -306,12 +309,16 @@ def _decorate_rows(applications: list) -> list:
 def _table_context(page: int, status_param: str, search_param: str, limit: int = 50) -> dict:
     d = data()
     favorite_only = status_param == "favorites"
+    no_match_tab = status_param == "no_match"
     statuses = FILTER_GROUPS.get(status_param) if status_param and not favorite_only else None
+    # Companies whose site matched nothing on the CV live in their own tab.
+    # Favorites and searches still find them: those are deliberate choices.
+    cv_match = "none" if no_match_tab else ("all" if favorite_only or search_param else "match")
     applications, table_total = d.get_applications_paginated(
-        status=status_param if not statuses and not favorite_only else None,
+        status=status_param if not statuses and not favorite_only and not no_match_tab else None,
         statuses=list(statuses) if statuses else None,
-        search=search_param, page=page, limit=limit, favorite_only=favorite_only)
-    grouped = d.get_grouped_stats()
+        search=search_param, page=page, limit=limit, favorite_only=favorite_only, cv_match=cv_match)
+    grouped = d.get_grouped_stats(hide_no_match=True)
     favorites = d.count_favorites()
     grouped["favorites"] = favorites["total"]
     sent_today = d.count_sent_today()
@@ -333,6 +340,7 @@ def _table_context(page: int, status_param: str, search_param: str, limit: int =
         "in_progress_count": sum(grouped["by_status"].get(s, 0) for s in IN_PROGRESS_STATUSES),
         "pending_prep": d.count_needing_preparation(),
         "favorites_total": favorites["total"], "favorites_sendable": favorites["sendable"],
+        "no_match_count": grouped.get("no_match", 0), "hiding_no_match": cv_match == "match",
         "filter_status": status_param or "", "filter_q": search_param or "",
     }
 
@@ -373,7 +381,8 @@ def api_overview():
         **{key: context[key] for key in (
             "table_total", "table_page", "table_pages", "total_count", "pending_prep",
             "in_progress_count", "sent_today", "max_per_day", "cap_remaining", "bounced_count",
-            "failed_count", "bounce_check", "favorites_total", "favorites_sendable")},
+            "failed_count", "bounce_check", "favorites_total", "favorites_sendable",
+            "no_match_count")},
         "running": run_state["running"], "stop_requested": run_state["stop_requested"],
         "log_tail": run_state["log_tail"],
     })
@@ -513,7 +522,7 @@ def api_check_bounces():
     import sender_worker
     if security.rate_limited(f"bounce:{g.user['id']}", 6, 600):
         return jsonify({"ok": False, "message": "Checked very recently — try again in a few minutes."}), 429
-    result = bounce_checker.run_check(g.cfg, sender_worker.BOUNCE_WINDOW_DAYS, trigger="manual")
+    result = bounce_checker.run_check(g.cfg, sender_worker.MANUAL_BOUNCE_WINDOW_DAYS, trigger="manual")
     if result["error"]:
         return jsonify({"ok": False, "message": f"Bounce check failed: {result['error']}",
                         "bounce_check": _bounce_check_state()}), 500

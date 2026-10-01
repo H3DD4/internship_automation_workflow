@@ -394,6 +394,17 @@
       renderFavoriteCounts(data.favorites_total, data.favorites_sendable);
     }
 
+    // Companies with no CV match: their tab's count and the "hidden" note
+    if (typeof data.no_match_count === "number") {
+      const n = data.no_match_count;
+      const tab = document.querySelector("[data-no-match-count]");
+      if (tab) { tab.textContent = n; tab.hidden = !n; }
+      const total = document.querySelector("[data-no-match-total]");
+      if (total) total.textContent = n;
+      const note = document.querySelector("[data-no-match-note]");
+      if (note) note.hidden = !n;
+    }
+
     // Undelivered emails: red alert + Problems card note
     renderUndelivered(data.bounced_count || 0);
     if (data.bounce_check) renderBounceCheck(data.bounce_check);

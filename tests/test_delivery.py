@@ -35,6 +35,85 @@ def test_bounce_marks_a_sent_row_not_delivered_with_the_reason(make_app, data):
     assert "550-5.1.1" in row["error_message"] and row["error_message"].startswith("Not delivered")
 
 
+# What Gmail actually sends to a French-language account: the readable part
+# is French, and the failed address sits in the delivery report part (which
+# Python parses into header blocks) and in X-Failed-Recipients.
+GMAIL_FR_NOTICE = """\
+From: Mail Delivery Subsystem <mailer-daemon@googlemail.com>
+Subject: Delivery Status Notification (Failure)
+X-Failed-Recipients: {address}
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=delivery-status; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: 8bit
+
+** Adresse introuvable **
+Votre message n'est pas parvenu à {address}, car l'adresse est introuvable.
+La réponse était : 550 5.1.1 The email account that you tried to reach does not exist.
+
+--b1
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; googlemail.com
+
+Final-Recipient: rfc822; {address}
+Action: failed
+Status: 5.1.1
+
+--b1--
+"""
+
+
+def _notice(address, header=None):
+    import email
+    raw = GMAIL_FR_NOTICE.format(address=address)
+    if header:
+        raw = raw.replace(f"X-Failed-Recipients: {address}", f"X-Failed-Recipients: {header}")
+    return email.message_from_bytes(raw.encode("utf-8"))
+
+
+@pytest.mark.parametrize("strip", ["nothing", "header", "header+text"])
+def test_a_real_gmail_notice_in_french_is_recognised(make_app, data, strip):
+    """Every notice in a real inbox went unrecognised: the report part was
+    never decoded and the text patterns were English only. Any one of the
+    three places the address appears is now enough."""
+    app_id = _sent(make_app, email="ismael@modeo.ai")
+    msg = _notice("ismael@modeo.ai")
+    if strip != "nothing":
+        del msg["X-Failed-Recipients"]
+    body = bounce_checker._get_body_text(msg)
+    if strip == "header+text":
+        body = body.replace("parvenu à ismael@modeo.ai", "parvenu")
+    assert "Final-Recipient: rfc822; ismael@modeo.ai" in bounce_checker._get_body_text(msg)
+    assert bounce_checker._record_bounce_if_sent(data, msg["From"], msg["Subject"], body, msg)
+    row = data.get_application_by_id(app_id)
+    assert row["status"] == "bounced" and "550 5.1.1" in row["error_message"]
+
+
+def test_an_address_with_styled_letters_still_matches(make_app, data):
+    """An address copied from a web page in 𝐛𝐨𝐥𝐝 letters is stored folded."""
+    app_id = _sent(make_app, email="contact@mobileguard.fr")
+    from email.header import Header
+    styled = "𝐜𝐨𝐧𝐭𝐚𝐜𝐭@mobileguard.fr"
+    msg = _notice(styled, header=Header(styled, "utf-8").encode())   # encoded, as Gmail sends it
+    assert bounce_checker._record_bounce_if_sent(data, msg["From"], msg["Subject"],
+                                                 bounce_checker._get_body_text(msg), msg)
+    assert data.get_application_by_id(app_id)["status"] == "bounced"
+
+
+def test_the_button_looks_back_further_than_the_automatic_check(client, monkeypatch):
+    seen = {}
+
+    def fake_run_check(cfg, days_back=3, trigger="manual"):
+        seen["days"] = days_back
+        return {"at": "now", "trigger": trigger, "updated": 0, "error": None}
+    monkeypatch.setattr(bounce_checker, "run_check", fake_run_check)
+    client.post("/api/check-bounces", headers=client.origin, json={})
+    assert seen["days"] == sender_worker.MANUAL_BOUNCE_WINDOW_DAYS > sender_worker.BOUNCE_WINDOW_DAYS
+
+
 def test_a_bounce_in_my_inbox_never_touches_another_users_row(make_app, make_user):
     """Two users applied to the same company; only the one whose inbox holds
     the bounce gets it."""

@@ -19,6 +19,7 @@ import mail_service
 from user_config import UserConfig
 
 BOUNCE_WINDOW_DAYS = 3
+MANUAL_BOUNCE_WINDOW_DAYS = 30   # "Check bounces now" looks further back
 # A job whose worker hasn't checked in for this long is considered orphaned.
 JOB_STALE_SECONDS = 120
 

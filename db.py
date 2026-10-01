@@ -62,6 +62,20 @@ STATUS_GROUPS = {
     "skipped": ("skipped",),
 }
 
+# Researched companies still waiting for the user. Among these, the ones
+# whose website matched nothing on the CV are kept out of the everyday view
+# (see no_cv_match_condition) — never deleted, since detection isn't perfect.
+REVIEW_STATUSES = ("researched", "writing", "ready")
+
+
+def no_cv_match_condition():
+    """Researched, waiting for review, and no CV area found on their site."""
+    areas = applications.c.matched_extra_mentions
+    return (applications.c.status.in_(REVIEW_STATUSES)
+            & applications.c.hook_status.is_not(None)
+            & (areas.is_(None) | areas.in_(["", "[]"])))
+
+
 # Statuses from which an application can be queued for sending.
 SENDABLE_STATUSES = frozenset({"ready", "failed", "retry_wait"})
 # Statuses where the sender owns the row — pipeline must not touch these.
@@ -187,30 +201,48 @@ class UserData:
     # Stats and the table
     # ------------------------------------------------------------------
 
-    def get_stats(self):
+    def get_stats(self, hide_no_match: bool = False):
+        query = (select(applications.c.status, func.count().label("c"))
+                 .where(applications.c.user_id == self.user_id))
+        if hide_no_match:
+            query = query.where(~no_cv_match_condition())
         with database.read() as conn:
-            rows = conn.execute(select(applications.c.status, func.count().label("c"))
-                                .where(applications.c.user_id == self.user_id)
-                                .group_by(applications.c.status)).all()
+            rows = conn.execute(query.group_by(applications.c.status)).all()
         stats = {row.status: row.c for row in rows}
         stats["total"] = sum(stats.values())
         return stats
 
-    def get_grouped_stats(self) -> dict:
-        stats = self.get_stats()
+    def count_no_cv_match(self) -> int:
+        with database.read() as conn:
+            return conn.execute(select(func.count()).select_from(applications).where(
+                applications.c.user_id == self.user_id, no_cv_match_condition())).scalar_one()
+
+    def get_grouped_stats(self, hide_no_match: bool = False) -> dict:
+        """Counts per funnel stage. With hide_no_match, companies with no CV
+        match are left out and counted separately as "no_match"."""
+        stats = self.get_stats(hide_no_match)
         grouped = {group: sum(stats.get(status, 0) for status in statuses)
                    for group, statuses in STATUS_GROUPS.items()}
         grouped["total"] = stats.get("total", 0)
         grouped["by_status"] = {k: v for k, v in stats.items() if k != "total"}
+        if hide_no_match:
+            grouped["no_match"] = self.count_no_cv_match()
         return grouped
 
     def get_applications_paginated(self, status: str = None, statuses: list = None,
                                    search: str = None, page: int = 1, limit: int = 50,
-                                   favorite_only: bool = False) -> tuple[list, int]:
+                                   favorite_only: bool = False,
+                                   cv_match: str = "all") -> tuple[list, int]:
+        """cv_match: "all", "match" (leave out companies with no CV match)
+        or "none" (only those)."""
         query = select(applications).where(applications.c.user_id == self.user_id)
         count = select(func.count()).select_from(applications).where(
             applications.c.user_id == self.user_id)
         conditions = []
+        if cv_match == "match":
+            conditions.append(~no_cv_match_condition())
+        elif cv_match == "none":
+            conditions.append(no_cv_match_condition())
         if favorite_only:
             conditions.append(applications.c.favorite == 1)
         if statuses:

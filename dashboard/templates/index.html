@@ -98,7 +98,8 @@
     <a class="status-tab{% if filter_status == value %} status-tab--active{% endif %}{% if value == 'favorites' %} status-tab--favorites{% endif %}"
        href="{{ url_for('index', status=value, q=filter_q) }}">{{ label }}{% if value == 'favorites' %}
       {# Always present, so starring can update it without a reload. #}
-      <span class="status-tab__count" data-favorites-count {% if not grouped.get('favorites') %}hidden{% endif %}>{{ grouped.get('favorites') }}</span>{% elif value and grouped.get(value) %}
+      <span class="status-tab__count" data-favorites-count {% if not grouped.get('favorites') %}hidden{% endif %}>{{ grouped.get('favorites') }}</span>{% elif value == 'no_match' %}
+      <span class="status-tab__count" data-no-match-count {% if not no_match_count %}hidden{% endif %}>{{ no_match_count }}</span>{% elif value and grouped.get(value) %}
       <span class="status-tab__count">{{ grouped.get(value) }}</span>{% endif %}</a>
     {% endfor %}
   </nav>
@@ -111,6 +112,19 @@
     {% if filter_q or filter_status %}<a class="button button--ghost button--sm" href="{{ url_for('index') }}">Clear</a>{% endif %}
     <span class="visible-count" data-table-meta>{{ table_total }} row(s) · page {{ table_page }}/{{ table_pages }}</span>
   </form>
+
+  {% if filter_status == 'no_match' %}
+  <div class="cv-match-note">
+    <strong>Companies whose website matched nothing on your CV.</strong>
+    Their emails leave out the “why I fit” paragraph, so they're weaker. They're kept out of your
+    other tabs, but the check isn't perfect — open any you know is a fit and send it from here.
+  </div>
+  {% elif hiding_no_match and no_match_count %}
+  <div class="cv-match-note cv-match-note--quiet" data-no-match-note>
+    <span><strong data-no-match-total>{{ no_match_count }}</strong> researched compan{{ "y" if no_match_count == 1 else "ies" }} with no match to your CV {{ "is" if no_match_count == 1 else "are" }} hidden.</span>
+    <a href="{{ url_for('index', status='no_match') }}">Review them →</a>
+  </div>
+  {% endif %}
 
   {% if filter_status == 'favorites' %}
   {# The favorites view's own action: send every ready favorite in one go,
