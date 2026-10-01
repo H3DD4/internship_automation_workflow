@@ -39,6 +39,7 @@ def test_the_site_name_must_appear_in_the_page_text():
     assert verify_site_name("Connect‑i", page) == "Connect-i"
     assert verify_site_name("Connect Innovations SA", page) == ""  # not on the page: invented
     assert verify_site_name("", page) == ""
+    assert verify_site_name("Hortis SA", "Hortis rassemble une équipe de consultants") == "Hortis"
 
 
 def test_research_returns_the_sites_own_name(monkeypatch):

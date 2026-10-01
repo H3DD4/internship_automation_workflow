@@ -298,8 +298,9 @@ def _decorate_rows(applications: list) -> list:
             msg = msg.removeprefix("Not delivered — ")
         a["error_short"] = (msg[:80] + "…") if len(msg) > 80 else msg
         a["sendable"] = bool(a["status"] in db.SENDABLE_STATUSES and a.get("subject"))
+        a["not_checked"] = a.get("hook_status") in db.NOT_CHECKED_HOOK_STATUSES
         a["no_cv_match"] = bool(a["status"] in db.REVIEW_STATUSES and a.get("hook_status")
-                                and not a["matched_extra_mentions_list"])
+                                and not a["not_checked"] and not a["matched_extra_mentions_list"])
         a["favorite"] = bool(a.get("favorite"))
         a["updated_short"] = (a["updated_at"][5:16].replace("T", " ") if a.get("updated_at") else "—")
         a["language"] = a.get("language") or ("en" if a.get("subject") else "")

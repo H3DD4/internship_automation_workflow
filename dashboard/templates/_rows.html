@@ -26,6 +26,8 @@
   <td class="col-extras">
     {% if a.matched_extra_mentions_list %}
       {% for m in a.matched_extra_mentions_list %}<span class="chip" title="{{ m }}">{{ area_labels.get(m, m) if area_labels else m }}</span>{% endfor %}
+    {% elif a.not_checked %}
+      <span class="chip chip--muted" title="Their website couldn't be read, so the match couldn't be checked">Not checked</span>
     {% elif a.no_cv_match %}
       <span class="chip chip--muted" title="Nothing on their website matched your CV">No match</span>
     {% else %}

@@ -68,11 +68,17 @@ STATUS_GROUPS = {
 REVIEW_STATUSES = ("researched", "writing", "ready")
 
 
+# Research that never looked at the site can't say "no match".
+NOT_CHECKED_HOOK_STATUSES = ("no website text", "model gave no usable answer")
+
+
 def no_cv_match_condition():
-    """Researched, waiting for review, and no CV area found on their site."""
+    """Researched, waiting for review, the site was actually read, and no CV
+    area was found on it."""
     areas = applications.c.matched_extra_mentions
     return (applications.c.status.in_(REVIEW_STATUSES)
             & applications.c.hook_status.is_not(None)
+            & applications.c.hook_status.not_in(NOT_CHECKED_HOOK_STATUSES)
             & (areas.is_(None) | areas.in_(["", "[]"])))
 
 

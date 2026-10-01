@@ -42,6 +42,9 @@ You COPY from the text. You do not create, guess or improve.
 QUESTION 1 — "areas": which of these describe what the company actually does?
 Give 0, 1 or 2 ids, the best match first. Give [] if none clearly applies.
 {areas_block}
+For each id you give, copy into "area_evidence" the words from the website
+(3 to 15 words, exactly as written, in the website's language) that show it:
+  {{"agentic_ai": "autonomous AI employees that automate repetitive workflows"}}
 
 QUESTION 2 — "hook": one concrete thing this company does, as a short noun
 phrase of 5 to 20 words, built from the website's OWN words. It will be
@@ -63,7 +66,7 @@ If the text doesn't describe what they do (cookie banner, login page, error
 page, or too little text), set both "hook" and "hook_evidence" to "".
 
 Answer with ONLY this JSON object and nothing else:
-{{"areas": [], "hook": "", "hook_evidence": "", "industry": "", "summary": "", "organisation": ""}}
+{{"areas": [], "area_evidence": {{}}, "hook": "", "hook_evidence": "", "industry": "", "summary": "", "organisation": ""}}
 
 "industry": 2-5 words. "summary": one sentence on what they do, from the text.
 "organisation": the name of the company that owns this website, copied exactly
@@ -254,19 +257,44 @@ def keyword_hits(area: dict, site_text: str, lang: str = "") -> int:
     return sum(1 for keyword in keywords if _keyword_present(keyword, text))
 
 
-def resolve_areas(model_areas: list, site_text: str, areas: list, lang: str = "") -> tuple:
+_QUOTE_FOLD = str.maketrans({**{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2212"},
+                              **{c: "'" for c in "\u2018\u2019\u02bc"}, **{c: '"' for c in "\u201c\u201d"}})
+
+
+def quote_on_site(quote: str, site_text: str, min_words: int = 3) -> bool:
+    """True when `quote` appears in the site text word for word (ignoring
+    case, spacing and the kind of dash or quote mark)."""
+    def fold(text):
+        return " ".join((text or "").translate(_QUOTE_FOLD).lower().split())
+    quote = fold(quote).strip(" .,;:\"'")
+    return len(quote.split()) >= min_words and quote in fold(site_text)
+
+
+def resolve_areas(model_areas: list, site_text: str, areas: list, lang: str = "",
+                  evidence: dict | None = None) -> tuple:
     """Keep the model's area picks only when the site's own words back them
-    up, topping up from keyword evidence alone when it's strong. Returns
+    up — one of the area's keywords, or the passage the model quoted for it,
+    found word for word on the site. The quote is what makes this work in any
+    language and for any field: the keyword lists are short, English/French,
+    and missed "autonomous AI employees" for an agentic-AI company.
+    Tops up from keyword evidence alone when it's strong. Returns
     (area_ids, how_each_was_decided)."""
     by_id = {area["id"]: area for area in areas}
     hits = {area["id"]: keyword_hits(area, site_text, lang) for area in areas}
+    evidence = evidence if isinstance(evidence, dict) else {}
 
     chosen, notes = [], []
     for area_id in model_areas or []:
-        if area_id in by_id and area_id not in chosen and hits[area_id] >= 1:
+        if area_id not in by_id or area_id in chosen:
+            continue
+        quote = str(evidence.get(area_id) or "").strip()
+        if hits[area_id] >= 1:
             chosen.append(area_id)
             notes.append(f"{area_id}: model, confirmed by {hits[area_id]} keyword(s) on the site")
-        elif area_id in by_id:
+        elif quote and quote_on_site(quote, site_text):
+            chosen.append(area_id)
+            notes.append(f"{area_id}: model, backed by the site's own words: \"{quote[:120]}\"")
+        else:
             notes.append(f"{area_id}: model suggested it, but nothing on the site backs it — dropped")
 
     # When the model found something, only add a keyword-only area if the
@@ -585,7 +613,8 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
     if isinstance(model_areas, str):
         model_areas = [model_areas]
     context["areas"], context["area_notes"] = resolve_areas(model_areas, site_text, areas,
-                                                            context["site_language"])
+                                                            context["site_language"],
+                                                            answer.get("area_evidence"))
 
     hook, status = verify_hook(str(answer.get("hook") or ""),
                                str(answer.get("hook_evidence") or ""), site_text)
@@ -601,10 +630,12 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
 
     context["company_hook"] = hook
     # The phrase actually found on the site, kept so the dashboard can show
-    # what was quoted and any translation stays auditable. Only alongside a
-    # hook that is used — a dropped hook has no translation to audit.
-    context["hook_original"] = original if hook and original != hook else ""
-    context["hook_evidence"] = str(answer.get("hook_evidence") or "") if hook else ""
+    # what was quoted and any translation stays auditable. When no translator
+    # was free, the English email goes without it, but the verified original
+    # is kept: a French company's French email uses it as written.
+    untranslated = bool(original and not hook and "no translation model" in status)
+    context["hook_original"] = original if (hook and original != hook) or untranslated else ""
+    context["hook_evidence"] = str(answer.get("hook_evidence") or "") if hook or untranslated else ""
     context["hook_status"] = status if answer else "model gave no usable answer"
     if not hook and status != "none offered":
         print(f"    [research] hook for {company_name} rejected ({status}) — using standard wording")
@@ -626,7 +657,12 @@ def verify_site_name(name: str, site_text: str) -> str:
     if not name or len(name) > 60 or len(name.split()) > 6:
         return ""
     page = " ".join((site_text or "").translate(dashes).split()).lower()
-    return name if name.lower() in page else ""
+    if name.lower() in page:
+        return name
+    # "Hortis SA" on a site that only ever says "Hortis".
+    bare = re.sub(r"[\s,]+(sa|ag|gmbh|sas|sarl|srl|bv|nv|ltd|llc|inc|plc|s\.a\.|s\.a\.s\.)\.?$", "",
+                  name, flags=re.IGNORECASE).strip()
+    return bare if bare != name and len(bare) >= 2 and bare.lower() in page else ""
 
 
 def _with_display_fields(context: dict) -> dict:
