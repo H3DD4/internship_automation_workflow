@@ -38,6 +38,7 @@ import vault
 POLL_SECONDS = 2
 BOUNCE_PROBE_SECONDS = 60
 HOUSEKEEPING_SECONDS = 600
+RECOVERY_SECONDS = 30
 
 
 def execute_prep_run(user_id: int, role: str, *, limit: int | None = None,
@@ -101,6 +102,7 @@ class Worker:
         self._bounce_threads: dict = {}   # user_id -> thread
         self._next_bounce_probe = 0.0
         self._next_housekeeping = 0.0
+        self._next_recovery = 0.0
         self._thread = None
 
     # -- lifecycle -------------------------------------------------------------
@@ -118,7 +120,8 @@ class Worker:
     def loop(self) -> None:
         print(f"[worker] {self.worker_id} started.")
         while not self.stop_event.is_set():
-            for step in (self._housekeeping, self._start_runs, self._start_senders, self._probe_bounces):
+            for step in (self._recover_runs, self._housekeeping, self._start_runs, self._start_senders,
+                         self._probe_bounces):
                 try:
                     step()
                 except Exception as exc:  # the loop must survive anything
@@ -160,6 +163,7 @@ class Worker:
         threading.Thread(target=heartbeat, daemon=True, name=f"run-{run_id}-heartbeat").start()
 
         status, summary = "done", None
+        user_stopped = False
         with logsink.bound(sink):
             print(f"--- Preparation run #{run_id} ---")
             try:
@@ -168,7 +172,8 @@ class Worker:
                 summary = execute_prep_run(
                     user_id, user["role"], limit=run.get("limit_n"),
                     stop_check=lambda: self.stop_event.is_set() or runs.stop_requested(run_id))
-                if runs.stop_requested(run_id) or self.stop_event.is_set():
+                user_stopped = runs.stop_requested(run_id)
+                if user_stopped or self.stop_event.is_set():
                     status = "stopped"
             except drafting.NotReady as exc:
                 print(f"Can't start: {exc}")
@@ -178,7 +183,19 @@ class Worker:
                 status, summary = "failed", {"error": str(exc)[:300]}
             finally:
                 beating.set()
+                # Whatever happened, no company is left half-way: anything
+                # still "researching" goes back to the queue, anything still
+                # "writing" keeps its research and is drafted next time.
+                try:
+                    db.for_user(user_id).recover_stale_preparation_rows()
+                except Exception as exc:
+                    print(f"Couldn't tidy unfinished companies: {exc!r}")
                 sink.flush()
+        if status == "stopped" and not user_stopped:
+            # The worker is shutting down (restart, redeploy) — not the user's
+            # choice, so the run continues when a worker is back.
+            runs.requeue(run_id, "the app restarted")
+            return
         runs.finish(run_id, status, summary)
 
     # -- sending ---------------------------------------------------------------
@@ -257,12 +274,19 @@ class Worker:
 
     # -- housekeeping ----------------------------------------------------------
 
+    def _recover_runs(self) -> None:
+        """Runs whose worker died without a word (killed, crashed): their
+        unfinished companies are put back and the run continues."""
+        if time.monotonic() < self._next_recovery:
+            return
+        self._next_recovery = time.monotonic() + RECOVERY_SECONDS
+        for uid in runs.recover_stale_runs():
+            db.for_user(uid).recover_stale_preparation_rows()
+
     def _housekeeping(self) -> None:
         if time.monotonic() < self._next_housekeeping:
             return
         self._next_housekeeping = time.monotonic() + HOUSEKEEPING_SECONDS
-        for uid in runs.fail_stale_runs():
-            db.for_user(uid).recover_stale_preparation_rows()
         accounts.purge_expired_sessions()
         accounts.purge_rate_buckets()
 

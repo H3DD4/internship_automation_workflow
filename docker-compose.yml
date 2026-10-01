@@ -36,6 +36,9 @@ services:
     image: internship-app
     container_name: internship_app
     restart: unless-stopped
+    # Time for the worker to put in-progress companies back before Docker
+    # stops it (anything it misses is recovered when it starts again).
+    stop_grace_period: 30s
     depends_on:
       db:
         condition: service_healthy

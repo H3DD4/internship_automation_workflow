@@ -263,17 +263,80 @@ def test_a_run_without_a_profile_fails_with_a_clear_message(user_id):
     assert run["status"] == "failed" and "profile" in run["log"].lower()
 
 
-def test_a_dead_workers_run_is_closed_and_its_rows_recovered(make_app, data, user_id):
+def _go_quiet(run_id):
+    """Make a running run look like its worker died an hour ago."""
     from datetime import datetime, timedelta, timezone
     from sqlalchemy import update
     import database
-    run_id = runs.request_run(user_id)
-    runs.claim_next("dead-worker")
     old = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     with database.tx() as conn:
         conn.execute(update(database.prep_runs).where(database.prep_runs.c.id == run_id).values(heartbeat_at=old))
-    app_id = make_app(status="researching", subject="", body="")
-    assert runs.fail_stale_runs() == [user_id]
-    data.recover_stale_preparation_rows()
-    assert runs.latest(user_id)["status"] == "failed"
-    assert data.get_application_by_id(app_id)["status"] == "pending"
+
+
+def test_a_dead_workers_run_continues_and_its_rows_are_put_back(make_app, data, user_id):
+    run_id = runs.request_run(user_id)
+    runs.claim_next("dead-worker")
+    _go_quiet(run_id)
+    researching = make_app(company="A", email="a@x.com", status="researching", subject="", body="")
+    writing = make_app(company="B", email="b@x.com", status="writing", subject="", body="")
+    import worker as worker_module
+    worker_module.Worker("live")._recover_runs()
+    run = runs.latest(user_id)
+    assert run["id"] == run_id and run["status"] == "requested"        # queued again, same run
+    assert "Continuing where it left off" in run["log"]
+    assert data.get_application_by_id(researching)["status"] == "pending"
+    assert data.get_application_by_id(writing)["status"] == "researched"  # research kept
+    assert runs.claim_next("live")["id"] == run_id                       # a worker picks it up
+
+
+def test_a_run_the_user_was_stopping_is_not_resumed(user_id):
+    run_id = runs.request_run(user_id)
+    runs.claim_next("dead-worker")
+    runs.request_stop(user_id)
+    _go_quiet(run_id)
+    assert runs.recover_stale_runs() == [user_id]
+    assert runs.latest(user_id)["status"] == "stopped"
+
+
+def test_a_run_that_keeps_dying_is_closed_after_a_few_tries(user_id):
+    run_id = runs.request_run(user_id)
+    for _ in range(runs.MAX_RESUMES):
+        runs.claim_next("w")
+        _go_quiet(run_id)
+        runs.recover_stale_runs()
+        assert runs.latest(user_id)["status"] == "requested"
+    runs.claim_next("w")
+    _go_quiet(run_id)
+    runs.recover_stale_runs()
+    run = runs.latest(user_id)
+    assert run["status"] == "failed" and "start it again" in run["summary"]
+
+
+def test_a_restart_puts_the_run_back_in_the_queue(user_id, monkeypatch, make_app, data):
+    import worker as worker_module
+    w = worker_module.Worker("restarting")
+    stuck = make_app(company="C", email="c@x.com", status="writing", subject="", body="")
+
+    def interrupted_run(*args, **kwargs):
+        w.stop_event.set()              # SIGTERM arrives mid-run
+        return {"skipped": 1}
+    monkeypatch.setattr(worker_module, "execute_prep_run", interrupted_run)
+    runs.request_run(user_id)
+    w._execute_run(runs.claim_next("restarting"))
+    assert runs.latest(user_id)["status"] == "requested"
+    assert data.get_application_by_id(stuck)["status"] == "researched"
+
+
+def test_a_user_stop_ends_the_run_with_nothing_left_half_way(user_id, monkeypatch, make_app, data):
+    import worker as worker_module
+    w = worker_module.Worker("w")
+    stuck = make_app(company="D", email="d@x.com", status="researching", subject="", body="")
+
+    def stopped_run(*args, **kwargs):
+        runs.request_stop(user_id)
+        return {"skipped": 1}
+    monkeypatch.setattr(worker_module, "execute_prep_run", stopped_run)
+    runs.request_run(user_id)
+    w._execute_run(runs.claim_next("w"))
+    assert runs.latest(user_id)["status"] == "stopped"
+    assert data.get_application_by_id(stuck)["status"] == "pending"

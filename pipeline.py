@@ -348,7 +348,8 @@ class Pipeline:
                 if unaccounted > 0:
                     self.results["skipped"] = self.results.get("skipped", 0) + unaccounted
                     self.terminal_count += unaccounted
-            print("Stopped on request — prepared work is saved; re-run to continue.")
+            print("Stopped on request — finished drafts are saved. Companies that were in progress go back "
+                  "to the queue (research already done is kept); your next run continues with them.")
 
         return self.results
 

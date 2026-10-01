@@ -4,6 +4,11 @@ A run is a row in prep_runs. The dashboard inserts it ("requested"); a worker
 claims it atomically ("running"), streams the log into it, and closes it
 ("done" / "stopped" / "failed"). Stop is a flag on the row the pipeline polls.
 One active run per user at a time.
+
+A run the user didn't stop never just dies with the worker: when the worker
+shuts down, or is killed and its heartbeat goes quiet, the run goes back to
+"requested" and the next worker continues it (up to MAX_RESUMES times, so a
+run that keeps crashing the worker can't loop forever).
 """
 
 from __future__ import annotations
@@ -19,7 +24,8 @@ from database import prep_runs
 
 ACTIVE = ("requested", "running")
 LOG_LIMIT = 64 * 1024
-STALE_SECONDS = 300
+STALE_SECONDS = 120          # four missed 30-second heartbeats
+MAX_RESUMES = 3
 
 
 def _now() -> str:
@@ -107,18 +113,64 @@ def finish(run_id: int, status: str, summary: dict | None = None) -> None:
             summary=json.dumps(summary) if summary is not None else None))
 
 
-def fail_stale_runs() -> list:
-    """Runs whose worker died (no heartbeat for STALE_SECONDS): marked failed,
-    returning their user ids so their half-done rows can be recovered."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STALE_SECONDS)).isoformat()
+def _resumes(summary: str | None) -> int:
+    try:
+        return int(json.loads(summary or "{}").get("resumes", 0))
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
+def requeue(run_id: int, reason: str) -> bool:
+    """Put an interrupted run back in the queue so a worker continues it.
+    False (and the run is closed as failed) once it has been resumed
+    MAX_RESUMES times."""
     with database.tx() as conn:
-        stale = conn.execute(select(prep_runs.c.id, prep_runs.c.user_id).where(
-            prep_runs.c.status == "running", prep_runs.c.heartbeat_at < cutoff)).all()
-        for row in stale:
-            conn.execute(update(prep_runs).where(prep_runs.c.id == row.id).values(
+        row = conn.execute(select(prep_runs.c.summary, prep_runs.c.log).where(
+            prep_runs.c.id == run_id)).first()
+        if row is None:
+            return False
+        resumes = _resumes(row.summary)
+        if resumes >= MAX_RESUMES:
+            conn.execute(update(prep_runs).where(prep_runs.c.id == run_id).values(
                 status="failed", finished_at=_now(),
-                summary=json.dumps({"error": "The worker stopped during this run."})))
-    return [row.user_id for row in stale]
+                summary=json.dumps({"error": f"Interrupted {resumes + 1} times ({reason}) — "
+                                             "start it again when you're ready.", "resumes": resumes})))
+            return False
+        note = f"\n--- Interrupted ({reason}). Continuing where it left off. ---\n"
+        conn.execute(update(prep_runs).where(prep_runs.c.id == run_id).values(
+            status="requested", worker_id=None, heartbeat_at=None,
+            summary=json.dumps({"resumes": resumes + 1}),
+            log=((row.log or "") + note)[-LOG_LIMIT:]))
+    return True
+
+
+def recover_stale_runs() -> list:
+    """Runs whose worker died (no heartbeat for STALE_SECONDS). A run the user
+    had asked to stop is closed as stopped; any other is queued again so it
+    continues by itself. Returns their user ids, so the rows they left
+    mid-stage can be put back first."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STALE_SECONDS)).isoformat()
+    with database.read() as conn:
+        stale = conn.execute(select(prep_runs.c.id, prep_runs.c.user_id, prep_runs.c.stop_requested).where(
+            prep_runs.c.status == "running", prep_runs.c.heartbeat_at < cutoff)).all()
+    users = []
+    for row in stale:
+        with database.tx() as conn:
+            # Re-check under the write: another worker may have handled it.
+            still = conn.execute(update(prep_runs).where(
+                prep_runs.c.id == row.id, prep_runs.c.status == "running",
+                prep_runs.c.heartbeat_at < cutoff).values(heartbeat_at=_now())).rowcount == 1
+        if not still:
+            continue
+        users.append(row.user_id)
+        if row.stop_requested:
+            finish(row.id, "stopped", {"note": "The worker stopped while this run was stopping."})
+        else:
+            requeue(row.id, "the worker stopped")
+    return users
+
+
+fail_stale_runs = recover_stale_runs   # former name
 
 
 class RunLog:
