@@ -205,6 +205,7 @@ class Pipeline:
                 self.data.update_application(
                     app_id,
                     status="researched",
+                    error_message=None,          # a fresh result replaces any older failure
                     industry=context.get("industry"),
                     mission_or_focus=context.get("mission_or_focus"),
                     tone_of_voice=context.get("tone_of_voice"),

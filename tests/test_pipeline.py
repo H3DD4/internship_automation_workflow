@@ -127,6 +127,16 @@ def test_stale_in_progress_rows_are_recovered(make_app, data):
     assert data.get_application_by_id(writing)["status"] == "researched"
 
 
+def test_recovered_rows_drop_an_old_error(make_app, data):
+    # A row interrupted mid-draft must not keep showing a failure from an
+    # earlier attempt (e.g. one carried over from the single-user install).
+    app_id = make_app(company="C", email="c@x.com", status="writing", subject="", body="",
+                      error_message="Research error: [WinError 32] file in use")
+    data.recover_stale_preparation_rows()
+    row = data.get_application_by_id(app_id)
+    assert row["status"] == "researched" and not row["error_message"]
+
+
 def test_init_db_keeps_error_message_on_repeat_calls(data):
     app_id = data.get_or_create_application("E", "e@x.com", "")
     data.update_application(app_id, status="failed", industry="tech",

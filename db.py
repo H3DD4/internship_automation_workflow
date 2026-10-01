@@ -440,10 +440,10 @@ class UserData:
         with database.tx() as conn:
             first = conn.execute(update(applications).where(
                 applications.c.user_id == self.user_id, applications.c.status == "researching"
-            ).values(status="pending", updated_at=now)).rowcount
+            ).values(status="pending", error_message=None, updated_at=now)).rowcount
             second = conn.execute(update(applications).where(
                 applications.c.user_id == self.user_id, applications.c.status == "writing"
-            ).values(status="researched", updated_at=now)).rowcount
+            ).values(status="researched", error_message=None, updated_at=now)).rowcount
         return first + second
 
     def recover_interrupted_sends(self) -> int:
