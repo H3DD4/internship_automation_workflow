@@ -729,3 +729,27 @@ mark.style-changed { background: var(--amber-soft); box-shadow: inset 0 -2px 0 #
 .col-extras .loc-tag { white-space: normal; }
 .loc-tag--phone { display: none; }
 @media (max-width: 720px) { #app-table .loc-tag--phone { display: flex; margin: 3px 0 0; } }
+
+/* ── Admin → Users: "Manage" opens in place, inside the row. A floating
+   menu inside the scrollable table was clipped and covered by other cells. */
+.admin-table td.row-actions { white-space: normal; vertical-align: top; min-width: 150px; }
+.admin-table .action-menu { display: block; }
+.admin-table .action-menu > summary { display: inline-flex; }
+.admin-table .action-menu__panel { position: static; width: 270px; max-width: 100%; margin-top: 8px; box-shadow: none; background: var(--surface-2); }
+.admin-table .action-menu[open] > summary { background: var(--surface-3); }
+.daily-limit-form { display: grid; gap: 6px; padding: 8px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--border-soft); }
+.daily-limit-form .inline-form { gap: 6px; flex-wrap: nowrap; }
+.daily-limit-form button { width: auto !important; border: 1px solid var(--border) !important; background: var(--surface) !important; text-align: center !important; }
+
+.cell-limit { white-space: nowrap; }
+.limit-form { display: inline-flex; align-items: center; gap: 6px; }
+.limit-form input { width: 74px; }
+.cell-limit .field-hint { display: block; margin-top: 3px; }
+.limit-form input { flex: none; width: 78px; min-width: 78px; height: 32px; padding: 4px 8px; font-size: 13.5px; }
+.limit-form .button { flex: none; }
+.admin-table .cell-limit { min-width: 150px; }
+/* The accounts table gets the full width; "Add a user" sits under it. */
+.admin-grid { grid-template-columns: 1fr; }
+.admin-grid > .panel:first-child .table-scroll { overflow-x: auto; }
+.limit-form { display: grid; grid-template-columns: 78px auto; align-items: center; gap: 6px; }
+.admin-table .cell-limit { min-width: 160px; white-space: normal; }

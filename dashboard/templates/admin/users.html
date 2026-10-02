@@ -34,7 +34,7 @@
     <div class="table-scroll">
       <table class="app-table admin-table">
         <thead>
-          <tr><th>Account</th><th>Role</th><th>Status</th><th>Activity</th><th>Last sign-in</th><th>Actions</th></tr>
+          <tr><th>Account</th><th>Role</th><th>Status</th><th>Activity</th><th>Emails / day</th><th>Last sign-in</th><th>Actions</th></tr>
         </thead>
         <tbody>
           {% for u in users %}
@@ -51,9 +51,19 @@
             </td>
             <td class="cell-mono">
               {{ use.get('listed', 0) }} listed · {{ use.get('ready', 0) }} ready · {{ use.get('sent', 0) }} sent
-              {% if limits.get(u.id) %}<div class="field-hint">limit {{ limits[u.id] }}/day</div>{% endif %}
               {% if use.get('bounced') %}<span class="text-danger">· {{ use.bounced }} bounced</span>{% endif %}
               {% if use.get('running') %}<div class="field-hint">preparing now</div>{% endif %}
+            </td>
+            <td class="cell-limit">
+              {% if u.role != 'admin' %}
+              <form method="post" action="{{ url_for('admin.user_daily_limit', user_id=u.id) }}" class="limit-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input name="daily_limit" type="number" min="1" max="500" value="{{ limits.get(u.id) or '' }}"
+                       placeholder="{{ daily_limit }}" aria-label="Emails per day for {{ u.email }}">
+                <button class="button button--ghost button--sm" type="submit">Save</button>
+              </form>
+              <span class="field-hint">{% if limits.get(u.id) %}own limit{% else %}platform's {{ daily_limit }}{% endif %}</span>
+              {% else %}<span class="cell-empty">—</span>{% endif %}
             </td>
             <td class="cell-mono">{{ u.last_login_at[:16].replace("T", " ") if u.last_login_at else "never" }}<div class="field-hint">{{ sessions.get(u.id, 0) }} active session(s)</div></td>
             <td class="row-actions">
@@ -77,14 +87,6 @@
                   {% if u.failed_logins %}
                   <form method="post" action="{{ url_for('admin.unlock', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Clear failed sign-ins</button></form>
                   {% endif %}
-                  {% if u.role != 'admin' %}
-                  <form method="post" action="{{ url_for('admin.user_daily_limit', user_id=u.id) }}" class="daily-limit-form">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <label class="field-hint" for="lim-{{ u.id }}">Emails per day (empty = platform's {{ daily_limit }})</label>
-                    <span class="inline-form"><input id="lim-{{ u.id }}" name="daily_limit" type="number" min="1" max="500" value="{{ limits.get(u.id) or '' }}" placeholder="{{ daily_limit }}" style="width: 90px">
-                    <button>Save limit</button></span>
-                  </form>
-                  {% endif %}
                   <form method="post" action="{{ url_for('admin.sign_out', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Sign out everywhere</button></form>
                   {% if u.id != current_user.id %}
                   <form method="post" action="{{ url_for('admin.delete', user_id=u.id) }}" class="danger-zone">
@@ -99,7 +101,7 @@
             </td>
           </tr>
           {% endfor %}
-          {% if not users %}<tr><td colspan="6" class="cell-empty">No accounts here.</td></tr>{% endif %}
+          {% if not users %}<tr><td colspan="7" class="cell-empty">No accounts here.</td></tr>{% endif %}
         </tbody>
       </table>
     </div>
