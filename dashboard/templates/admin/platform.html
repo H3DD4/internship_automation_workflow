@@ -6,6 +6,24 @@
 {% include "admin/_nav.html" %}
 
 <div class="settings-stack">
+  <section class="settings-card" id="daily-limit">
+    <div class="settings-card__head">
+      <h2>Daily sending limit</h2>
+      <p class="section-copy">The most emails any user may send per day. Users can choose a lower number in their settings, never a higher one. You can give one account a different limit under Users → Manage.</p>
+    </div>
+    <form method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="daily_limit">
+      <div class="inline-form">
+        <input type="number" name="daily_limit" min="1" max="{{ daily_limit_max }}" value="{{ daily_limit }}" required aria-label="Emails per user per day" style="width: 110px">
+        <span class="field-hint">emails per user per day</span>
+      </div>
+      <label class="choice"><input type="checkbox" name="apply_all">
+        <span><strong>Also set every user's own limit to this number now</strong><span class="field-hint">Otherwise users keep their own choice, as long as it's under the limit.</span></span></label>
+      <div><button class="button button--primary" type="submit">Save</button></div>
+    </form>
+  </section>
+
   <section class="settings-card" id="ntern-list">
     <div class="settings-card__head">
       <h2>The Ntern list</h2>

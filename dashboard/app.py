@@ -280,7 +280,7 @@ def _setup_state() -> dict:
         "language_mode": profile.get("language_mode") or "auto",
         "languages": [lang for lang, spec in (("en", spec_en), ("fr", spec_fr)) if spec],
         "name": cfg.get("YOUR_NAME"), "target_role": cfg.get("YOUR_TARGET_ROLE"),
-        "user_max_per_day": None if g.user["role"] == "admin" else config.USER_MAX_EMAILS_PER_DAY,
+        "user_max_per_day": None if g.user["role"] == "admin" else accounts.daily_limit_for(g.user["id"]),
         "user_max_workers": None if g.user["role"] == "admin" else config.USER_MAX_RESEARCH_WORKERS,
     }
 

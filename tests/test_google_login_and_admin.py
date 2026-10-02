@@ -243,3 +243,40 @@ def test_only_an_admin_can_flip_auto_accept(client):
     import accounts
     client.post("/admin/auto-accept", headers=client.origin, data={"csrf_token": client.csrf, "auto_accept": "on"})
     assert accounts.signup_mode() != "open"
+
+
+def test_the_admin_sets_the_daily_limit_for_everyone(admin_client, make_user):
+    import accounts
+    from user_config import UserConfig
+    uid = make_user("sender@example.com")
+    UserConfig(uid).set_many({"MAX_EMAILS_PER_DAY": "80"})
+    admin_client.post("/admin/platform", headers=admin_client.origin,
+                      data={"csrf_token": admin_client.csrf, "action": "daily_limit", "daily_limit": "25"})
+    assert accounts.platform_daily_limit() == 25
+    assert UserConfig(uid).int_setting("MAX_EMAILS_PER_DAY", 20) == 25          # held under the limit
+    UserConfig(uid).set_many({"MAX_EMAILS_PER_DAY": "10"})
+    assert UserConfig(uid).int_setting("MAX_EMAILS_PER_DAY", 20) == 10          # a lower own choice stays
+    admin_client.post("/admin/platform", headers=admin_client.origin,
+                      data={"csrf_token": admin_client.csrf, "action": "daily_limit", "daily_limit": "40",
+                            "apply_all": "on"})
+    assert UserConfig(uid).int_setting("MAX_EMAILS_PER_DAY", 20) == 40          # set for everyone
+
+
+def test_the_admin_can_give_one_account_its_own_limit(admin_client, make_user):
+    import accounts
+    from user_config import UserConfig
+    uid = make_user("trusted@example.com")
+    admin_client.post(f"/admin/users/{uid}/daily-limit", headers=admin_client.origin,
+                      data={"csrf_token": admin_client.csrf, "daily_limit": "150"})
+    assert accounts.daily_limit_for(uid) == 150 and UserConfig(uid).int_setting("MAX_EMAILS_PER_DAY", 20) == 150
+    admin_client.post(f"/admin/users/{uid}/daily-limit", headers=admin_client.origin,
+                      data={"csrf_token": admin_client.csrf, "daily_limit": ""})
+    assert accounts.daily_limit_for(uid) == accounts.platform_daily_limit()
+
+
+def test_users_cannot_change_the_daily_limit(client):
+    import accounts
+    before = accounts.platform_daily_limit()
+    client.post("/admin/platform", headers=client.origin,
+                data={"csrf_token": client.csrf, "action": "daily_limit", "daily_limit": "499"})
+    assert accounts.platform_daily_limit() == before

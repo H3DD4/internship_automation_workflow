@@ -117,7 +117,8 @@ class UserConfig:
             if key in ("RESEARCH_WORKERS", "WRITER_WORKERS"):
                 value = min(value, config.USER_MAX_RESEARCH_WORKERS)
             elif key == "MAX_EMAILS_PER_DAY":
-                value = min(value, config.USER_MAX_EMAILS_PER_DAY)
+                import accounts
+                value = min(value, accounts.daily_limit_for(self.user_id))
         return value
 
     # -- secrets -------------------------------------------------------------

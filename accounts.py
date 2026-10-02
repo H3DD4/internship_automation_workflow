@@ -490,6 +490,29 @@ def set_system_setting(key: str, value: str) -> None:
         database.upsert(conn, system_settings, {"key": key, "value": value}, ["key"])
 
 
+DAILY_LIMIT_MAX = 500
+
+
+def _limit(value: str) -> int | None:
+    return int(value) if str(value).isdigit() and 1 <= int(value) <= DAILY_LIMIT_MAX else None
+
+
+def platform_daily_limit() -> int:
+    """The most emails any user may send per day — set by the administrator
+    (Admin → Platform), USER_MAX_EMAILS_PER_DAY until they do."""
+    return _limit(get_system_setting("daily_email_limit")) or config.USER_MAX_EMAILS_PER_DAY
+
+
+def user_daily_limit_override(user_id: int) -> int | None:
+    """A limit the administrator set for this one account, or None."""
+    return _limit(get_system_setting(f"daily_email_limit:user:{int(user_id)}"))
+
+
+def daily_limit_for(user_id: int) -> int:
+    """The ceiling for this account: its own override, else the platform's."""
+    return user_daily_limit_override(user_id) or platform_daily_limit()
+
+
 def signup_mode() -> str:
     mode = get_system_setting("signup_mode", config.get("SIGNUP_MODE", "approval"))
     return mode if mode in SIGNUP_MODES else "approval"

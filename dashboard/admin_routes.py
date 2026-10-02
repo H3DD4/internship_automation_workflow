@@ -93,7 +93,9 @@ def users():
                            pending_count=sum(1 for u in all_users if u["status"] == "pending"),
                            status_filter=status_filter, usage=_usage_by_user(),
                            signup_mode=accounts.signup_mode(), now_iso=accounts._now(),
-                           sessions={u["id"]: accounts.count_sessions(u["id"]) for u in shown})
+                           sessions={u["id"]: accounts.count_sessions(u["id"]) for u in shown},
+                           daily_limit=accounts.platform_daily_limit(),
+                           limits={u["id"]: accounts.user_daily_limit_override(u["id"]) for u in shown})
 
 
 @bp.post("/users")
@@ -115,6 +117,25 @@ def create_user():
     # cookie. The user must replace it at first sign-in.
     return render_template("admin/credentials.html", user=accounts.get_user(user_id),
                            password=password, created=True)
+
+
+@bp.post("/users/<int:user_id>/daily-limit")
+@security.admin_required
+def user_daily_limit(user_id):
+    """This account's own ceiling — empty = the platform's."""
+    user = _target(user_id)
+    value = (request.form.get("daily_limit") or "").strip()
+    if value and not accounts._limit(value):
+        flash(f"Enter a number between 1 and {accounts.DAILY_LIMIT_MAX}, or leave it empty.", "error")
+        return redirect(url_for("admin.users"))
+    accounts.set_system_setting(f"daily_email_limit:user:{user_id}", value)
+    if value:
+        from user_config import UserConfig
+        UserConfig(user_id, user["role"]).set_many({"MAX_EMAILS_PER_DAY": value})
+    _audit("admin_user_daily_limit", user_id, limit=int(value) if value else None)
+    flash(f"{user['email']}: " + (f"up to {value} emails per day." if value else "back to the platform limit."),
+          "success")
+    return redirect(url_for("admin.users"))
 
 
 @bp.post("/auto-accept")
@@ -271,6 +292,23 @@ def platform():
             set_system_secret(google_auth_helper.CLIENT_SECRET_NAME, "")
             _audit("admin_google_client_removed")
             flash("Google OAuth client removed.", "success")
+        elif action == "daily_limit":
+            value = (request.form.get("daily_limit") or "").strip()
+            if not accounts._limit(value):
+                flash(f"Enter a number between 1 and {accounts.DAILY_LIMIT_MAX}.", "error")
+            else:
+                accounts.set_system_setting("daily_email_limit", value)
+                applied = 0
+                if request.form.get("apply_all") == "on":
+                    # Everyone's own setting becomes this number right away.
+                    from user_config import UserConfig
+                    for u in accounts.list_users():
+                        if u["role"] != "admin" and not accounts.user_daily_limit_override(u["id"]):
+                            UserConfig(u["id"], u["role"]).set_many({"MAX_EMAILS_PER_DAY": value})
+                            applied += 1
+                _audit("admin_daily_limit", limit=int(value), applied=applied)
+                flash(f"Daily limit saved: at most {value} emails per user per day."
+                      + (f" Set for {applied} account(s)." if applied else ""), "success")
         elif action == "ntern_upload":
             import company_import
             import config
@@ -301,6 +339,7 @@ def platform():
     list_owners = [u for u in accounts.list_users() if u["role"] != "admin"
                    and db.for_user(u["id"]).company_list_count()]
     return render_template("admin/platform.html", signup_mode=accounts.signup_mode(),
+                           daily_limit=accounts.platform_daily_limit(), daily_limit_max=accounts.DAILY_LIMIT_MAX,
                            ntern_count=db.catalog_count(), list_owners=list_owners,
                            ms_configured=microsoft_auth.is_configured(),
                            ms_inbox_read=microsoft_auth.inbox_read_enabled(),
