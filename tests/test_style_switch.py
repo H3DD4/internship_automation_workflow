@@ -94,10 +94,23 @@ def test_hand_written_wording_users_can_switch_to_templates_and_back(client, wit
     assert data.get_application_by_id(app_id)["template_id"] is None
 
 
-def test_a_rescan_forgets_the_switched_style(client, ready_app, data):
+def test_a_rescan_keeps_the_chosen_style(client, ready_app, data):
+    """Re-scanning redoes the research, not the user's choice of wording."""
     _switch(client, ready_app, "conversation")
     data.reset_for_rescan([ready_app])
-    assert data.get_application_by_id(ready_app)["template_id"] is None
+    row = data.get_application_by_id(ready_app)
+    assert row["template_id"] == "conversation" and row["status"] == "pending"
+
+
+def test_a_rescanned_company_is_written_again_in_its_chosen_style(client, ready_app, data, template_user):
+    import drafting
+    from user_config import UserConfig
+    _switch(client, ready_app, "conversation")
+    data.reset_for_rescan([ready_app])
+    app = data.get_application_by_id(ready_app)
+    draft = drafting.compose_for(drafting.load_config(template_user, UserConfig(template_user)), app,
+                                 {"company_hook": "", "areas": []})
+    assert "15 minutes" in draft["body"]
 
 
 def test_the_profile_page_lists_the_proven_rules(client, template_user):

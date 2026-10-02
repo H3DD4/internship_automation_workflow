@@ -640,3 +640,4 @@ a.notice:hover { background: #FFEFC9; }
 #mail-form .method-picker { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-bottom: 16px; }
 #mail-form .method-panel { margin-bottom: 16px; }
 #mail-form .form-actions { margin-top: 4px; }
+.style-switch__hint { grid-column: 1 / -1; order: 3; margin-top: -2px; }

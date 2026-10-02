@@ -44,7 +44,7 @@
     {% endif %}
     {% if application.rescannable %}
     <button class="button button--ghost" id="rescan-detail-btn" data-app-id="{{ application.id }}" type="button"
-            title="Read their website again and write a new draft — uses your AI key">↻ Re-scan</button>
+            title="Read their website again and write a new draft (your chosen style is kept). Only needed when the research went wrong; uses your AI key.">↻ Re-scan</button>
     {% endif %}
     {% if application.status == 'skipped' %}
     <button class="button button--ghost" id="unskip-detail-btn" data-app-id="{{ application.id }}" type="button">Un-skip</button>
@@ -82,6 +82,7 @@
         <select id="style-select" data-app-id="{{ application.id }}" data-current="{{ current_style }}">
           {% for s in styles %}<option value="{{ s.id }}"{% if s.id == current_style %} selected{% endif %}>{{ s.name }}</option>{% endfor %}
         </select>
+        <span class="field-hint style-switch__hint">Switching is instant — it reuses this company's research, no re-scan needed.</span>
         {% for s in styles %}
         <div class="style-note" data-style-note="{{ s.id }}"{% if s.id != current_style %} hidden{% endif %}>
           <p>{{ s.description }}</p>

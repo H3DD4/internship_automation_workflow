@@ -33,8 +33,9 @@
   const rescanBtn = $("rescan-detail-btn");
   if (rescanBtn) {
     rescanBtn.addEventListener("click", async () => {
-      if (!window.confirm("Re-scan this company?\n\nIts research and draft are cleared and done " +
-          "again from scratch with your AI key. Any edits you made to this draft are lost.")) return;
+      if (!window.confirm("Re-scan this company?\n\nIts website is read again and a new draft is written " +
+          "with your AI key. Your chosen style is kept; any edits you made to this draft are lost.\n\n" +
+          "Only needed when the research went wrong — to change the style, just pick one under Style.")) return;
       rescanBtn.disabled = true;
       setResult("Starting…");
       const data = await postJSON("/api/rescan", { app_ids: [+rescanBtn.dataset.appId] });

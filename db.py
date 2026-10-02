@@ -88,8 +88,9 @@ RESCANNABLE_STATUSES = frozenset({"pending", "researched", "ready", "failed"})
 # Everything research and drafting wrote, cleared by a re-scan.
 _RESEARCH_FIELDS = ("industry", "mission_or_focus", "tone_of_voice", "talking_points",
                     "matched_extra_mentions", "match_reasons", "company_hook", "hook_original",
-                    "hook_evidence", "hook_status", "subject", "body", "language", "error_message",
-                    "template_id")
+                    "hook_evidence", "hook_status", "subject", "body", "language", "error_message")
+# A re-scan redoes the research; the style the user picked for that company
+# (template_id) is a choice about wording, so it stays.
 
 
 # Statuses from which an application can be queued for sending.
