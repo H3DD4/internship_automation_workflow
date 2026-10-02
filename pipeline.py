@@ -15,6 +15,8 @@ RESUME RULES (by email, stable application id in DB):
 """
 
 import json
+
+from utils import location_text
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +27,7 @@ import drafting
 import logsink
 from agents.research_agent import get_company_context
 from model_router import RoutingCancelled
+from utils import location_text
 
 
 def _load_draft(user_id: int, email: str, app: dict | None) -> dict | None:
@@ -163,14 +166,16 @@ class Pipeline:
         self._record("ready")
 
     def _research_task(self, row):
-        company_name, email, website, contact_name = row
+        company_name, email, website, contact_name = row[:4]
+        source = row[4] if len(row) > 4 else None
         if self._should_stop():
             self._record("skipped")
             return
         existing = None
         try:
             existing = self.data.get_application_by_email(email)
-            app_id = self.data.get_or_create_application(company_name, email, website, contact_name)
+            app_id = self.data.get_or_create_application(company_name, email, website, contact_name,
+                                                         source=source)
 
             if existing and existing["status"] in db.PREPARATION_DONE_STATUSES:
                 print(f"  [skip] {company_name} <{email}> (id={app_id}) — already {existing['status']}.")
@@ -227,6 +232,10 @@ class Pipeline:
                     + (f" · via {context['research_model']}" if context.get("research_model") else ""),
                     detail=context,
                 )
+
+            location = location_text(website, email, context)
+            if location and location != (existing or {}).get("location"):
+                self.data.update_application(app_id, location=location)
 
             self.writer_pool.submit(self._guard, self._writer_task,
                                      f"writer stage for id={app_id}",
@@ -354,11 +363,26 @@ class Pipeline:
         return self.results
 
 
-def select_rows(user_id: int, *, limit: int | None = None, include_all: bool = False) -> tuple[list, int]:
-    """The user's company-list rows that still need work, in upload order.
+def source_rows(user_id: int, sources: list | None = None) -> list:
+    """The companies a run may work through: the user's own lists first, then
+    the shared Ntern list — all of them, or only `sources` ("ntern" and list
+    names, "" = "My list"). The same address in two lists counts once, under
+    the user's own list."""
+    data = db.for_user(user_id)
+    own_names = None if sources is None else [s for s in sources if s != db.NTERN_SOURCE]
+    rows = data.company_list_rows(own_names) if own_names != [] else []
+    if sources is None or db.NTERN_SOURCE in sources:
+        seen = {row[1] for row in rows}
+        rows += [row for row in db.catalog_rows() if row[1] not in seen]
+    return rows
+
+
+def select_rows(user_id: int, *, limit: int | None = None, include_all: bool = False,
+                sources: list | None = None) -> tuple[list, int]:
+    """The rows of the chosen sources that still need work, in list order.
     Returns (rows, skipped_as_done)."""
     data = db.for_user(user_id)
-    all_rows = data.company_list_rows()
+    all_rows = source_rows(user_id, sources)
     if include_all:
         rows, skipped = all_rows, 0
     else:

@@ -41,8 +41,10 @@ class RunConflict(RuntimeError):
     pass
 
 
-def request_run(user_id: int, limit: int | None = None, targets: list | None = None) -> int:
-    """targets: application ids — a re-scan run that only does those."""
+def request_run(user_id: int, limit: int | None = None, targets: list | None = None,
+                sources: list | None = None) -> int:
+    """targets: application ids — a re-scan run that only does those.
+    sources: the lists to scan ("ntern", list names); None = all of them."""
     with database.tx() as conn:
         busy = conn.execute(select(prep_runs.c.id).where(
             prep_runs.c.user_id == int(user_id), prep_runs.c.status.in_(ACTIVE))).first()
@@ -51,7 +53,16 @@ def request_run(user_id: int, limit: int | None = None, targets: list | None = N
         return conn.execute(prep_runs.insert().values(
             user_id=int(user_id), status="requested", limit_n=limit, created_at=_now(), log="",
             targets=json.dumps(sorted(int(i) for i in targets)) if targets else None,
+            sources=json.dumps(list(sources)) if sources is not None else None,
         ).returning(prep_runs.c.id)).scalar_one()
+
+
+def sources_of(run: dict) -> list | None:
+    try:
+        value = json.loads(run.get("sources") or "null")
+    except (TypeError, ValueError):
+        return None
+    return [str(s) for s in value] if isinstance(value, list) else None
 
 
 def targets_of(run: dict) -> list | None:

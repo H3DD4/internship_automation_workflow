@@ -53,6 +53,9 @@ def _profile_context(profile: dict | None) -> dict:
         "this_year": date.today().year,
         "months": profiles.MONTHS["en"],
         "ready_count": db.for_user(g.user["id"]).get_grouped_stats().get("ready", 0),
+        "own_template": (profile or {}).get("own_template"),
+        "own_editor": {"template": (profile or {}).get("own_template"), "blank": profiles.blank_own_template(),
+                       "fieldBlanks": email_templates.OWN_FIELD_BLANKS},
     }
 
 
@@ -211,7 +214,10 @@ def save_settings():
             return jsonify({"ok": False, "message": "No hand-written wording to switch to."})
         profiles.save(g.user["id"], language_mode=language_mode)
         return jsonify({"ok": True, "message": "Saved."})
-    if template_id not in email_templates.TEMPLATES:
+    if template_id == email_templates.OWN_ID:
+        if not (profile.get("own_template") and profile.get("facts")):
+            return jsonify({"ok": False, "message": "Create your own template first (below)."})
+    elif template_id not in email_templates.TEMPLATES:
         return jsonify({"ok": False, "message": "Unknown template."}), 400
     if not profile.get("facts"):
         profiles.save(g.user["id"], language_mode=language_mode)
@@ -302,3 +308,104 @@ def save_custom_spec():
                   spec_en=specs["en"], spec_fr=specs["fr"])
     accounts.audit("profile_custom_saved", actor=g.user["id"])
     return jsonify({"ok": True, "message": "Hand-written wording saved."})
+
+
+
+# ---------------------------------------------------------------------------
+# The student's own template
+# ---------------------------------------------------------------------------
+
+def _own_from_payload(payload: dict) -> dict:
+    """The editor's template, cleaned the same way as an AI draft."""
+    raw = payload.get("template") if isinstance(payload.get("template"), dict) else {}
+    own = profiles._own_clean(raw)
+    # A language left completely empty in the editor is simply not offered.
+    for lang in profiles.LANGS:
+        if not any(own[lang].values()):
+            own[lang] = {}
+    return own
+
+
+def _own_preview(own: dict, facts: dict) -> dict:
+    """Both languages on one sample company — through the same composer and
+    checks every real email goes through."""
+    name = (facts.get("full_name") or g.cfg.get("YOUR_NAME") or g.user.get("full_name") or "You")
+    company, research = SAMPLE["company"], dict(SAMPLE["research"])
+    sample_app = _real_sample()
+    if sample_app:
+        company, research = sample_app
+    out = {}
+    for lang in profiles.LANGS:
+        if not own.get(lang):
+            continue
+        try:
+            spec = email_templates.build_spec(facts, email_templates.OWN_ID, lang, own=own)
+            areas = spec.get("areas") or []
+            research["areas"] = [areas[0]["id"]] if areas else []
+            role = spec.get("target_role") or "Internship"
+            draft = compose_email(spec, research_for_language(research, lang), company,
+                                  build_greeting("", company, lang), name, role, lang)
+            out[lang] = {"subject": draft["subject"], "body": draft["body"], "words": len(draft["body"].split())}
+        except (GuardRejection, KeyError, IndexError, ValueError) as exc:
+            out[lang] = {"error": str(exc).strip("'\"")[:300]}
+    return {"company": company, "preview": out}
+
+
+@bp.post("/api/own-template/from-example")
+def own_template_from_example():
+    """Paste an email you like -> your template, split into sections."""
+    from ai_client import RateLimiter
+    from model_router import build_router
+    if security.rate_limited(f"own-template:{g.user['id']}", 15, 3600):
+        return jsonify({"ok": False, "message": "You've converted many emails this hour — edit the sections by hand, or try later."})
+    profile = profiles.load(g.user["id"]) or {}
+    if not profile.get("facts"):
+        return jsonify({"ok": False, "message": "Analyse your CV first (step 1) — your template is filled with it."})
+    router = build_router(g.cfg.ai_env(), rate_limiter=RateLimiter(60))
+    if not router.deployments:
+        return jsonify({"ok": False, "message": "Add an AI provider key in Settings first."})
+    payload = request.get_json(silent=True) or {}
+    try:
+        own = profiles.own_template_from_example(router, str(payload.get("example") or "")[:8000],
+                                                 profile.get("cv_text") or "")
+    except profiles.ProfileError as exc:
+        return jsonify({"ok": False, "message": str(exc)})
+    return jsonify({"ok": True, "template": own, "problems": email_templates.own_template_problems(own),
+                    "message": "Here's your template — check each section, then preview and save."})
+
+
+@bp.post("/api/own-template/preview")
+def own_template_preview():
+    profile = profiles.load(g.user["id"]) or {}
+    if not profile.get("facts"):
+        return jsonify({"ok": False, "message": "Analyse your CV first (step 1)."})
+    own = _own_from_payload(request.get_json(silent=True) or {})
+    problems = email_templates.own_template_problems(own)
+    if problems:
+        return jsonify({"ok": False, "problems": problems, "message": problems[0]})
+    return jsonify({"ok": True, **_own_preview(own, profile["facts"])})
+
+
+@bp.post("/api/own-template/save")
+def own_template_save():
+    profile = profiles.load(g.user["id"]) or {}
+    if not profile.get("facts"):
+        return jsonify({"ok": False, "message": "Analyse your CV first (step 1)."})
+    payload = request.get_json(silent=True) or {}
+    own = _own_from_payload(payload)
+    problems = email_templates.own_template_problems(own)
+    if problems:
+        return jsonify({"ok": False, "problems": problems, "message": problems[0]})
+    preview = _own_preview(own, profile["facts"])
+    broken = [f"{lang.upper()}: {p['error']}" for lang, p in preview["preview"].items() if "error" in p]
+    if broken:
+        return jsonify({"ok": False, "message": "The sample email didn't pass the checks — " + broken[0], **preview})
+    profiles.save(g.user["id"], own_template=own)
+    use = bool(payload.get("use"))
+    if use or profile.get("template_id") == email_templates.OWN_ID:
+        profiles.apply_template(g.user["id"], profile["facts"], email_templates.OWN_ID)
+    accounts.audit("own_template_saved", actor=g.user["id"], detail={"default": use})
+    return jsonify({"ok": True, **preview,
+                    "message": "Saved — new emails use your template. Use “Update them with my current profile” "
+                               "to rewrite the ones already ready." if use else
+                               "Saved — pick “Your template” as your style, or switch any single email to it."})

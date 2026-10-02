@@ -121,7 +121,7 @@ def compose_email(spec: dict, research: dict, company_name: str, greeting: str,
                                                       area_2=chosen[1][0]["label"], **fields)
             else:
                 lead = email["match_lead_one"].format(area_1=chosen[0][0]["label"], **fields)
-            paragraphs.append(" ".join([lead] + [sentence for _, sentence in chosen]))
+            paragraphs.append(" ".join([lead] + [sentence for _, sentence in chosen]).strip())
         elif section == "strengths":
             with_match, without_match = email.get("strengths_budget", (2, 3))
             budget = with_match if chosen else without_match
@@ -130,6 +130,8 @@ def compose_email(spec: dict, research: dict, company_name: str, greeting: str,
             tail = [email["motivation"]] if email.get("include_motivation", True) and email.get("motivation") else []
             if picked or tail:
                 paragraphs.append(" ".join(picked + tail))
+        elif section == "about" and email.get("about_text"):
+            paragraphs.append(email["about_text"].format(**fields))
         elif section == "ask":
             # A style may phrase the ask itself (a short call instead of a
             # job); otherwise it's the user's own internship sentence.
@@ -137,9 +139,13 @@ def compose_email(spec: dict, research: dict, company_name: str, greeting: str,
         elif section == "closing":
             paragraphs.append(_pick(email["closing_variants"], f"{company_name}#closing").format(**fields))
 
+    if email.get("capitalize"):
+        paragraphs = [p[:1].upper() + p[1:] for p in paragraphs]
     body = "\n\n".join([greeting, *paragraphs, email["sign_off"].format(**fields)])
     topic = chosen[0][0]["topic"] if chosen else email["default_topic"]
     subject = _REPEATED_WORD_RE.sub(r"\1", email["subject"].format(topic=topic, **fields))
+    if email.get("capitalize"):
+        subject = subject[:1].upper() + subject[1:]
     draft = {"subject": tidy_french(subject, lang), "body": tidy_french(body, lang)}
 
     try:

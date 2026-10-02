@@ -159,9 +159,21 @@
 
       <div class="import-box" id="import-box">
         <div class="panel-heading-row">
-          <h3 class="subhead">Companies list</h3>
-          <span class="field-hint"><strong id="companies-count">{{ setup.companies_rows }}</strong> in your list</span>
+          <h3 class="subhead">Companies to apply to</h3>
         </div>
+        <ul class="source-list">
+          {% for s in run_sources %}
+          <li>
+            <span class="src-tag{% if s.ntern %} src-tag--ntern{% endif %}">{{ s.label }}</span>
+            <span><strong>{{ "{:,}".format(s.count) }}</strong> compan{{ "y" if s.count == 1 else "ies" }}</span>
+            {% if s.ntern %}<span class="field-hint">Ready for everyone — tick it when you start a scan.</span>
+            {% else %}<button class="button button--ghost button--sm text-danger" type="button" data-remove-source="{{ s.value }}" data-source-label="{{ s.label }}">Remove</button>{% endif %}
+          </li>
+          {% else %}
+          <li class="field-hint">No companies yet — import your first list below.</li>
+          {% endfor %}
+        </ul>
+        <p class="field-hint">Add your own lists too — for example the companies of one city or one sector. Each one gets a name you'll see as a small tag next to every company that came from it.</p>
         <details class="format-help">
           <summary class="smtp-fallback-toggle">What format does the file need?</summary>
           <div class="format-help__body">
@@ -180,17 +192,18 @@
         </details>
         <form id="import-form" class="import-form" enctype="multipart/form-data">
           <input type="file" id="companies-file" name="companies_file" accept=".csv,.xlsx" required>
+          <label class="source-name">List name
+            <input type="text" id="companies-source" name="source" maxlength="40" placeholder="My list" list="companies-sources">
+            <datalist id="companies-sources">{% for s in run_sources if not s.ntern %}<option value="{{ s.label }}">{% endfor %}</datalist>
+          </label>
           <div class="segmented segmented--small" role="radiogroup" aria-label="Import mode">
-            <label class="segmented__item"><input type="radio" name="mode" value="append" checked> Add to my list</label>
-            <label class="segmented__item"><input type="radio" name="mode" value="replace"> Replace my list</label>
+            <label class="segmented__item"><input type="radio" name="mode" value="append" checked> Add to this list</label>
+            <label class="segmented__item"><input type="radio" name="mode" value="replace"> Replace this list</label>
           </div>
           <button class="button button--ghost" type="button" id="import-preview-btn">Check file</button>
         </form>
         <div class="import-report" id="import-report" hidden></div>
-        {% if setup.has_companies %}
-        <button class="button button--ghost button--sm text-danger" type="button" id="clear-companies-btn">Clear my list</button>
-        <span class="field-hint">Clearing only forgets the list — drafts and sent history stay.</span>
-        {% endif %}
+        <p class="field-hint">Removing a list only forgets its companies — drafts and sent history stay.</p>
       </div>
     </section>
 

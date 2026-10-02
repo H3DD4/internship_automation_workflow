@@ -144,6 +144,9 @@ profiles = Table(
     Column("spec_fr", Text),
     Column("cv_text", Text),
     Column("updated_at", Text, nullable=False),
+    # The user's own email template, built from a pasted example or the
+    # section editor (JSON; see email_templates.own_template_problems).
+    Column("own_template", Text),
 )
 
 company_list = Table(
@@ -155,7 +158,21 @@ company_list = Table(
     Column("website", Text, nullable=False, server_default=""),
     Column("contact_name", Text, nullable=False, server_default=""),
     Column("created_at", Text, nullable=False),
+    # The name the user gave this list when importing it ("" = "My list").
+    Column("source", Text, nullable=False, server_default=""),
     UniqueConstraint("user_id", "email", name="uq_company_list_user_email"),
+)
+
+# The Ntern list: one shared list of companies every user can scan, managed
+# by the administrator. Only the companies — never anyone's drafts or sends.
+catalog_companies = Table(
+    "catalog_companies", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("email", String(320), nullable=False, unique=True),
+    Column("company_name", Text, nullable=False),
+    Column("website", Text, nullable=False, server_default=""),
+    Column("contact_name", Text, nullable=False, server_default=""),
+    Column("created_at", Text, nullable=False),
 )
 
 # ---------------------------------------------------------------------------
@@ -198,6 +215,10 @@ applications = Table(
     # The email style this draft was written in, when the user switched it
     # for this one company; NULL = the profile's style.
     Column("template_id", String(32)),
+    # "ntern" (the shared list) or the name of the user's own list.
+    Column("source", Text),
+    # "Switzerland" or "Lyon, France" — from the website address and research.
+    Column("location", Text),
     UniqueConstraint("user_id", "email", name="uq_applications_user_email"),
     Index("idx_applications_user_status", "user_id", "status"),
     Index("idx_applications_user_updated", "user_id", "updated_at"),
@@ -282,11 +303,13 @@ prep_runs = Table(
     # JSON list of application ids: a re-scan run that only redoes these.
     # NULL = the whole list, as usual.
     Column("targets", Text),
+    # JSON list of the sources this run scans ("ntern", list names); NULL = all.
+    Column("sources", Text),
     Index("idx_prep_runs_status", "status"),
     Index("idx_prep_runs_user", "user_id", "id"),
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # ---------------------------------------------------------------------------
 # Engine
@@ -406,6 +429,15 @@ def _migrate(conn) -> None:
         if "email_verified_at" not in columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN email_verified_at TEXT"))
         conn.execute(text("INSERT INTO schema_version (version) VALUES (5)"))
+    if version < 6:
+        for table, column, kind in (("profiles", "own_template", "TEXT"),
+                                    ("company_list", "source", "TEXT NOT NULL DEFAULT ''"),
+                                    ("applications", "source", "TEXT"),
+                                    ("applications", "location", "TEXT"),
+                                    ("prep_runs", "sources", "TEXT")):
+            if column not in {c["name"] for c in inspect(conn).get_columns(table)}:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {kind}"))
+        conn.execute(text("INSERT INTO schema_version (version) VALUES (6)"))
 
 
 def _dialect_insert(conn, table):

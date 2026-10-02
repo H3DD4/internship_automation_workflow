@@ -223,6 +223,7 @@ def _setup_state() -> dict:
     profile, spec_en, spec_fr = profiles.specs_for(g.user["id"])
     has_profile = bool(spec_en) and not email_templates.spec_problems(spec_en)
     companies_rows = data().company_list_count()
+    ntern_rows = db.catalog_count()
     cv = cfg.cv_info()
     method = mail_service.sending_method(cfg)
     oauth = _oauth_status(cfg)
@@ -231,13 +232,15 @@ def _setup_state() -> dict:
     ms_connected = microsoft_auth.token_exists(cfg)
     has_gmail = bool(method) and (method != "oauth" or oauth_valid) and (method != "microsoft" or ms_connected)
     has_api_key = bool(ai["api_key"]) or any(p["key_env"] in saved for p in PROVIDERS.values())
-    prep_ready = has_api_key and has_profile and companies_rows > 0
+    prep_ready = has_api_key and has_profile and (companies_rows > 0 or ntern_rows > 0)
     return {
         "prep_ready": prep_ready,
         "send_ready": prep_ready and has_gmail and bool(cv),
         "has_api_key": has_api_key,
         "has_profile": has_profile,
-        "has_companies": companies_rows > 0,
+        "has_companies": companies_rows > 0 or ntern_rows > 0,
+        "has_own_companies": companies_rows > 0,
+        "ntern_rows": ntern_rows,
         "companies_rows": companies_rows,
         "has_gmail": has_gmail,
         "mail_method": method,
@@ -300,9 +303,25 @@ def _bounce_check_state() -> dict:
             "available": __import__("bounce_checker").credentials_available(g.cfg)}
 
 
+def _run_sources() -> list:
+    """What a run can scan: the shared Ntern list, then the user's own lists.
+    Ticked by default: the user's own lists — or the Ntern list when they
+    have none yet."""
+    own = data().company_sources()
+    choices = [{"value": s["name"], "label": s["label"], "count": s["count"], "checked": True,
+                "ntern": False} for s in own]
+    ntern = db.catalog_count()
+    if ntern:
+        choices.insert(0, {"value": db.NTERN_SOURCE, "label": "Ntern list", "count": ntern,
+                           "checked": not own, "ntern": True})
+    return choices
+
+
 def _decorate_rows(applications: list) -> list:
     for a in applications:
         a["status_label"] = STATUS_LABELS.get(a["status"], a["status"])
+        a["source_label"] = db.source_label(a.get("source"))
+        a["source_is_ntern"] = a.get("source") == db.NTERN_SOURCE
         try:
             a["matched_extra_mentions_list"] = json.loads(a["matched_extra_mentions"] or "[]")
         except (TypeError, json.JSONDecodeError):
@@ -400,7 +419,7 @@ def index():
     context = _table_context(page, status_param, search_param)
     active_jobs = data().get_pending_send_jobs()
     return render_template(
-        "index.html", setup=_setup_state(), run_state=_run_state(),
+        "index.html", setup=_setup_state(), run_state=_run_state(), run_sources=_run_sources(),
         active_job=data().get_send_job(active_jobs[0]["id"]) if active_jobs else None,
         status_tabs=STATUS_TABS, **context)
 
@@ -552,8 +571,14 @@ def run_pipeline():
         return redirect(url_for("index"))
     raw = (request.form.get("batch_limit") or "").strip()
     limit = int(raw) if raw.isdigit() and int(raw) > 0 else None
+    sources = None
+    if request.form.get("sources_shown"):
+        sources = [s for s in request.form.getlist("source") if s == db.NTERN_SOURCE or s == db.clean_source_name(s)]
+        if not sources:
+            flash("Tick at least one list to scan.", "error")
+            return redirect(url_for("index"))
     try:
-        runs.request_run(g.user["id"], limit)
+        runs.request_run(g.user["id"], limit, sources=sources)
     except runs.RunConflict as exc:
         flash(str(exc), "error")
         return redirect(url_for("index"))
@@ -730,6 +755,7 @@ def company_detail(app_id):
         "detail.html", application=application, events=events,
         styles=styles, current_style=current_style,
         email_name=drafting.email_company_name(application, research),
+        source_label=db.source_label(application.get("source")),
         earlier_events=earlier_events, current_events=current_events,
         earlier_failed=sum(1 for e in earlier_events if e["error_summary"]),
         talking_points=_json(application["talking_points"], "[]"),
@@ -833,6 +859,7 @@ def api_update_draft():
 @app.get("/settings")
 def settings_page():
     return render_template("settings.html", setup=_setup_state(), pool=_pool_rows(),
+                           run_sources=_run_sources(),
                            provider_cards=_provider_cards(),
                            oauth_redirect_uri=oauth_redirect_uri(),
                            bounce_check=_bounce_check_state(), providers=PROVIDERS,
@@ -993,6 +1020,7 @@ def companies_preview():
 def companies_import():
     upload = request.files.get("companies_file")
     mode = request.form.get("mode", "append")
+    source = db.clean_source_name(request.form.get("source"))
     if not upload or not upload.filename:
         return jsonify({"ok": False, "message": "Choose a file first."}), 400
     d = data()
@@ -1004,21 +1032,27 @@ def companies_import():
     if not report["rows"]:
         return jsonify({"ok": False, "message": "No usable rows in that file."})
     if mode == "replace":
-        d.clear_company_list()
+        d.clear_company_list(source)
     room = config.MAX_COMPANIES_PER_USER - d.company_list_count()
     if room <= 0:
         return jsonify({"ok": False, "message": f"Your list is full ({config.MAX_COMPANIES_PER_USER} companies)."})
-    added = d.add_companies(report["new_rows"][:room])
-    accounts.audit("companies_imported", actor=g.user["id"], detail={"added": added, "mode": mode})
+    added = d.add_companies(report["new_rows"][:room], source)
+    accounts.audit("companies_imported", actor=g.user["id"], detail={"added": added, "mode": mode,
+                                                                      "source": source})
     return jsonify({"ok": True, "added": added, "total": d.company_list_count(),
-                    "message": f"{added} compan{'y' if added == 1 else 'ies'} added — "
-                               f"{d.company_list_count()} in your list."})
+                    "message": f"{added} compan{'y' if added == 1 else 'ies'} added to "
+                               f"“{db.source_label(source)}”."})
 
 
 @app.post("/api/companies/clear")
 def companies_clear():
-    removed = data().clear_company_list()
-    return jsonify({"ok": True, "message": f"List cleared ({removed} rows). Drafts and sent history are kept."})
+    """Remove one of the user's lists (or all of them). Drafts and sent
+    history stay."""
+    payload = request.get_json(silent=True) or {}
+    source = payload.get("source")
+    removed = data().clear_company_list(None if source is None else db.clean_source_name(source))
+    return jsonify({"ok": True, "message": f"Removed {removed} compan{'y' if removed == 1 else 'ies'}. "
+                                          "Drafts and sent history are kept."})
 
 
 @app.get("/companies-template.csv")

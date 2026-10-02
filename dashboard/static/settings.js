@@ -271,6 +271,7 @@
     const data = new FormData();
     data.append("companies_file", fileInput.files[0]);
     data.append("mode", mode());
+    data.append("source", ($("companies-source") || {}).value || "");
     return data;
   }
 
@@ -317,14 +318,15 @@
   }
 
   async function runImport(button) {
-    if (mode() === "replace" && !window.confirm("Replace your whole list with this file? Drafts and sent history are kept.")) return;
+    const listName = (($("companies-source") || {}).value || "").trim() || "My list";
+    if (mode() === "replace" && !window.confirm(`Replace the list “${listName}” with this file? Drafts and sent history are kept.`)) return;
     button.disabled = true;
     button.textContent = "Importing…";
     const data = await post("/api/companies/import", formData(), true);
     report.innerHTML = "";
     report.className = "import-report" + (data.ok ? " import-report--ok" : " import-report--bad");
     report.appendChild(el("p", { class: "import-report__title" }, (data.ok ? "✓ " : "✗ ") + data.message));
-    if (data.ok && $("companies-count")) $("companies-count").textContent = data.total;
+    if (data.ok) setTimeout(() => window.location.reload(), 1200);
   }
 
   if (previewBtn && fileInput) {
@@ -348,13 +350,12 @@
     }));
   }
 
-  const clearBtn = $("clear-companies-btn");
-  if (clearBtn) {
-    clearBtn.addEventListener("click", async () => {
-      if (!window.confirm("Clear your companies list? Drafts and sent history are kept.")) return;
-      const data = await post("/api/companies/clear", {});
+  document.querySelectorAll("[data-remove-source]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm(`Remove the list “${button.dataset.sourceLabel}”? Drafts and sent history are kept.`)) return;
+      const data = await post("/api/companies/clear", { source: button.dataset.removeSource });
       if (data.ok) window.location.reload();
       else window.alert(data.message);
     });
-  }
+  });
 })();

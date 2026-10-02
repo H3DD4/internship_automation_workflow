@@ -460,7 +460,7 @@ def proven_rules(lang: str = "en") -> list:
             for key, text in PROVEN_RULES]
 
 DEFAULT_TEMPLATE = "specialist"
-_STRUCTURE_KEYS = ("layout", "strengths_budget", "include_motivation", "min_words", "max_words")
+_STRUCTURE_KEYS = ("layout", "strengths_budget", "include_motivation", "min_words", "max_words", "capitalize")
 
 
 def template_choices(lang: str = "en") -> list:
@@ -502,9 +502,15 @@ def kind_fills(facts: dict, lang: str) -> dict:
     return {"kind": kind[lang], "duration": duration}
 
 
-def build_spec(facts: dict, template_id: str, lang: str) -> dict:
-    """Profile facts + a template -> a composer spec for one language."""
-    template = TEMPLATES.get(template_id) or TEMPLATES[DEFAULT_TEMPLATE]
+def build_spec(facts: dict, template_id: str, lang: str, own: dict | None = None) -> dict:
+    """Profile facts + a template -> a composer spec for one language.
+    `own`: the student's own template, used when template_id is "own"."""
+    if template_id == OWN_ID and own:
+        template = own_as_template(own)
+        if lang not in template:
+            raise KeyError(f"Your template has no {lang.upper()} version yet.")
+    else:
+        template = TEMPLATES.get(template_id) or TEMPLATES[DEFAULT_TEMPLATE]
     wording = copy.deepcopy(template[lang])
     fills = {
         "identity": _escape(_text(facts.get("identity"), lang)),
@@ -602,3 +608,128 @@ def spec_problems(spec: dict) -> list:
     if not spec.get("strengths"):
         problems.append("at least one strength")
     return problems
+
+
+# ---------------------------------------------------------------------------
+# The user's own template
+# ---------------------------------------------------------------------------
+# Written by the student — from a pasted example or the section editor — with
+# friendly blanks instead of code. Stored exactly as written; turned into a
+# template like the ones above only when an email is built, so it gets the
+# same CV evidence, dates, languages and checks as every other style.
+
+OWN_ID = "own"
+
+# Blank as the student types it -> placeholder the composer fills.
+OWN_BLANKS = {
+    "[company]": "{company}", "[their work]": "{hook}", "[field]": "{area_1}",
+    "[second field]": "{area_2}", "[start date]": "<<start_date>>",
+    "[what I'm looking for]": "<<kind>>", "[duration]": "<<duration>>", "[my name]": "{applicant_name}",
+}
+OWN_SECTIONS = ("intro", "match", "strengths", "about", "ask", "closing")
+OWN_DEFAULT_LAYOUT = ["intro", "match", "strengths", "ask", "closing"]
+OWN_TEXT_FIELDS = ("subject", "intro_with_hook", "intro_standard", "match_lead", "about", "ask",
+                   "closing", "sign_off")
+_BLANK_RE = re.compile(r"\[[^\[\]\n]{1,40}\]")
+_EVERYWHERE = ("[company]", "[start date]", "[what I'm looking for]", "[duration]", "[my name]")
+# Which blanks each part can fill: what the company does is only known in the
+# first opening, the matching field only in the match sentence and the subject.
+OWN_FIELD_BLANKS = {
+    "subject": _EVERYWHERE + ("[field]",),
+    "intro_with_hook": _EVERYWHERE + ("[their work]",),
+    "intro_standard": _EVERYWHERE,
+    "match_lead": _EVERYWHERE + ("[field]", "[second field]"),
+    "about": _EVERYWHERE, "ask": _EVERYWHERE, "closing": _EVERYWHERE, "sign_off": _EVERYWHERE,
+}
+OWN_FIELD_NAMES = {"subject": "the subject", "intro_with_hook": "the first opening",
+                   "intro_standard": "the second opening", "match_lead": "“Why you match”",
+                   "about": "“About you”", "ask": "“What you ask for”", "closing": "the closing",
+                   "sign_off": "the sign-off"}
+_OWN_NAME = {"en": "Your template", "fr": "Votre modèle"}
+
+
+def own_template_problems(own: dict) -> list:
+    """What's missing or wrong, in plain words — empty when it can be used."""
+    if not isinstance(own, dict):
+        return ["The template is empty."]
+    problems = []
+    layout = own.get("layout") or []
+    if "intro" not in layout:
+        problems.append("Keep the opening section.")
+    if any(section not in OWN_SECTIONS for section in layout) or len(set(layout)) != len(layout):
+        problems.append("The sections are not valid.")
+    for lang in ("en", "fr"):
+        texts = own.get(lang) or {}
+        if not texts:
+            continue
+        label = "English" if lang == "en" else "French"
+        for key, what in (("subject", "a subject line"), ("intro_standard", "an opening"),
+                          ("closing", "a closing line"), ("sign_off", "a sign-off")):
+            if not str(texts.get(key) or "").strip():
+                problems.append(f"{label}: add {what}.")
+        if any(c in str(texts.get(key) or "") for key in OWN_TEXT_FIELDS for c in "{}"):
+            problems.append(f"{label}: curly braces {{ }} can't be used — write blanks with square "
+                            "brackets, like [company].")
+        for key in OWN_TEXT_FIELDS:
+            for blank in dict.fromkeys(_BLANK_RE.findall(str(texts.get(key) or ""))):
+                if blank not in OWN_BLANKS:
+                    problems.append(f"{label}: “{blank}” isn't a blank Ntern can fill — use one of "
+                                    + ", ".join(OWN_BLANKS) + ".")
+                elif blank not in OWN_FIELD_BLANKS[key]:
+                    problems.append(f"{label}: {blank} can't be used in {OWN_FIELD_NAMES[key]} — "
+                                    + ("it is only known in the first opening." if blank == "[their work]"
+                                       else "it is only known in “Why you match” and the subject."))
+    if not (own.get("en") or own.get("fr")):
+        problems.append("Write the template in English, French or both.")
+    return problems
+
+
+def _own_text(text: str, key: str = "") -> str:
+    """Friendly blanks -> placeholders; any other brace is escaped so the
+    student's own words can never break the composer. A blank used where it
+    can't be filled is dropped (own_template_problems reports it first)."""
+    text = _escape(str(text or "").strip())
+    allowed = OWN_FIELD_BLANKS.get(key, _EVERYWHERE)
+    for blank, placeholder in OWN_BLANKS.items():
+        if blank not in allowed:
+            text = text.replace(blank, "")
+        elif key == "subject" and blank == "[field]":
+            text = text.replace(blank, "{topic}")   # the subject gets the email's topic
+        else:
+            text = text.replace(blank, placeholder)
+    return " ".join(text.split(" ")).replace("  ", " ") if text else text
+
+
+def own_as_template(own: dict) -> dict:
+    """The student's template in the shape of TEMPLATES[...]."""
+    highlights = max(0, min(3, int(own.get("highlights", 2) or 0)))
+    template = {"name": _OWN_NAME, "layout": [s for s in (own.get("layout") or OWN_DEFAULT_LAYOUT)
+                                              if s in OWN_SECTIONS],
+                "strengths_budget": [highlights, min(3, highlights + 1)],
+                "include_motivation": False, "min_words": 40, "max_words": 400,
+                # A blank can start a sentence ("[what I'm looking for] from …").
+                "capitalize": True}
+    for lang in ("en", "fr"):
+        texts = own.get(lang) or {}
+        if not texts:
+            continue
+        both = " and " if lang == "en" else " et "
+        lead = _own_text(texts.get("match_lead"), "match_lead")
+        intro_standard = _own_text(texts.get("intro_standard"), "intro_standard")
+        wording = {
+            "subject": _own_text(texts.get("subject"), "subject"),
+            # No "their work" in the first opening: it's simply always the same.
+            "intro_with_hook": _own_text(texts.get("intro_with_hook"), "intro_with_hook") or intro_standard,
+            "intro_standard_variants": [intro_standard],
+            "match_lead_one": lead,
+            "match_lead_two": lead.replace("{area_1}", "{area_1}" + both + "{area_2}", 1)
+                              if "{area_2}" not in lead else lead,
+            "closing_variants": [_own_text(texts.get("closing"), "closing")],
+            "sign_off": _own_text(texts.get("sign_off"), "sign_off"),
+        }
+        if str(texts.get("about") or "").strip():
+            wording["about_text"] = _own_text(texts.get("about"), "about")
+        if str(texts.get("ask") or "").strip():
+            wording["ask_text"] = _own_text(texts.get("ask"), "ask")
+        template[lang] = wording
+    return template

@@ -30,6 +30,7 @@ class DraftingConfig:
     language_mode: str     # auto | en | fr
     facts: dict = None     # the profile's facts, so any style can be built on the spot
     template_id: str = ""  # the profile's own style ("custom" = hand-written wording)
+    own_template: dict = None  # the student's own template ("own"), if they made one
 
     @property
     def available_languages(self) -> tuple:
@@ -59,7 +60,8 @@ def load_config(user_id: int, cfg: UserConfig | None = None) -> DraftingConfig:
     return DraftingConfig(user_id=user_id, applicant_name=name,
                           specs={"en": spec_en, "fr": spec_fr}, target_roles=roles,
                           language_mode=profile.get("language_mode") or "auto",
-                          facts=facts, template_id=profile.get("template_id") or "")
+                          facts=facts, template_id=profile.get("template_id") or "",
+                          own_template=profile.get("own_template"))
 
 
 def pick_language(dcfg: DraftingConfig, app: dict, research: dict | None,
@@ -78,6 +80,10 @@ def style_choices(dcfg: DraftingConfig, lang: str = "en") -> list:
     if dcfg.template_id == "custom":
         choices.append({"id": "custom", "name": "Your own wording" if lang == "en" else "Votre propre texte",
                         "description": "The hand-tuned wording on your profile.", "best_for": "", "evidence": []})
+    if dcfg.facts and dcfg.own_template and dcfg.own_template.get(lang):
+        choices.append({"id": email_templates.OWN_ID, "name": "Your template" if lang == "en" else "Votre modèle",
+                        "description": "The template you wrote on your Profile page.", "best_for": "",
+                        "evidence": []})
     if dcfg.facts:
         choices += email_templates.template_choices(lang)
     elif dcfg.template_id in email_templates.TEMPLATES:
@@ -88,6 +94,11 @@ def style_choices(dcfg: DraftingConfig, lang: str = "en") -> list:
 def spec_for_style(dcfg: DraftingConfig, style: str | None, lang: str) -> dict:
     """The wording for `style` in `lang`: the profile's own specs for its own
     style, any other template built from the profile's facts on the spot."""
+    if style == email_templates.OWN_ID and style != dcfg.template_id and dcfg.facts and dcfg.own_template:
+        try:
+            return email_templates.build_spec(dcfg.facts, style, lang, own=dcfg.own_template)
+        except KeyError as exc:
+            raise NotReady(str(exc).strip("'\"")) from exc
     if not style or style == dcfg.template_id or style not in email_templates.TEMPLATES or not dcfg.facts:
         return dcfg.specs[lang]
     spec = email_templates.build_spec(dcfg.facts, style, lang)

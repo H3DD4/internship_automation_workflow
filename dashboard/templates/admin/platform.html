@@ -6,6 +6,30 @@
 {% include "admin/_nav.html" %}
 
 <div class="settings-stack">
+  <section class="settings-card" id="ntern-list">
+    <div class="settings-card__head">
+      <h2>The Ntern list</h2>
+      <p class="section-copy">The companies every user finds ready to scan, tagged “Ntern”. Users only get the companies — never anyone's drafts, sends or results. Replacing it doesn't touch drafts already prepared.</p>
+    </div>
+    <p class="setup-status{% if ntern_count %} setup-status--ready{% endif %}"><span class="dot"></span>{{ "{:,}".format(ntern_count) }} companies</p>
+    <form method="post" enctype="multipart/form-data" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="ntern_upload">
+      <label class="field-hint">Replace it with a .csv or .xlsx file (same format as a user's import)</label>
+      <div class="inline-form"><input type="file" name="ntern_file" accept=".csv,.xlsx" required>
+        <button class="button" type="submit">Replace the Ntern list</button></div>
+    </form>
+    {% if list_owners %}
+    <form method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="ntern_from_user">
+      <label class="field-hint">…or copy one account's own list into it</label>
+      <div class="inline-form"><select name="user_id">{% for u in list_owners %}<option value="{{ u.id }}">{{ u.full_name or u.email }} — {{ u.email }}</option>{% endfor %}</select>
+        <button class="button" type="submit">Use this list</button></div>
+    </form>
+    {% endif %}
+  </section>
+
   <section class="settings-card">
     <div class="settings-card__head">
       <h2>Who can sign up</h2>

@@ -218,3 +218,45 @@ def make_console_encoding_safe():
             reconfigure(errors="replace")
         except (ValueError, OSError):
             pass
+
+
+# ---------------------------------------------------------------------------
+# Where a company is
+# ---------------------------------------------------------------------------
+
+# Country-code domains -> country. Generic ones (.com, .io, .eu…) say nothing.
+COUNTRY_BY_TLD = {
+    "fr": "France", "ch": "Switzerland", "be": "Belgium", "lu": "Luxembourg", "mc": "Monaco",
+    "de": "Germany", "at": "Austria", "nl": "Netherlands", "it": "Italy", "es": "Spain",
+    "pt": "Portugal", "uk": "United Kingdom", "ie": "Ireland", "se": "Sweden", "dk": "Denmark",
+    "no": "Norway", "fi": "Finland", "pl": "Poland", "cz": "Czechia", "gr": "Greece",
+    "ro": "Romania", "hu": "Hungary", "ca": "Canada", "us": "United States", "tn": "Tunisia",
+    "ma": "Morocco", "dz": "Algeria", "sn": "Senegal", "ci": "Côte d'Ivoire", "cm": "Cameroon",
+    "ae": "United Arab Emirates", "qa": "Qatar", "sa": "Saudi Arabia", "eg": "Egypt",
+    "in": "India", "sg": "Singapore", "jp": "Japan", "cn": "China", "au": "Australia",
+    "br": "Brazil", "mx": "Mexico", "li": "Liechtenstein", "is": "Iceland", "ee": "Estonia",
+    "lt": "Lithuania", "lv": "Latvia", "sk": "Slovakia", "si": "Slovenia", "hr": "Croatia",
+}
+
+
+def country_from_domain(*addresses: str) -> str:
+    """"Switzerland" for https://acme.ch or jobs@acme.ch — the first address
+    with a country-code domain wins; "" for .com and friends."""
+    for address in addresses:
+        host = (address or "").strip().lower()
+        host = host.split("@", 1)[1] if "@" in host else host
+        host = re.sub(r"^[a-z]+://", "", host).split("/", 1)[0].split(":", 1)[0].rstrip(".")
+        tld = host.rsplit(".", 1)[-1] if "." in host else ""
+        if tld in COUNTRY_BY_TLD:
+            return COUNTRY_BY_TLD[tld]
+    return ""
+
+
+def location_text(website: str, email: str, research: dict | None = None) -> str:
+    """"Lyon, France" / "Switzerland" / "". The domain decides the country
+    when it can; otherwise the research's country, which is only kept when
+    the company's own site backs it (see research_agent.verify_location)."""
+    research = research or {}
+    country = country_from_domain(website, email) or (research.get("country") or "").strip()
+    city = (research.get("city") or "").strip()
+    return ", ".join(part for part in (city, country) if part)

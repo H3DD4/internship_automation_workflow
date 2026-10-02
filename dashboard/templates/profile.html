@@ -137,6 +137,13 @@
         <span class="field-hint">The hand-tuned wording already on your account — kept exactly as it is.</span>
       </label>
       {% endif %}
+      {% if own_template and facts %}
+      <label class="template-card template-card--own{% if template_id == 'own' %} template-card--active{% endif %}">
+        <input type="radio" name="template_id" value="own" {% if template_id == 'own' %}checked{% endif %}>
+        <strong>Your template</strong>
+        <span class="field-hint">The template you wrote below — your words, filled for each company with your CV and what they do.</span>
+      </label>
+      {% endif %}
       {% for t in templates %}
       <label class="template-card{% if template_id == t.id %} template-card--active{% endif %}{% if not facts %} template-card--disabled{% endif %}">
         <input type="radio" name="template_id" value="{{ t.id }}" {% if template_id == t.id %}checked{% endif %} {% if not facts %}disabled{% endif %}>
@@ -180,6 +187,39 @@
 
   {# ── 3. The editor ──────────────────────────────────────────────── #}
   {% if facts %}
+  <section class="settings-card profile-step own-template" id="own-template">
+    <div class="profile-step__summary profile-step__summary--static">
+      <span class="profile-step__num">✎</span>
+      <span><strong>Write your own template</strong>
+        <span class="field-hint">Your words, your order. Ntern fills in each company's name, what they do, your matching experience and your dates — in English and French.</span></span>
+    </div>
+    {% if not facts %}
+    <p class="field-hint">Analyse your CV first (step 1) — your template is filled with it.</p>
+    {% else %}
+    <div class="own-start"{% if own_template %} hidden{% endif %} id="own-start">
+      <label for="own-example"><strong>The easiest way:</strong> paste an email you like — one you wrote, or one you'd love to send.</label>
+      <textarea id="own-example" rows="8" placeholder="Dear Hiring Team,&#10;&#10;I'm a final-year student at … and I'm writing because …"></textarea>
+      <div class="form-actions">
+        <button class="button button--primary" type="button" id="own-convert">Turn it into my template</button>
+        <button class="button button--ghost" type="button" id="own-blank">Or start from a blank template</button>
+        <span class="field-hint validation-result" id="own-convert-result" aria-live="polite"></span>
+      </div>
+      <p class="field-hint">Anything specific to one company becomes a blank Ntern fills in; claims about you are kept only if your CV backs them.</p>
+    </div>
+    {% if own_template %}<p class="field-hint own-redo"><button class="link-button" type="button" id="own-redo">Paste another email to start over</button></p>{% endif %}
+    <div id="own-editor" class="own-editor"{% if not own_template %} hidden{% endif %}></div>
+    <div class="form-actions own-actions" id="own-actions"{% if not own_template %} hidden{% endif %}>
+      <button class="button button--ghost" type="button" id="own-preview-btn">Preview</button>
+      <button class="button button--primary" type="button" id="own-save-btn">Save my template</button>
+      <label class="own-use"><input type="checkbox" id="own-use" {% if template_id == 'own' or not own_template %}checked{% endif %}> Use it for my new emails</label>
+      <span class="field-hint validation-result" id="own-result" aria-live="polite"></span>
+    </div>
+    <ul class="own-problems" id="own-problems" hidden></ul>
+    <div class="preview-pair" id="own-preview-pair" hidden></div>
+    <script type="application/json" id="own-data">{{ own_editor | tojson }}</script>
+    {% endif %}
+  </section>
+
   <section class="settings-card profile-step" id="editor">
     <div class="profile-step__summary profile-step__summary--static">
       <span class="profile-step__num">3</span>
@@ -220,4 +260,5 @@
 
 {% block scripts %}
 <script src="{{ asset('profile.js') }}"></script>
+<script src="{{ asset('own_template.js') }}"></script>
 {% endblock %}

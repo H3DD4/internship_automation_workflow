@@ -66,13 +66,16 @@ If the text doesn't describe what they do (cookie banner, login page, error
 page, or too little text), set both "hook" and "hook_evidence" to "".
 
 Answer with ONLY this JSON object and nothing else:
-{{"areas": [], "area_evidence": {{}}, "hook": "", "hook_evidence": "", "industry": "", "summary": "", "organisation": ""}}
+{{"areas": [], "area_evidence": {{}}, "hook": "", "hook_evidence": "", "industry": "", "summary": "", "organisation": "", "city": "", "country": ""}}
 
 "industry": 2-5 words. "summary": one sentence on what they do, from the text.
 "organisation": the name of the company that owns this website, copied exactly
 as the text writes it. If the site presents a product, give the company behind
 the product (e.g. "Connect-i", not its product "Opigno"). "" if the text doesn't
 say.
+"city" and "country": where the company is based (its office or headquarters),
+only when the text states it — the city as written (e.g. "Lyon", "Genève"), the
+country in English (e.g. "France", "Switzerland"). "" if the text doesn't say.
 Rules: never add a number, name, product, client, award or date that is not
 in the text. Write "your", never "their" or "our".
 """
@@ -708,7 +711,36 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
             context[target] = value
 
     context["site_company_name"] = verify_site_name(str(answer.get("organisation") or ""), site_text)
+    context["city"], context["country"] = verify_location(str(answer.get("city") or ""),
+                                                          str(answer.get("country") or ""), site_text)
     return _with_display_fields(context)
+
+
+# The country names a site may use for the English name the model returns.
+_COUNTRY_ALIASES = {
+    "switzerland": ("switzerland", "suisse", "schweiz", "svizzera"),
+    "france": ("france",), "germany": ("germany", "allemagne", "deutschland"),
+    "belgium": ("belgium", "belgique", "belgië", "belgien"), "luxembourg": ("luxembourg", "luxemburg"),
+    "netherlands": ("netherlands", "pays-bas", "nederland"), "spain": ("spain", "espagne", "españa"),
+    "italy": ("italy", "italie", "italia"), "united kingdom": ("united kingdom", "uk", "royaume-uni", "england"),
+    "united states": ("united states", "usa", "états-unis"), "canada": ("canada",),
+    "tunisia": ("tunisia", "tunisie"), "morocco": ("morocco", "maroc"), "austria": ("austria", "autriche", "österreich"),
+}
+
+
+def verify_location(city: str, country: str, site_text: str) -> tuple:
+    """(city, country), each kept only when the site's own text names it — a
+    location the model guessed is worse than none."""
+    folded = " " + " ".join(_fold_words(site_text)) + " "
+    def on_site(name: str) -> bool:
+        words = " ".join(_fold_words(name))
+        return bool(words) and f" {words} " in folded
+    city = " ".join(city.split())[:60]
+    city = city if city and len(city.split()) <= 4 and on_site(city) else ""
+    country = " ".join(country.split())[:60]
+    names = _COUNTRY_ALIASES.get(country.lower(), (country,))
+    country = country if country and (city or any(on_site(n) for n in names)) else ""
+    return city, country
 
 
 def verify_site_name(name: str, site_text: str) -> str:

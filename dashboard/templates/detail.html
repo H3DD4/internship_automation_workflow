@@ -164,6 +164,8 @@
         <dt>Name in email</dt><dd><strong>{{ email_name }}</strong> <span class="field-hint">— the website's own name; your list says “{{ application.company_name }}”, which looks like one of their products.</span></dd>
         {% endif %}
         <dt>Industry</dt><dd>{{ application.industry or "unknown" }}</dd>
+        {% if application.location %}<dt>Location</dt><dd>{{ application.location }}</dd>{% endif %}
+        <dt>From</dt><dd><span class="src-tag src-tag--inline{% if application.source == 'ntern' %} src-tag--ntern{% endif %}">{{ source_label }}</span></dd>
         <dt>Focus</dt><dd>{{ application.mission_or_focus or "—" }}</dd>
         <dt>Tone detected</dt><dd>{{ application.tone_of_voice or "unknown" }}</dd>
       </dl>

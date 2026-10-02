@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 
 import database
 from database import (
-    applications, cache_entries, company_list, events, send_job_items, send_jobs, user_meta,
+    applications, cache_entries, catalog_companies, company_list, events, send_job_items, send_jobs, user_meta,
 )
 
 
@@ -130,12 +130,17 @@ class UserData:
     # ------------------------------------------------------------------
 
     def get_or_create_application(self, company_name: str, email: str, website: str,
-                                  contact_name: str = "") -> int:
+                                  contact_name: str = "", source: str | None = None) -> int:
+        """`source`: "ntern" or the name of the user's list this company came
+        from — recorded once, so the table can show it."""
         uid = self.user_id
         with database.tx() as conn:
-            row = conn.execute(select(applications.c.id).where(
+            row = conn.execute(select(applications.c.id, applications.c.source).where(
                 applications.c.user_id == uid, applications.c.email == email)).first()
             if row:
+                if source is not None and row.source is None:
+                    conn.execute(update(applications).where(applications.c.id == row.id)
+                                 .values(source=source))
                 return row.id
         now = _now()
         try:
@@ -143,6 +148,7 @@ class UserData:
                 result = conn.execute(applications.insert().values(
                     user_id=uid, company_name=company_name, email=email, website=website,
                     contact_name=contact_name, status="pending", created_at=now, updated_at=now,
+                    source=source,
                 ).returning(applications.c.id))
                 return result.scalar_one()
         except IntegrityError:
@@ -533,23 +539,35 @@ class UserData:
             return conn.execute(select(func.count()).select_from(company_list).where(
                 company_list.c.user_id == self.user_id)).scalar_one()
 
-    def company_list_rows(self) -> list:
-        """(company_name, email, website, contact_name) in upload order."""
+    def company_list_rows(self, sources: list | None = None) -> list:
+        """(company_name, email, website, contact_name, source) in upload
+        order — every list, or only the named ones ("" = "My list")."""
+        query = (select(company_list.c.company_name, company_list.c.email, company_list.c.website,
+                        company_list.c.contact_name, company_list.c.source)
+                 .where(company_list.c.user_id == self.user_id).order_by(company_list.c.id))
+        if sources is not None:
+            query = query.where(company_list.c.source.in_(list(sources)))
         with database.read() as conn:
-            rows = conn.execute(
-                select(company_list.c.company_name, company_list.c.email,
-                       company_list.c.website, company_list.c.contact_name)
-                .where(company_list.c.user_id == self.user_id).order_by(company_list.c.id)).all()
-        return [tuple(row) for row in rows]
+            return [tuple(row) for row in conn.execute(query).all()]
+
+    def company_sources(self) -> list:
+        """[{"name", "label", "count"}] — the user's own lists."""
+        with database.read() as conn:
+            rows = conn.execute(select(company_list.c.source, func.count())
+                                .where(company_list.c.user_id == self.user_id)
+                                .group_by(company_list.c.source).order_by(company_list.c.source)).all()
+        return [{"name": name, "label": source_label(name), "count": count} for name, count in rows]
 
     def company_list_emails(self) -> set:
         with database.read() as conn:
             return {row.email for row in conn.execute(select(company_list.c.email).where(
                 company_list.c.user_id == self.user_id))}
 
-    def add_companies(self, rows: list) -> int:
-        """Append rows (dicts with email, company_name, website, contact_name),
-        skipping addresses already in the list. Returns how many were added."""
+    def add_companies(self, rows: list, source: str = "") -> int:
+        """Append rows (dicts with email, company_name, website, contact_name)
+        to the list named `source` ("" = "My list"), skipping addresses
+        already in any of the user's lists. Returns how many were added."""
+        source = clean_source_name(source)
         existing = self.company_list_emails()
         now = _now()
         fresh, seen = [], set()
@@ -561,7 +579,8 @@ class UserData:
             fresh.append({"user_id": self.user_id, "email": email,
                           "company_name": row.get("company_name") or "",
                           "website": row.get("website") or "",
-                          "contact_name": row.get("contact_name") or "", "created_at": now})
+                          "contact_name": row.get("contact_name") or "", "created_at": now,
+                          "source": source})
         if not fresh:
             return 0
         with database.tx() as conn:
@@ -569,12 +588,14 @@ class UserData:
                 conn.execute(company_list.insert(), fresh[start:start + 1000])
         return len(fresh)
 
-    def clear_company_list(self) -> int:
-        """Forget the uploaded list. Applications already created (drafts,
-        sent history) are untouched."""
+    def clear_company_list(self, source: str | None = None) -> int:
+        """Forget the uploaded list — or only the one named `source`.
+        Applications already created (drafts, sent history) are untouched."""
+        query = company_list.delete().where(company_list.c.user_id == self.user_id)
+        if source is not None:
+            query = query.where(company_list.c.source == source)
         with database.tx() as conn:
-            return conn.execute(company_list.delete().where(
-                company_list.c.user_id == self.user_id)).rowcount
+            return conn.execute(query).rowcount
 
     # ------------------------------------------------------------------
     # Research / draft cache
@@ -734,6 +755,67 @@ def pending_send_jobs() -> list:
             select(send_jobs.c.id, send_jobs.c.user_id, send_jobs.c.worker_id,
                    send_jobs.c.heartbeat_at, send_jobs.c.status)
             .where(send_jobs.c.status.in_(["pending", "running"])).order_by(send_jobs.c.id)))
+
+
+# ---------------------------------------------------------------------------
+# Sources: the shared Ntern list and the user's own named lists
+# ---------------------------------------------------------------------------
+
+NTERN_SOURCE = "ntern"
+
+
+def clean_source_name(name: str | None) -> str:
+    """A list name as typed, trimmed; "ntern" is reserved for the shared list."""
+    name = " ".join(str(name or "").split())[:40]
+    return "" if name.lower() in ("", "my list", NTERN_SOURCE) else name
+
+
+def source_label(source: str | None) -> str:
+    if source == NTERN_SOURCE:
+        return "Ntern"
+    return source or "My list"
+
+
+def catalog_count() -> int:
+    with database.read() as conn:
+        return conn.execute(select(func.count()).select_from(catalog_companies)).scalar_one()
+
+
+def catalog_rows() -> list:
+    """(company_name, email, website, contact_name, "ntern") in list order."""
+    with database.read() as conn:
+        rows = conn.execute(select(catalog_companies.c.company_name, catalog_companies.c.email,
+                                   catalog_companies.c.website, catalog_companies.c.contact_name)
+                            .order_by(catalog_companies.c.id)).all()
+    return [(*row, NTERN_SOURCE) for row in rows]
+
+
+def replace_catalog(rows: list) -> int:
+    """Make `rows` (dicts with email, company_name, website, contact_name) the
+    Ntern list. Users' drafts and sends are untouched — only what they can
+    scan next changes. Returns the new size."""
+    now, seen, fresh = _now(), set(), []
+    for row in rows:
+        email = (row.get("email") or "").strip().lower()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        fresh.append({"email": email, "company_name": row.get("company_name") or "",
+                      "website": row.get("website") or "", "contact_name": row.get("contact_name") or "",
+                      "created_at": now})
+    with database.tx() as conn:
+        conn.execute(catalog_companies.delete())
+        for start in range(0, len(fresh), 1000):
+            conn.execute(catalog_companies.insert(), fresh[start:start + 1000])
+    return len(fresh)
+
+
+def catalog_from_user_list(user_id: int) -> int:
+    """Make one user's own company list the Ntern list (the administrator's
+    starting point)."""
+    rows = [{"company_name": r[0], "email": r[1], "website": r[2], "contact_name": r[3]}
+            for r in for_user(user_id).company_list_rows()]
+    return replace_catalog(rows)
 
 
 def claim_send_job(job_id: int, worker_id: str, stale_before: str) -> bool:

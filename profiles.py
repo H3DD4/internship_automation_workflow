@@ -441,26 +441,28 @@ def load(user_id: int) -> dict | None:
     if not row:
         return None
     data = dict(row._mapping)
-    for key in ("facts", "spec_en", "spec_fr"):
+    for key in ("facts", "spec_en", "spec_fr", "own_template"):
         data[key] = json.loads(data[key]) if data.get(key) else None
     return data
 
 
 def save(user_id: int, **fields) -> None:
-    allowed = {"mode", "template_id", "language_mode", "facts", "spec_en", "spec_fr", "cv_text"}
+    allowed = {"mode", "template_id", "language_mode", "facts", "spec_en", "spec_fr", "cv_text",
+               "own_template"}
+    json_fields = ("facts", "spec_en", "spec_fr", "own_template")
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"Unknown profile field(s): {unknown}")
     values = {}
     for key, value in fields.items():
-        values[key] = json.dumps(value, ensure_ascii=False) if key in ("facts", "spec_en", "spec_fr") and value is not None else value
+        values[key] = json.dumps(value, ensure_ascii=False) if key in json_fields and value is not None else value
     current = load(user_id)
     row = {"user_id": int(user_id), "updated_at": _now(),
            "mode": (current or {}).get("mode") or "template",
            "template_id": (current or {}).get("template_id") or email_templates.DEFAULT_TEMPLATE,
            "language_mode": (current or {}).get("language_mode") or "auto"}
     if current:
-        for key in ("facts", "spec_en", "spec_fr"):
+        for key in json_fields:
             row[key] = json.dumps(current[key], ensure_ascii=False) if current.get(key) is not None else None
         row["cv_text"] = current.get("cv_text")
     row.update(values)
@@ -469,7 +471,17 @@ def save(user_id: int, **fields) -> None:
 
 
 def apply_template(user_id: int, facts: dict, template_id: str) -> dict:
-    """Render and store both language specs from facts + template."""
+    """Render and store both language specs from facts + template — one of
+    the built-in styles, or the student's own ("own")."""
+    if template_id == email_templates.OWN_ID:
+        own = (load(user_id) or {}).get("own_template")
+        if not own:
+            raise ProfileError("Create your own template first.")
+        specs = {lang: email_templates.build_spec(facts, template_id, lang, own=own) if own.get(lang) else None
+                 for lang in LANGS}
+        save(user_id, mode="template", template_id=template_id, facts=facts,
+             spec_en=specs["en"], spec_fr=specs["fr"])
+        return specs
     if template_id not in email_templates.TEMPLATES:
         raise ProfileError("Unknown template.")
     specs = {lang: email_templates.build_spec(facts, template_id, lang) for lang in LANGS}
@@ -487,3 +499,100 @@ def specs_for(user_id: int) -> tuple[dict, dict | None, dict | None]:
 def is_ready(user_id: int) -> bool:
     _, spec_en, _ = specs_for(user_id)
     return bool(spec_en and not email_templates.spec_problems(spec_en))
+
+
+# ---------------------------------------------------------------------------
+# The student's own template, from an email they like
+# ---------------------------------------------------------------------------
+
+OWN_TEMPLATE_PROMPT = """A student pasted an application email they like. Turn it into a reusable
+template they can send to ANY company, keeping their own words and tone.
+
+Use ONLY these blanks, written exactly like this:
+[company]       the company's name
+[their work]    what the company does, found on its website (e.g. "AI for logistics")
+[field]         the student's field that matches the company (e.g. "data engineering")
+[start date]    the start date, e.g. "March 2027"
+[what I'm looking for]  e.g. "an internship" / "un stage"
+[duration]      e.g. " of 6 months" (already starts with a space)
+[my name]       the student's name
+
+Replace everything specific to ONE company (its name, products, projects, people)
+with a blank or remove it. Keep sentences about the student only if the CV below
+supports them, word for word in meaning — never add a fact, number or name.
+
+Split the email into these parts (each in the email's language AND translated
+into the other one — English "en" and French "fr", natural and professional):
+- "subject": the subject line.
+- "intro_with_hook": the opening when we know what the company does — uses [their work].
+- "intro_standard": the opening when we don't — must NOT use [their work].
+- "match_lead": one sentence introducing why the student fits, using [field]
+  (the student's matching experience from the CV is added after it automatically).
+- "about": the student's own paragraph about themselves, if the email has one ("" if not).
+- "ask": what they ask for, using [what I'm looking for], [start date], [duration]
+  ("" to use the student's standard sentence).
+- "closing": the closing line(s).
+- "sign_off": e.g. "Best regards,\\n[my name]".
+Also give "layout": the order of the sections the email uses, from
+["intro", "match", "strengths", "about", "ask", "closing"] ("strengths" = 1-3 CV
+highlights added automatically; include it unless the email is very short), and
+"highlights": how many CV highlights to add (0-3).
+
+Answer with ONLY this JSON:
+{"layout": [], "highlights": 2, "en": {"subject": "", "intro_with_hook": "", "intro_standard": "",
+"match_lead": "", "about": "", "ask": "", "closing": "", "sign_off": ""}, "fr": {...same keys...}}"""
+
+
+def _own_clean(raw: dict) -> dict:
+    """Only the expected keys, trimmed — whatever the model returned."""
+    import email_templates
+    own = {"layout": [s for s in (raw.get("layout") or []) if s in email_templates.OWN_SECTIONS],
+           "highlights": raw.get("highlights", 2)}
+    try:
+        own["highlights"] = max(0, min(3, int(own["highlights"])))
+    except (TypeError, ValueError):
+        own["highlights"] = 2
+    own["layout"] = list(dict.fromkeys(own["layout"])) or list(email_templates.OWN_DEFAULT_LAYOUT)
+    if "intro" not in own["layout"]:
+        own["layout"].insert(0, "intro")
+    for lang in LANGS:
+        texts = raw.get(lang) if isinstance(raw.get(lang), dict) else {}
+        own[lang] = {key: str(texts.get(key) or "").strip()[:1500] for key in email_templates.OWN_TEXT_FIELDS}
+    return own
+
+
+def own_template_from_example(router, example: str, cv_text: str) -> dict:
+    """The student's pasted email -> their template (both languages), drafted
+    by their own AI pool. Raises ProfileError."""
+    from agents.research_agent import _parse_json_object
+    example = (example or "").strip()
+    if len(example.split()) < 25:
+        raise ProfileError("Paste a whole email — at least a few sentences.")
+    try:
+        result = router.complete(task="research", system=OWN_TEMPLATE_PROMPT,
+                                 messages=[{"role": "user", "content":
+                                            f"EMAIL:\n{example[:6000]}\n\nCV:\n{(cv_text or '')[:8000]}"}],
+                                 max_tokens=3000, temperature=0.2, json_mode=True, max_wait=120)
+        answer = _parse_json_object(result.text)
+    except Exception as exc:
+        raise ProfileError(f"The AI couldn't read that email ({str(exc)[:160]}). "
+                           "Check your AI key in Settings and try again.") from exc
+    return _own_clean(answer)
+
+
+def blank_own_template(lang_hint: str = "en") -> dict:
+    """A starting point for students who'd rather write from scratch."""
+    import email_templates
+    return {"layout": list(email_templates.OWN_DEFAULT_LAYOUT), "highlights": 2,
+            "en": {"subject": "Internship from [start date] — [field] | [my name]",
+                   "intro_with_hook": "I'm writing to [company] because your work on [their work] is close to what I want to do.",
+                   "intro_standard": "I'm writing to [company] about a possible internship.",
+                   "match_lead": "My experience in [field] fits your team:", "about": "", "ask": "",
+                   "closing": "My CV is attached — I'd be glad to talk.",
+                   "sign_off": "Best regards,\n[my name]"},
+            "fr": {"subject": "Candidature — [start date] — [field] | [my name]",
+                   "intro_with_hook": "Je vous écris car votre travail sur [their work] rejoint ce que je souhaite faire.",
+                   "intro_standard": "Je vous écris au sujet d'un éventuel stage chez [company].",
+                   "match_lead": "Mon expérience en [field] correspond à votre équipe :", "about": "", "ask": "",
+                   "closing": "Vous trouverez mon CV en pièce jointe — au plaisir d'échanger.",
+                   "sign_off": "Cordialement,\n[my name]"}}

@@ -15,7 +15,7 @@
     {% endif %}
   </td>
   <td class="cell-mono">{{ a.id }}</td>
-  <td class="cell-company">{{ a.company_name }}</td>
+  <td class="cell-company">{{ a.company_name }}<span class="src-tag{% if a.source_is_ntern %} src-tag--ntern{% endif %}" title="From {{ a.source_label }}">{{ a.source_label }}</span>{% if a.location %}<span class="loc-tag loc-tag--phone">{{ a.location }}</span>{% endif %}</td>
   <td class="cell-mono col-email" title="{{ a.email }}">{{ a.email }}</td>
   <td>
     <span class="status-pill status-{{ a.status }}">{{ a.status_label }}</span>
@@ -30,9 +30,10 @@
       <span class="chip chip--muted" title="Their website couldn't be read, so the match couldn't be checked">Not checked</span>
     {% elif a.no_cv_match %}
       <span class="chip chip--muted" title="Nothing on their website matched your CV">No match</span>
-    {% else %}
+    {% elif not a.location %}
       <span class="cell-empty">—</span>
     {% endif %}
+    {% if a.location %}<span class="loc-tag" title="Where the company is">{{ a.location }}</span>{% endif %}
   </td>
   <td class="cell-subject" title="{{ a.subject or '' }}">{% if a.language %}<span class="lang-chip lang-chip--{{ a.language }}">{{ a.language | upper }}</span> {% endif %}{{ a.subject or "—" }}</td>
   <td class="cell-mono cell-time col-updated">{{ a.updated_short }}</td>

@@ -17,6 +17,7 @@ from flask import Blueprint, abort, flash, g, redirect, render_template, request
 from sqlalchemy import case, func, select
 
 import accounts
+import db
 import database
 from dashboard import security
 
@@ -270,11 +271,37 @@ def platform():
             set_system_secret(google_auth_helper.CLIENT_SECRET_NAME, "")
             _audit("admin_google_client_removed")
             flash("Google OAuth client removed.", "success")
+        elif action == "ntern_upload":
+            import company_import
+            import config
+            upload = request.files.get("ntern_file")
+            if not upload or not upload.filename:
+                flash("Choose a .csv or .xlsx file first.", "error")
+            else:
+                try:
+                    report = company_import.parse(upload.filename,
+                                                  upload.read(config.MAX_COMPANIES_UPLOAD_BYTES + 1), set())
+                    count = db.replace_catalog(report["rows"])
+                    _audit("admin_ntern_list", source="upload", count=count)
+                    flash(f"The Ntern list now has {count:,} companies.", "success")
+                except company_import.ImportFailure as exc:
+                    flash(str(exc), "error")
+        elif action == "ntern_from_user":
+            user = accounts.get_user(int(request.form.get("user_id") or 0))
+            if not user:
+                flash("Pick an account.", "error")
+            else:
+                count = db.catalog_from_user_list(user["id"])
+                _audit("admin_ntern_list", source="user", user=user["id"], count=count)
+                flash(f"The Ntern list now has {count:,} companies, copied from {user['email']}'s list.", "success")
         return redirect(url_for("admin.platform"))
     from dashboard.app import oauth_redirect_uri
     from dashboard.microsoft_routes import redirect_uri as ms_redirect_uri
     import microsoft_auth
+    list_owners = [u for u in accounts.list_users() if u["role"] != "admin"
+                   and db.for_user(u["id"]).company_list_count()]
     return render_template("admin/platform.html", signup_mode=accounts.signup_mode(),
+                           ntern_count=db.catalog_count(), list_owners=list_owners,
                            ms_configured=microsoft_auth.is_configured(),
                            ms_inbox_read=microsoft_auth.inbox_read_enabled(),
                            ms_redirect_uri=ms_redirect_uri(),

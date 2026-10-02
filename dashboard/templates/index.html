@@ -150,7 +150,7 @@
           <th>Company</th>
           <th class="col-email">Email</th>
           <th>Status</th>
-          <th class="col-extras">CV areas</th>
+          <th class="col-extras">Match</th>
           <th>Subject line</th>
           <th class="col-updated">Updated</th>
           <th></th>
@@ -238,6 +238,17 @@
   </div>
   <form class="run-form" action="{{ url_for('run_pipeline') }}" method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if run_sources %}
+    <fieldset class="run-sources">
+      <legend>Scan</legend>
+      <input type="hidden" name="sources_shown" value="1">
+      {% for s in run_sources %}
+      <label class="run-source"><input type="checkbox" name="source" value="{{ s.value }}" {% if s.checked %}checked{% endif %}>
+        <span class="src-tag{% if s.ntern %} src-tag--ntern{% endif %}">{{ s.label }}</span>
+        <span class="field-hint">{{ "{:,}".format(s.count) }}</span></label>
+      {% endfor %}
+    </fieldset>
+    {% endif %}
     <label class="batch-limit-label">Batch size
       <input type="number" name="batch_limit" class="batch-limit-input" min="1" placeholder="All" title="Leave empty to prepare every company that still needs work">
     </label>
