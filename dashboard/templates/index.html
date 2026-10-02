@@ -40,8 +40,8 @@
     </li>
     <li class="checklist-item checklist-item--{{ 'done' if setup.has_companies else 'todo' }}">
       <span class="checklist-mark">{{ "✓" if setup.has_companies else "3" }}</span>
-      <span class="checklist-text"><a href="{{ url_for('settings_page') }}#s-files">Import your companies list</a>
-        <span class="checklist-note">{% if setup.has_companies %}{{ setup.companies_rows }} companies{% else %}A CSV or Excel file with an email column.{% endif %}</span></span>
+      <span class="checklist-text"><a href="{{ url_for('settings_page') }}#s-files">{% if setup.ntern_rows %}Companies to apply to{% else %}Import your companies list{% endif %}</a>
+        <span class="checklist-note">{% if setup.ntern_rows and setup.has_own_companies %}The Ntern list ({{ "{:,}".format(setup.ntern_rows) }}) and your own lists ({{ "{:,}".format(setup.companies_rows) }}) — tick which to scan below.{% elif setup.ntern_rows %}Ready: the Ntern list has {{ "{:,}".format(setup.ntern_rows) }} companies. You can add your own list any time.{% elif setup.has_companies %}{{ "{:,}".format(setup.companies_rows) }} companies{% else %}A CSV or Excel file with an email column.{% endif %}</span></span>
     </li>
     <li class="checklist-item checklist-item--{{ 'done' if (setup.has_gmail and setup.cv_name) else 'todo' }}">
       <span class="checklist-mark">{{ "✓" if (setup.has_gmail and setup.cv_name) else "4" }}</span>
@@ -56,7 +56,7 @@
     <span class="workspace-bar__fact"><span class="dot" style="background:var(--st-sent)"></span> Ready</span>
     <span class="workspace-bar__fact">Sending as <strong>{{ setup.from_address }}</strong></span>
     <span class="workspace-bar__fact">CV <strong>{{ setup.cv_name }}</strong></span>
-    <span class="workspace-bar__fact">List <strong>{{ setup.companies_rows }}</strong></span>
+    <span class="workspace-bar__fact">Companies <strong>{% if setup.ntern_rows %}Ntern {{ "{:,}".format(setup.ntern_rows) }}{% if setup.has_own_companies %} + yours {{ "{:,}".format(setup.companies_rows) }}{% endif %}{% else %}{{ "{:,}".format(setup.companies_rows) }}{% endif %}</strong></span>
     <span class="workspace-bar__fact">Style <strong>{{ setup.template_name }}</strong></span>
     <span class="workspace-bar__fact">Language <strong>{{ {"auto": "auto (EN/FR per company)", "en": "English", "fr": "French"}[setup.language_mode] }}</strong></span>
   </div>

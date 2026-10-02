@@ -121,3 +121,11 @@ def test_users_cannot_change_the_ntern_list(client):
                 data={"csrf_token": client.csrf, "action": "ntern_upload",
                       "ntern_file": (io.BytesIO(b"email\na@x.fr\n"), "n.csv")})
     assert db.catalog_count() == 0
+
+
+
+def test_a_new_user_is_told_the_ntern_list_is_ready(client):
+    _ntern("a@one.fr", "b@two.ch")
+    page = client.get("/").data.decode()
+    assert "the Ntern list has 2 companies" in page and "add your own list any time" in page
+    assert "Import your companies list" not in page
