@@ -46,6 +46,9 @@ users = Table(
     Column("last_login_at", Text),
     Column("approved_at", Text),
     Column("approved_by", Integer),
+    # Set once Google or Microsoft proved this person owns the address.
+    # NULL = nobody has checked it (a password sign-up).
+    Column("email_verified_at", Text),
 )
 
 auth_sessions = Table(
@@ -283,7 +286,7 @@ prep_runs = Table(
     Index("idx_prep_runs_user", "user_id", "id"),
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # ---------------------------------------------------------------------------
 # Engine
@@ -398,6 +401,11 @@ def _migrate(conn) -> None:
         if "template_id" not in columns:
             conn.execute(text("ALTER TABLE applications ADD COLUMN template_id VARCHAR(32)"))
         conn.execute(text("INSERT INTO schema_version (version) VALUES (4)"))
+    if version < 5:
+        columns = {c["name"] for c in inspect(conn).get_columns("users")}
+        if "email_verified_at" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN email_verified_at TEXT"))
+        conn.execute(text("INSERT INTO schema_version (version) VALUES (5)"))
 
 
 def _dialect_insert(conn, table):

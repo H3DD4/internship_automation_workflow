@@ -67,7 +67,9 @@
         };
         const onKey = (e) => {
           if (e.key === "Escape") done(false);
-          if (e.key === "Enter") done(true);
+          // Enter means "yes" only on the Send button itself — on Cancel it
+          // must cancel, never send.
+          if (e.key === "Enter") { e.preventDefault(); done(document.activeElement === $("confirm-ok")); }
         };
         $("confirm-ok").onclick = () => done(true);
         $("confirm-cancel").onclick = () => done(false);

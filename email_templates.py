@@ -79,7 +79,7 @@ TEMPLATES = {
         "layout": ["intro", "match", "strengths", "ask", "closing"],
         "strengths_budget": [1, 2],
         "include_motivation": False,
-        "min_words": 70,
+        "min_words": 60,
         "en": {
             "subject": "{target_role} ({topic}) — {applicant_name}",
             "intro_with_hook": "I'm <<identity>>, and your work on {hook} is exactly why I'm writing to {company}.",
@@ -166,10 +166,10 @@ TEMPLATES = {
         "include_motivation": False,
         "en": {
             "subject": "Application — {target_role} from <<start_date>> | {applicant_name}",
-            "intro_with_hook": "I am <<identity>>, and I would like to apply for an internship at {company}, whose work on {hook} closely matches my interests.",
+            "intro_with_hook": "I am <<identity>>, and I would like to apply for <<kind>> at {company}, whose work on {hook} closely matches my interests.",
             "intro_standard_variants": [
-                "I am <<identity>>, and I would like to apply for an internship at {company}.",
-                "I am <<identity>>, and I am applying for an internship within {company}.",
+                "I am <<identity>>, and I would like to apply for <<kind>> at {company}.",
+                "I am <<identity>>, and I am applying for <<kind>> within {company}.",
             ],
             "match_lead_one": "Your activity in {area_1} corresponds closely to my own experience.",
             "match_lead_two": "Your activities in {area_1} and {area_2} correspond closely to my own experience.",
@@ -181,10 +181,10 @@ TEMPLATES = {
         },
         "fr": {
             "subject": "Candidature — {target_role} à partir de <<start_date>> | {applicant_name}",
-            "intro_with_hook": "Actuellement <<identity>>, je me permets de vous adresser ma candidature pour un stage au sein de {company}, dont le travail sur {hook} rejoint pleinement mes centres d'intérêt.",
+            "intro_with_hook": "Actuellement <<identity>>, je me permets de vous adresser ma candidature pour <<kind>> au sein de {company}, dont le travail sur {hook} rejoint pleinement mes centres d'intérêt.",
             "intro_standard_variants": [
-                "Actuellement <<identity>>, je me permets de vous adresser ma candidature pour un stage au sein de {company}.",
-                "Actuellement <<identity>>, je vous adresse ma candidature pour un stage au sein de {company}.",
+                "Actuellement <<identity>>, je me permets de vous adresser ma candidature pour <<kind>> au sein de {company}.",
+                "Actuellement <<identity>>, je vous adresse ma candidature pour <<kind>> au sein de {company}.",
             ],
             "match_lead_one": "Votre activité en {area_1} correspond étroitement à mon expérience.",
             "match_lead_two": "Vos activités en {area_1} et en {area_2} correspondent étroitement à mon expérience.",
@@ -207,33 +207,33 @@ TEMPLATES = {
         # One highlight plus the personal motivation — a lab wants to know why.
         "strengths_budget": [1, 1],
         "include_motivation": True,
-        "min_words": 70,
+        "min_words": 60,
         "en": {
             "subject": "Research {target_role} from <<start_date>> — {topic} | {applicant_name}",
-            "intro_with_hook": "I'm <<identity>>. I'm writing because the research at {company} on {hook} is closely related to what I want to work on.",
+            "intro_with_hook": "I'm <<identity>>. I'm writing because {company}'s work on {hook} is closely related to what I want to work on.",
             "intro_standard_variants": [
-                "I'm <<identity>>, and I'd like to contribute to the research carried out at {company}.",
-                "I'm <<identity>>, and I'm very interested in joining the research team at {company}.",
+                "I'm <<identity>>, and I'd like to bring a research-minded approach to the work of {company}.",
+                "I'm <<identity>>, and I'm very interested in working on technical questions with the team at {company}.",
             ],
             "match_lead_one": "Your work in {area_1} is close to what I have done so far.",
             "match_lead_two": "Your work in {area_1} and {area_2} is close to what I have done so far.",
             "closing_variants": [
-                "My CV is attached. I would be glad to discuss a possible research internship with your team.",
+                "My CV is attached. I would be glad to discuss a possible research-oriented role with your team.",
                 "My CV is attached with more detail — I would be glad to discuss how I could contribute to your research.",
             ],
             "sign_off": "Best regards,\n{applicant_name}",
         },
         "fr": {
             "subject": "{target_role} en recherche à partir de <<start_date>> — {topic} | {applicant_name}",
-            "intro_with_hook": "Je suis <<identity>>. Je vous écris car les recherches menées chez {company} sur {hook} sont très proches de ce sur quoi je souhaite travailler.",
+            "intro_with_hook": "Je suis <<identity>>. Je vous écris car le travail {company_de} sur {hook} est très proche de ce sur quoi je souhaite travailler.",
             "intro_standard_variants": [
-                "Je suis <<identity>>, et j'aimerais contribuer aux recherches menées chez {company}.",
-                "Je suis <<identity>>, et rejoindre l'équipe de recherche {company_de} m'intéresse vivement.",
+                "Je suis <<identity>>, et j'aimerais apporter une démarche de recherche aux travaux de l'équipe {company_de}.",
+                "Je suis <<identity>>, et travailler sur des questions techniques avec l'équipe {company_de} m'intéresse vivement.",
             ],
             "match_lead_one": "Vos travaux en {area_1} sont proches de ce que j'ai réalisé jusqu'ici.",
             "match_lead_two": "Vos travaux en {area_1} et en {area_2} sont proches de ce que j'ai réalisé jusqu'ici.",
             "closing_variants": [
-                "Vous trouverez mon CV en pièce jointe. Ce serait un plaisir d'échanger sur un éventuel stage de recherche au sein de votre équipe.",
+                "Vous trouverez mon CV en pièce jointe. Ce serait un plaisir d'échanger sur une éventuelle mission orientée recherche au sein de votre équipe.",
                 "Mon CV, joint à ce message, détaille mon parcours — ce serait un plaisir d'échanger sur ma possible contribution à vos travaux.",
             ],
             "sign_off": "Cordialement,\n{applicant_name}",
@@ -265,7 +265,7 @@ TEMPLATES = {
             ],
             "match_lead_one": "It connects with my own work in {area_1}.",
             "match_lead_two": "It connects with my own work in {area_1} and {area_2}.",
-            "ask_text": "Would you have 15 minutes in the coming days for a short call? I'd like to hear how your team works, and whether there could be room for an intern from <<start_date>>.",
+            "ask_text": "Would you have 15 minutes in the coming days for a short call? I'd like to hear how your team works, and whether there could be room for <<kind>><<duration>> from <<start_date>>.",
             "closing_variants": [
                 "My CV is attached in case it's useful.",
                 "I've attached my CV for context — I hope we can talk.",
@@ -281,7 +281,7 @@ TEMPLATES = {
             ],
             "match_lead_one": "Cela rejoint directement mon propre travail en {area_1}.",
             "match_lead_two": "Cela rejoint directement mon propre travail en {area_1} et en {area_2}.",
-            "ask_text": "Auriez-vous 15 minutes dans les prochains jours pour un court échange ? J'aimerais comprendre comment travaille votre équipe, et savoir s'il pourrait y avoir une place pour un stage à partir de <<start_date>>.",
+            "ask_text": "Auriez-vous 15 minutes dans les prochains jours pour un court échange ? J'aimerais comprendre comment travaille votre équipe, et savoir s'il pourrait y avoir une place pour <<kind>><<duration>> à partir de <<start_date>>.",
             "closing_variants": [
                 "Mon CV est en pièce jointe, au cas où il vous serait utile.",
                 "Vous trouverez mon CV en pièce jointe pour le contexte — au plaisir d'échanger.",
@@ -307,31 +307,31 @@ TEMPLATES = {
         "min_words": 60,
         "max_words": 200,
         "en": {
-            "subject": "Internship from <<start_date>> — {topic}",
+            "subject": "{target_role} from <<start_date>> — {topic}",
             "intro_with_hook": "I'm <<identity>>, and I'm writing to {company} with a spontaneous application — your work on {hook} is why I chose you.",
             "intro_standard_variants": [
-                "I'm <<identity>>, and I'm writing to {company} with a spontaneous internship application.",
-                "I'm <<identity>>, and I'd like to send {company} a spontaneous internship application.",
+                "I'm <<identity>>, and I'm writing to {company} with a spontaneous application for <<kind>>.",
+                "I'm <<identity>>, and I'd like to send {company} a spontaneous application for <<kind>>.",
             ],
             "match_lead_one": "Your focus on {area_1} is exactly where my experience lies.",
             "match_lead_two": "Your focus on {area_1} and {area_2} is exactly where my experience lies.",
             "closing_variants": [
-                "My CV is attached. Could an internship on these dates fit your plans?",
+                "My CV is attached. Could this fit your plans for these dates?",
                 "My CV is attached with the details. Would these dates work for your team?",
             ],
             "sign_off": "Thank you,\n{applicant_name}",
         },
         "fr": {
-            "subject": "Candidature spontanée — stage à partir de <<start_date>>",
+            "subject": "Candidature spontanée — {target_role}, <<start_date>>",
             "intro_with_hook": "Je suis <<identity>> et je vous adresse une candidature spontanée : c'est votre travail sur {hook} qui m'a donné envie d'écrire à {company}.",
             "intro_standard_variants": [
-                "Je suis <<identity>> et je vous adresse une candidature spontanée pour un stage au sein de {company}.",
-                "Je suis <<identity>> et je souhaite proposer ma candidature spontanée pour un stage chez {company}.",
+                "Je suis <<identity>> et je vous adresse une candidature spontanée pour <<kind>> au sein de {company}.",
+                "Je suis <<identity>> et je souhaite proposer ma candidature spontanée pour <<kind>> chez {company}.",
             ],
             "match_lead_one": "Votre expertise en {area_1} correspond exactement à mon expérience.",
             "match_lead_two": "Votre expertise en {area_1} et en {area_2} correspond exactement à mon expérience.",
             "closing_variants": [
-                "Mon CV est en pièce jointe. Un stage à ces dates pourrait-il s'inscrire dans vos projets ?",
+                "Mon CV est en pièce jointe. Cela pourrait-il s'inscrire dans vos projets à ces dates ?",
                 "Vous trouverez mon CV en pièce jointe. Ces dates pourraient-elles convenir à votre équipe ?",
             ],
             "sign_off": "Merci par avance,\n{applicant_name}",
@@ -488,6 +488,20 @@ def _text(value, lang: str) -> str:
     return (value or "").strip()
 
 
+def kind_fills(facts: dict, lang: str) -> dict:
+    """What the student asks for, from their dates card: "an internship",
+    "une alternance", ... and " of 6 months" / " de 6 mois". The wording used
+    to say "internship" whatever the dates card said."""
+    from profiles import INTERNSHIP_KINDS
+    info = facts.get("internship") or {}
+    kind = INTERNSHIP_KINDS.get(info.get("kind")) or INTERNSHIP_KINDS["internship"]
+    months = info.get("duration")
+    duration = ""
+    if months:
+        duration = f" of {int(months)} months" if lang == "en" else f" de {int(months)} mois"
+    return {"kind": kind[lang], "duration": duration}
+
+
 def build_spec(facts: dict, template_id: str, lang: str) -> dict:
     """Profile facts + a template -> a composer spec for one language."""
     template = TEMPLATES.get(template_id) or TEMPLATES[DEFAULT_TEMPLATE]
@@ -495,6 +509,7 @@ def build_spec(facts: dict, template_id: str, lang: str) -> dict:
     fills = {
         "identity": _escape(_text(facts.get("identity"), lang)),
         "start_date": _escape(_text(facts.get("start_date"), lang)),
+        **kind_fills(facts, lang),
     }
 
     def render(value):
@@ -505,12 +520,16 @@ def build_spec(facts: dict, template_id: str, lang: str) -> dict:
         return value
 
     email = {key: render(value) for key, value in wording.items()}
+    if (facts.get("internship") or {}).get("kind") == "research" and template_id == "research_lab":
+        # The role already says "Research Internship" / "Stage de recherche".
+        email["subject"] = (email["subject"].replace("Research {target_role}", "{target_role}")
+                            .replace("{target_role} en recherche", "{target_role}"))
     for key in _STRUCTURE_KEYS:
         if key in template:
             email[key] = copy.deepcopy(template[key])
     # Hand-tuned wording guards at 120 words; a template has to fit shorter
     # CVs too, so its floor is lower (the guard still stops a stub email).
-    email.setdefault("min_words", 90)
+    email.setdefault("min_words", 70)
     email["default_topic"] = _text(facts.get("default_topic"), lang)
     email["motivation"] = _text(facts.get("motivation"), lang)
     email["internship_ask"] = _escape(_text(facts.get("internship_ask"), lang))

@@ -142,7 +142,8 @@ def internship_ask(*, kind: str, month: int, year: int, duration_months: int | N
                 sentence += f", {context}"
             sentence += (", and I'm open to continuing with the team afterwards." if open_to_hire else ".")
         else:
-            sentence = f"Je recherche {info['fr']}{duration} à partir de {start}"
+            sentence = f"Je recherche {info['fr']}{duration} à partir de {start}".replace(
+                "de avril", "d'avril").replace("de août", "d'août").replace("de octobre", "d'octobre")
             if context:
                 sentence += f", {context}"
             sentence += (", et poursuivre avec l'équipe par la suite serait une vraie opportunité pour moi."
@@ -186,9 +187,12 @@ def update_dates(user_id: int, *, kind: str, month: int, year: int, duration_mon
         for lang in LANGS:
             spec = copy.deepcopy(profile.get(f"spec_{lang}"))
             if spec and old_start.get(lang) and old_start[lang] != new_start[lang]:
-                for key in ("subject", "internship_ask"):
-                    if key in spec.get("email", {}):
-                        spec["email"][key] = spec["email"][key].replace(old_start[lang], new_start[lang])
+                for key, value in spec.get("email", {}).items():
+                    if isinstance(value, str):
+                        spec["email"][key] = value.replace(old_start[lang], new_start[lang])
+                    elif isinstance(value, list):
+                        spec["email"][key] = [v.replace(old_start[lang], new_start[lang])
+                                              if isinstance(v, str) else v for v in value]
                 allowed = set(spec.get("verified_facts", {}).get("allowed_numbers") or [])
                 spec.setdefault("verified_facts", {})["allowed_numbers"] = sorted(allowed | {str(int(year))})
             specs[lang] = spec

@@ -101,28 +101,35 @@ def logout():
 @bp.route("/account/password", methods=["GET", "POST"])
 @security.login_required
 def change_password():
+    # Google/Microsoft-only accounts have no password yet: they set one
+    # without a "current password" (the session already proves who they are).
+    has_password = accounts.has_password(accounts.get_user(g.user["id"]))
+    page = lambda: render_template("auth/change_password.html", has_password=has_password)  # noqa: E731
     if request.method == "POST":
         current = request.form.get("current_password", "")
         new = request.form.get("new_password", "")
         if new != request.form.get("new_password_confirm", ""):
             flash("The two new passwords don't match.", "error")
-            return render_template("auth/change_password.html"), 400
-        check = accounts.authenticate(g.user["email"], current)
-        if not check.ok:
-            flash("Your current password is incorrect.", "error")
-            return render_template("auth/change_password.html"), 400
-        if new == current:
-            flash("Choose a password different from the current one.", "error")
-            return render_template("auth/change_password.html"), 400
+            return page(), 400
+        if has_password:
+            check = accounts.authenticate(g.user["email"], current)
+            if not check.ok:
+                flash("Your current password is incorrect.", "error")
+                return page(), 400
+            if new == current:
+                flash("Choose a password different from the current one.", "error")
+                return page(), 400
         try:
             accounts.set_password(g.user["id"], new, keep_session=g.auth_session["id"])
         except accounts.AccountError as exc:
             flash(str(exc), "error")
-            return render_template("auth/change_password.html"), 400
-        accounts.audit("password_changed", actor=g.user["id"], ip=security.client_ip())
-        flash("Password changed. Every other device was signed out.", "success")
+            return page(), 400
+        accounts.audit("password_changed" if has_password else "password_set",
+                       actor=g.user["id"], ip=security.client_ip())
+        flash("Password changed. Every other device was signed out." if has_password
+              else "Password set — you can now also sign in with your email and this password.", "success")
         return redirect(url_for("index"))
-    return render_template("auth/change_password.html")
+    return page()
 
 
 @bp.post("/account/sessions/end-others")

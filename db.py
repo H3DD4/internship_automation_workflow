@@ -447,7 +447,7 @@ class UserData:
                 ).values(status="ready", error_message=reason, updated_at=now))
             conn.execute(update(send_job_items).where(
                 send_job_items.c.job_id == int(job_id), send_job_items.c.status == "queued"
-            ).values(status="skipped"))
+            ).values(status="skipped", error_message=reason))
 
     # ------------------------------------------------------------------
     # Per-user key/value state (e.g. when the inbox was last scanned)
@@ -739,9 +739,24 @@ def pending_send_jobs() -> list:
 def claim_send_job(job_id: int, worker_id: str, stale_before: str) -> bool:
     """Take ownership of a job nobody owns, or whose owner stopped sending
     heartbeats before `stale_before`. Atomic, so two workers can never both
-    process one job."""
+    process one job — and refused while another live worker is sending for
+    the same user, so one person's emails never go out in parallel (the
+    daily cap and the pacing between sends both rely on that)."""
     now = _now()
     with database.tx() as conn:
+        user_id = conn.execute(select(send_jobs.c.user_id).where(send_jobs.c.id == int(job_id))).scalar()
+        if user_id is None:
+            return False
+        if conn.dialect.name == "postgresql":
+            # Serialises claims for this user until the transaction ends.
+            conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": 7_000_000_000 + int(user_id)})
+        busy = conn.execute(select(func.count()).select_from(send_jobs).where(
+            send_jobs.c.user_id == user_id, send_jobs.c.id != int(job_id),
+            send_jobs.c.status.in_(["pending", "running"]),
+            send_jobs.c.worker_id.is_not(None), send_jobs.c.worker_id != worker_id,
+            send_jobs.c.heartbeat_at >= stale_before)).scalar_one()
+        if busy:
+            return False
         result = conn.execute(update(send_jobs).where(
             send_jobs.c.id == int(job_id), send_jobs.c.status.in_(["pending", "running"]),
             (send_jobs.c.worker_id.is_(None)) | (send_jobs.c.worker_id == worker_id)

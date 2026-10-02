@@ -729,6 +729,10 @@ def api_create_send_job():
         return jsonify({"ok": False, "message": "No valid emails selected."}), 400
     if not g.cfg.cv_info():
         return jsonify({"ok": False, "message": "Upload your CV in Settings before sending."})
+    cap = max(1, g.cfg.int_setting("MAX_EMAILS_PER_DAY", 20))
+    if data().count_sent_today() >= cap:
+        return jsonify({"ok": False, "message": f"You've reached today's limit of {cap} emails — "
+                        "nothing was sent. Send again tomorrow, or raise the limit in Settings → Sending pace."})
     job_id, queued_ids = data().create_send_job(app_ids)
     if not queued_ids:
         return jsonify({"ok": False, "message": "None of the selected emails are ready to send "
@@ -1159,10 +1163,11 @@ def _store_google_token(cfg, creds, email: str, granted: set) -> bool:
         cfg.set_secret("GOOGLE_TOKEN", json.dumps(data))
     else:
         google_auth_helper.save_credentials(cfg, creds, email)
-    updates = {"GMAIL_ADDRESS": email}
+    # Only when Gmail is (or becomes) the way this person sends: someone who
+    # sends through SMTP or Outlook keeps the From address that matches the
+    # server they log in to.
     if cfg.get("MAIL_METHOD") in ("", "oauth"):
-        updates["MAIL_METHOD"] = "oauth"
-    cfg.set_many(updates)
+        cfg.set_many({"GMAIL_ADDRESS": email, "MAIL_METHOD": "oauth"})
     return True
 
 
@@ -1195,22 +1200,29 @@ def _finish_google_login(creds, granted: set):
         mode = accounts.signup_mode()
         if mode == "closed":
             return fail("Sign-up is closed on this platform — ask the administrator for an account.")
-        import secrets as _secrets
         # Google has verified who owns this address, so the account is ready
         # at once and the visitor lands inside the app. The approval queue
         # is for password sign-ups, whose address nobody has checked.
-        uid = accounts.create_user(email, _secrets.token_urlsafe(32), full_name=claims.get("name") or "",
-                                   status="active")
+        uid = accounts.create_user(email, None, full_name=claims.get("name") or "",
+                                   status="active", email_verified=True)
         accounts.audit("register_google", target=uid, ip=security.client_ip(),
                        detail={"status": "active", "signup_mode": mode})
         user = accounts.get_user(uid)
         session["welcome"] = True
-    cfg = UserConfig(user["id"], user["role"])
-    sending = _store_google_token(cfg, creds, email, granted)
+    if accounts.claim_by_oauth(user["id"]):
+        # Someone registered this address with a password before its owner
+        # proved it — that password no longer works.
+        accounts.audit("unverified_password_removed", target=user["id"], ip=security.client_ip())
+        flash("For your safety, the password this account was created with has been removed: "
+              "nobody had confirmed the address before. Set a new one any time in Settings → Account.",
+              "warning")
     if user["status"] == "pending":
         return render_template("auth/register_done.html", pending=True)
     if user["status"] != "active":
         return fail("This account is suspended. Contact the administrator.")
+    # The mailbox is connected only to an account that may be used.
+    cfg = UserConfig(user["id"], user["role"])
+    sending = _store_google_token(cfg, creds, email, granted)
     # Signing in with Google proves the identity: a pending temporary
     # password is no longer needed.
     accounts.update_user(user["id"], failed_logins=0, locked_until=None, must_change_password=0,

@@ -159,11 +159,19 @@ def _finish_login(token: dict, who: dict, granted: set):
             return fail("Sign-up is closed on this platform — ask the administrator for an account.")
         # Microsoft has verified the sign-in name (an organisation can only
         # use domains it has proven it owns), so the account is ready at once.
-        uid = accounts.create_user(email, secrets.token_urlsafe(32), full_name=who["name"], status="active")
+        uid = accounts.create_user(email, None, full_name=who["name"], status="active",
+                                   email_verified=True)
         accounts.audit("register_microsoft", target=uid, ip=security.client_ip(),
                        detail={"status": "active", "signup_mode": mode})
         user = accounts.get_user(uid)
         session["welcome"] = True
+    if accounts.claim_by_oauth(user["id"]):
+        # Someone registered this address with a password before its owner
+        # proved it — that password no longer works.
+        accounts.audit("unverified_password_removed", target=user["id"], ip=security.client_ip())
+        flash("For your safety, the password this account was created with has been removed: "
+              "nobody had confirmed the address before. Set a new one any time in Settings → Account.",
+              "warning")
     if user["status"] == "pending":
         return render_template("auth/register_done.html", pending=True)
     if user["status"] != "active":

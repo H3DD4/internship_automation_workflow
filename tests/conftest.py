@@ -15,6 +15,9 @@ import sys
 from pathlib import Path
 
 # ---- Environment first: nothing below may see the developer's .env values.
+# python-dotenv skips the real .env entirely (config.py would otherwise load
+# any value the lines below don't override).
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 os.environ["APP_ENV"] = "test"
 os.environ["DATABASE_URL"] = "sqlite://"            # replaced per test
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production-use-000000000000"
@@ -53,6 +56,11 @@ def isolated(tmp_path, monkeypatch):
     import database
     url = os.environ.get("TEST_DATABASE_URL")
     if url:
+        # Every table is dropped below: refuse anything that isn't plainly a
+        # test database, so a mistyped URL can't wipe real data.
+        name = url.rsplit("/", 1)[-1].split("?", 1)[0]
+        if "test" not in name.lower():
+            pytest.exit(f"TEST_DATABASE_URL must name a test database (got {name!r}).", returncode=2)
         monkeypatch.setenv("DATABASE_URL", url)
         database.dispose_engine()
         engine = database.get_engine()

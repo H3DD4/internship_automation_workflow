@@ -24,6 +24,7 @@ don't get byte-identical bodies, which spam filters penalise.
 """
 
 import hashlib
+import re
 
 from agents.draft_guard import GuardRejection, check_draft
 from language import french_de
@@ -62,6 +63,17 @@ def _select_evidence(area_ids: list, areas: list, used: set | None = None) -> tu
 # add sections ("flagship" opens with the strongest project); a spec without a
 # layout — every hand-written specializations.json — gets exactly this.
 DEFAULT_LAYOUT = ("intro", "match", "strengths", "ask", "closing")
+
+
+# "Research Research Internship" - a style's own word next to the same word
+# in the student's role.
+_REPEATED_WORD_RE = re.compile(r"\b(\w{4,})\s+\1\b", re.IGNORECASE)
+# French elides "de" before a vowel: "à partir d'avril", never "de avril".
+_FR_ELISION_RE = re.compile(r"\bde (avril|août|octobre)\b")
+
+
+def tidy_french(text: str, lang: str) -> str:
+    return _FR_ELISION_RE.sub(r"d'\1", text) if lang == "fr" else text
 
 
 def compose_email(spec: dict, research: dict, company_name: str, greeting: str,
@@ -127,7 +139,8 @@ def compose_email(spec: dict, research: dict, company_name: str, greeting: str,
 
     body = "\n\n".join([greeting, *paragraphs, email["sign_off"].format(**fields)])
     topic = chosen[0][0]["topic"] if chosen else email["default_topic"]
-    draft = {"subject": email["subject"].format(topic=topic, **fields), "body": body}
+    subject = _REPEATED_WORD_RE.sub(r"\1", email["subject"].format(topic=topic, **fields))
+    draft = {"subject": tidy_french(subject, lang), "body": tidy_french(body, lang)}
 
     try:
         check_draft(draft, facts=spec["verified_facts"], research=research,

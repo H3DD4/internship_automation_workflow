@@ -201,6 +201,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .flash { border-radius: var(--radius-sm); padding: 11px 14px; font-size: 13.5px; font-weight: 500; border-width: 1px; }
 .flash--success { background: #F1FBF3; border-color: #C5E9CE; color: #12602F; }
 .flash--error { background: #FFF5F4; border-color: #F6CFCB; color: #A8322A; }
+.flash--warning { background: #FFF8EB; border-color: #F3DDB0; color: #8A5A00; }
 .notice { border-radius: var(--radius); font-size: 13.5px; }
 .notice--warn { background: var(--amber-soft); border-color: #F3DDA6; color: var(--amber-ink); }
 a.notice:hover { background: #FFEFC9; }

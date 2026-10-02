@@ -115,16 +115,19 @@ class AccountError(ValueError):
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.$@!#%&*+-]{3,64}$")
 
 
-def create_user(email: str, password: str, *, full_name: str = "", role: str = "user",
+def create_user(email: str, password: str | None, *, full_name: str = "", role: str = "user",
                 status: str = "pending", must_change_password: bool = False,
                 approved_by: int | None = None, username: str | None = None,
-                check_password: bool = True) -> int:
+                check_password: bool = True, email_verified: bool = False) -> int:
+    """`password=None` makes an account that signs in with Google/Microsoft
+    only until its owner sets a password; `email_verified` records that the
+    sign-in provider proved the address."""
     email = normalize_email(email)
     if not valid_email(email):
         raise AccountError("Enter a valid email address.")
     if username is not None and not USERNAME_RE.match(username):
         raise AccountError("A username is 3–64 letters, digits or symbols, without spaces.")
-    problem = password_problem(password, email) if check_password else None
+    problem = password_problem(password, email) if check_password and password is not None else None
     if problem:
         raise AccountError(problem)
     if role not in ROLES or status not in STATUSES:
@@ -133,11 +136,12 @@ def create_user(email: str, password: str, *, full_name: str = "", role: str = "
     try:
         with database.tx() as conn:
             return conn.execute(users.insert().values(
-                email=email, username=username, password_hash=hash_password(password),
+                email=email, username=username,
+                password_hash=hash_password(password) if password is not None else "",
                 full_name=(full_name or "").strip()[:200], role=role, status=status,
                 must_change_password=1 if must_change_password else 0, created_at=now,
                 updated_at=now, approved_at=now if status == "active" else None,
-                approved_by=approved_by,
+                approved_by=approved_by, email_verified_at=now if email_verified else None,
             ).returning(users.c.id)).scalar_one()
     except IntegrityError as exc:
         raise AccountError("An account with this email already exists.") from exc
@@ -222,6 +226,30 @@ def update_user(user_id: int, **fields) -> None:
             conn.execute(update(users).where(users.c.id == int(user_id)).values(**fields))
     except IntegrityError as exc:
         raise AccountError("An account with this email already exists.") from exc
+
+
+def has_password(user: dict | None) -> bool:
+    """False for accounts that sign in with Google/Microsoft only."""
+    return bool(user and user.get("password_hash"))
+
+
+def claim_by_oauth(user_id: int) -> bool:
+    """Google or Microsoft just proved the person signing in owns this
+    address. If nobody had proved it before, the account's password was
+    chosen by whoever registered the address — possibly someone else, who
+    could otherwise keep reading this person's CV and using their mailbox —
+    so that password and every open session are dropped. True when a
+    password was removed."""
+    user = get_user(user_id)
+    if not user or user.get("email_verified_at"):
+        return False
+    had_password = bool(user.get("password_hash"))
+    with database.tx() as conn:
+        conn.execute(update(users).where(users.c.id == int(user_id)).values(
+            password_hash="", email_verified_at=_now(), must_change_password=0,
+            failed_logins=0, locked_until=None, updated_at=_now()))
+        conn.execute(delete(auth_sessions).where(auth_sessions.c.user_id == int(user_id)))
+    return had_password
 
 
 def set_password(user_id: int, password: str, *, must_change: bool = False,

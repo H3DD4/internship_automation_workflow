@@ -270,6 +270,34 @@ def quote_on_site(quote: str, site_text: str, min_words: int = 3) -> bool:
     return len(quote.split()) >= min_words and quote in fold(site_text)
 
 
+def _fold_words(text: str) -> list:
+    return re.findall(r"[^\W\d_]+", (text or "").translate(_QUOTE_FOLD).lower())
+
+
+def quote_fits_area(quote: str, area: dict) -> bool:
+    """A quote found on the site proves the site says it, not that it is
+    about this area: a basket maker's "woven baskets for Sunday picnics" is
+    on its site but says nothing about application security. The quote must
+    share a word root with the area's own vocabulary (its name, topic and
+    keywords, English and French) — a loose test, so "wij testen de
+    beveiliging van netwerken" still fits penetration testing (test, netw…),
+    but an unrelated passage does not."""
+    vocab = set()
+    for text in [area.get("id", "").replace("_", " "), area.get("label", ""), area.get("topic", ""),
+                 *(area.get("keywords") or []), *(area.get("keywords_fr") or [])]:
+        vocab.update(_fold_words(text))
+    if not vocab:
+        return True
+    for word in _fold_words(quote):
+        if word in _STOPWORDS:
+            continue
+        if len(word) >= 4 and any(word[:4] in v for v in vocab if len(v) >= 4):
+            return True
+        if 2 <= len(word) <= 3 and word in vocab:
+            return True
+    return False
+
+
 def resolve_areas(model_areas: list, site_text: str, areas: list, lang: str = "",
                   evidence: dict | None = None) -> tuple:
     """Keep the model's area picks only when the site's own words back them
@@ -291,9 +319,11 @@ def resolve_areas(model_areas: list, site_text: str, areas: list, lang: str = ""
         if hits[area_id] >= 1:
             chosen.append(area_id)
             notes.append(f"{area_id}: model, confirmed by {hits[area_id]} keyword(s) on the site")
-        elif quote and quote_on_site(quote, site_text):
+        elif quote and quote_on_site(quote, site_text) and quote_fits_area(quote, by_id[area_id]):
             chosen.append(area_id)
             notes.append(f"{area_id}: model, backed by the site's own words: \"{quote[:120]}\"")
+        elif quote and quote_on_site(quote, site_text):
+            notes.append(f"{area_id}: the quoted passage is on the site but isn't about this area — dropped")
         else:
             notes.append(f"{area_id}: model suggested it, but nothing on the site backs it — dropped")
 
@@ -523,6 +553,10 @@ def translate_hook(client, model: str, hook: str, site_text: str) -> tuple:
     # raw strings discarded a correct translation as if it had made one up.
     if _number_values(english) - _number_values(hook):
         return hook, "kept in the original language (translation invented a number)"
+    # Same for a name: a translation that brings in a company, client or
+    # place the original never mentioned is making a new claim.
+    if unsupported_names(english, hook, site_text):
+        return hook, "kept in the original language (translation added a name)"
     # "plus de 26 000 références" passes the English-only check on the
     # original; only the translation shows it is a quantity, not their work.
     # Keeping the French wouldn't help, so the hook is dropped entirely.
@@ -537,6 +571,27 @@ def translate_hook(client, model: str, hook: str, site_text: str) -> tuple:
         return hook, "kept in the original language (translation did not reach English)"
 
     return english, "translated into English"
+
+
+_NAME_RE = re.compile(r"(?<![\w'’-])[A-Z][\w&'’.-]*[A-Z0-9][\w&'’.-]*|(?<=\s)[A-Z][a-zà-ÿ]+(?:[A-Z][\w]*)?")
+
+
+def unsupported_names(phrase: str, *sources: str) -> list:
+    """Capitalised words (names of companies, products, clients, places) in
+    `phrase` that none of `sources` contains. The first word is skipped —
+    any sentence starts with a capital. An invented client ("Nexalume
+    hospitals") is the most damaging thing a hook can say, and the
+    word-overlap ratio alone let it through."""
+    haystack = " ".join(_fold_words(" ".join(sources)))
+    names = []
+    for match in _NAME_RE.finditer(phrase or ""):
+        if match.start() == 0:
+            continue
+        word = match.group(0).strip(".'’-")
+        folded = " ".join(_fold_words(word))
+        if folded and f" {folded} " not in f" {haystack} ":
+            names.append(word)
+    return names
 
 
 def verify_hook(hook: str, evidence: str, site_text: str) -> tuple:
@@ -565,8 +620,15 @@ def verify_hook(hook: str, evidence: str, site_text: str) -> tuple:
     if ratio < 0.6:
         return "", f"only {ratio:.0%} of its words appear on the site"
 
-    if len(_content_words(evidence)) < 3 or support_ratio(evidence, site_text) < 0.8:
-        return "", "its quoted evidence isn't on the site"
+    names = unsupported_names(hook, site_text)
+    if names:
+        return "", f"names {', '.join(names[:3])} that the site doesn't mention"
+
+    # The evidence must be a real quotation — a passage that shares most of
+    # its words with the site but was put together by the model proves
+    # nothing.
+    if len(_content_words(evidence)) < 3 or not quote_on_site(evidence, site_text):
+        return "", "its quoted evidence isn't on the site word for word"
 
     return hook, "grounded"
 
