@@ -369,8 +369,12 @@ def _table_context(page: int, status_param: str, search_param: str, limit: int =
 def index():
     if g.user is None:
         import google_auth_helper
+        import email_templates
+        # The styles, their benchmarks and sources come from the same guide
+        # the Profile page shows, so the landing page can't promise more.
         return render_template("landing.html", google=google_auth_helper.oauth_is_configured(),
-                               year=date.today().year)
+                               year=date.today().year, styles=email_templates.template_choices("en"),
+                               rules=email_templates.proven_rules("en"))
     page =max(1, request.args.get("page", 1, type=int))
     status_param = request.args.get("status", "").strip()[:40]
     search_param = request.args.get("q", "").strip()[:120]

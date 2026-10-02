@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% set bare = true %}
 {% from "_brand.html" import logo, mark with context %}
-{% block title %}Ntern — internship applications that sound like you{% endblock %}
-{% block head %}<link rel="stylesheet" href="{{ asset('landing.css') }}">{% endblock %}
+{% block title %}Ntern — hundreds of internship applications, every one personal{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ asset('landing.css') }}">
+<script src="{{ asset('landing.js') }}" defer></script>{% endblock %}
 
 {% macro check() %}<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7"/><path d="m5.2 8.2 1.9 1.9 3.7-4"/></svg>{% endmacro %}
 {% macro arrow() %}<svg class="lp-arrow" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg>{% endmacro %}
@@ -19,10 +20,10 @@
     <div class="lp-wrap lp-nav__inner">
       <a class="lp-nav__brand" href="{{ url_for('index') }}" aria-label="Ntern home">{{ logo(28) }}</a>
       <nav class="lp-nav__links" aria-label="Sections">
-        <a href="#product">Product</a>
+        <a href="#quality">Quality</a>
         <a href="#workflow">How it works</a>
-        <a href="#grounded">Accuracy</a>
-        <a href="#security">Security</a>
+        <a href="#styles">Email styles</a>
+        <a href="#inbox">Deliverability</a>
         <a href="#faq">FAQ</a>
       </nav>
       <div class="lp-nav__cta">
@@ -36,10 +37,10 @@
     {# ------------------------------------------------------------- hero #}
     <section class="lp-hero">
       <div class="lp-wrap lp-hero__inner">
-        <span class="lp-pill"><span class="lp-pill__dot"></span>For students applying to internships</span>
-        <h1>Land the internship with emails that <span class="lp-accent">sound like you</span>.</h1>
-        <p class="lp-lead">Ntern reads each company's website, matches it to your CV and writes a personal application — in English or French. You review it, then send from your own Gmail.</p>
-        <div class="lp-hero__cta">
+        <span class="lp-pill lp-rise"><span class="lp-pill__dot"></span>AI prepares. You decide.</span>
+        <h1 class="lp-rise lp-rise--2">Hundreds of applications. <span class="lp-accent">Every one personal.</span></h1>
+        <p class="lp-lead lp-rise lp-rise--3">Automation usually trades quality for quantity. Ntern gives you both: it reads each company's website, matches it to your CV and prepares a ready-to-send email. Then you review, edit, change the style — and send only what you like.</p>
+        <div class="lp-hero__cta lp-rise lp-rise--4">
           <a class="button button--primary button--lg" href="{{ url_for('auth.register') }}">Get started for free</a>
           {% if google %}
           <a class="button button--lg lp-google" href="{{ url_for('auth_google') }}">{{ gicon() }} Continue with Google</a>
@@ -47,10 +48,10 @@
           <a class="button button--lg" href="#workflow">See how it works</a>
           {% endif %}
         </div>
-        <ul class="lp-chips">
+        <ul class="lp-chips lp-rise lp-rise--5">
           <li>{{ check() }} Nothing sent without your review</li>
-          <li>{{ check() }} Your own Gmail and AI key</li>
-          <li>{{ check() }} English &amp; French</li>
+          <li>{{ check() }} {{ styles | length }} research-backed email styles</li>
+          <li>{{ check() }} Language picked for each company</li>
         </ul>
       </div>
     </section>
@@ -66,18 +67,18 @@
             <span class="lp-window__tab">Settings</span>
           </div>
           <div class="lp-funnel">
-            <div><span class="lp-dot lp-dot--prep"></span>To prepare<strong>64</strong></div>
-            <div class="is-active"><span class="lp-dot lp-dot--ready"></span>Ready to review<strong>142</strong></div>
+            <div><span class="lp-dot lp-dot--prep"></span>To prepare<strong data-count="64">64</strong></div>
+            <div class="is-active"><span class="lp-dot lp-dot--ready"></span>Ready to review<strong data-count="142">142</strong></div>
             <div><span class="lp-dot lp-dot--sending"></span>Sending<strong>3</strong></div>
-            <div><span class="lp-dot lp-dot--sent"></span>Sent<strong>38</strong></div>
+            <div><span class="lp-dot lp-dot--sent"></span>Sent<strong data-count="38">38</strong></div>
             <div><span class="lp-dot lp-dot--problem"></span>Problems<strong>0</strong></div>
           </div>
           <div class="lp-rows">
             <div class="lp-row lp-row--head"><span>Company</span><span>Status</span><span>Subject line</span><span></span></div>
             <div class="lp-row"><span><b>Northwind</b><i>careers@northwind.io</i></span><span><em class="lp-status lp-status--ready">Ready</em></span><span><u>EN</u> End-of-Study Internship — Security Operations</span><span><em class="lp-btn">Send</em></span></div>
             <div class="lp-row"><span><b>CyberLyon</b><i>rh@cyberlyon.fr</i></span><span><em class="lp-status lp-status--ready">Ready</em></span><span><u class="is-fr">FR</u> Stage de fin d'études — Tests d'intrusion</span><span><em class="lp-btn">Send</em></span></div>
-            <div class="lp-row"><span><b>Helio Labs</b><i>jobs@heliolabs.com</i></span><span><em class="lp-status lp-status--sent">Sent</em></span><span><u>EN</u> Internship application — Detection Engineering</span><span><em class="lp-view">View</em></span></div>
-            <div class="lp-row"><span><b>Atelier Nord</b><i>contact@ateliernord.fr</i></span><span><em class="lp-status lp-status--write">Writing</em></span><span class="lp-skeleton"></span><span><em class="lp-view">View</em></span></div>
+            <div class="lp-row"><span><b>Helio Labs</b><i>jobs@heliolabs.com</i></span><span><em class="lp-status lp-status--sent">Sent</em></span><span><u>EN</u> Quick call about detection engineering?</span><span><em class="lp-view">View</em></span></div>
+            <div class="lp-row"><span><b>Atelier Nord</b><i>contact@ateliernord.fr</i></span><span class="lp-cycle"><em class="lp-status lp-status--write">Writing</em><em class="lp-status lp-status--ready">Ready</em></span><span class="lp-cycle lp-cycle--text"><i class="lp-skeleton"></i><span><u class="is-fr">FR</u> Candidature spontanée — Cloud</span></span><span><em class="lp-view">View</em></span></div>
             <div class="lp-row"><span><b>Brightwave</b><i>talent@brightwave.co</i></span><span><em class="lp-status lp-status--research">Researching</em></span><span class="lp-skeleton lp-skeleton--short"></span><span><em class="lp-view">View</em></span></div>
           </div>
         </div>
@@ -97,51 +98,67 @@
       </div>
       <div class="lp-stage__foot">
         <div>
-          <strong>Everything you need to apply with confidence</strong>
-          <span>Research, write, review and send — without juggling tabs, templates and spreadsheets.</span>
+          <strong>A whole list prepared — and every email still yours to judge</strong>
+          <span>Research, write, review and send in one place, without juggling tabs, templates and spreadsheets.</span>
         </div>
         <a class="button button--primary" href="{{ url_for('auth.register') }}">Start for free {{ arrow() }}</a>
       </div>
     </section>
 
-    {# -------------------------------------------------------- statement #}
-    <section class="lp-wrap lp-statement">
-      <h2>Send <b>personal applications</b>, at the pace of a mailing list —
-        <span class="lp-tag"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>in English</span>,
-        <span class="lp-tag lp-tag--amber"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>en français</span>
-        or <span class="lp-tag lp-tag--navy"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="m2.5 4.5 5.5 4 5.5-4"/></svg>from your own Gmail</span>.
-      </h2>
-      <div class="lp-statement__cols">
-        <p><b>Research.</b> Every company's site is read for what they actually do, then quoted word for word so your interest is specific.</p>
-        <p><b>Writing.</b> Five writing styles, each in two languages, built only from the experience on your CV.</p>
-        <p><b>Sending.</b> Paced, capped per day and tracked — bounced addresses turn red so you know what really arrived.</p>
+    {# --------------------------------------------------- quantity + quality #}
+    <section class="lp-wrap lp-section lp-qq" id="quality">
+      <div class="lp-head" data-reveal>
+        <span class="lp-pill lp-pill--plain">Quantity and quality</span>
+        <h2><s>Quantity over quality?</s><br><b>Ntern gives you both.</b></h2>
+        <p>Automation usually sends the same text to everyone. Applying to many companies raises your chances, but writing each email properly is what gets replies — until now you had to choose.</p>
+      </div>
+      <div class="lp-qq__grid">
+        <div class="lp-qq__card lp-qq__card--blue" data-reveal>
+          <span class="lp-qq__label">Quantity</span>
+          <h3>Your whole list, prepared while you do something else</h3>
+          <ul>
+            <li>Import hundreds of companies from a CSV or Excel file — every bad row explained.</li>
+            <li>Research and drafting run in the background, several companies at a time.</li>
+            <li>Send a whole selection in one click, paced and capped for you.</li>
+          </ul>
+        </div>
+        <div class="lp-qq__plus" aria-hidden="true">+</div>
+        <div class="lp-qq__card lp-qq__card--amber" data-reveal>
+          <span class="lp-qq__label">Quality</span>
+          <h3>Every email written for one company, and only that one</h3>
+          <ul>
+            <li>Each company's website is read and quoted word for word — no generic praise.</li>
+            <li>Its work is matched to the experience on your CV; every number and name is checked.</li>
+            <li>The wording follows styles built on studies of millions of real emails.</li>
+          </ul>
+        </div>
       </div>
     </section>
 
     {# --------------------------------------------------------- workflow #}
     <section class="lp-band" id="workflow">
       <div class="lp-wrap">
-        <div class="lp-head">
-          <span class="lp-pill lp-pill--plain">End-to-end workflow</span>
-          <h2>From a list of companies to sent applications</h2>
-          <p>Import hundreds of companies once. Ntern prepares a tailored draft for each one while you do something else.</p>
+        <div class="lp-head" data-reveal>
+          <span class="lp-pill lp-pill--plain">AI that helps, not replaces</span>
+          <h2>Ntern does the groundwork. <b>You make every call.</b></h2>
+          <p>Research, matching and first drafts are done for you. Reading, editing, choosing and sending stay in your hands — nothing leaves without you.</p>
           <nav class="lp-tabs" aria-label="Workflow steps">
             <a href="#step-research"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>Research</a>
-            <a href="#step-write"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13h10M4 10.5 10.8 3.7a1.2 1.2 0 0 1 1.7 1.7L5.7 12.2 3.5 12.5z"/></svg>Write</a>
+            <a href="#step-write"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13h10M4 10.5 10.8 3.7a1.2 1.2 0 0 1 1.7 1.7L5.7 12.2 3.5 12.5z"/></svg>Review &amp; edit</a>
             <a href="#step-send"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 2 7 9M14 2 9.5 14 7 9 2 6.5z"/></svg>Send</a>
           </nav>
         </div>
 
-        <article class="lp-feature" id="step-research">
+        <article class="lp-feature" id="step-research" data-reveal>
           <div class="lp-feature__text">
-            <span class="lp-kicker">Research</span>
+            <span class="lp-kicker">1 · Ntern prepares</span>
             <h3>Know every company <b>before you write to it.</b></h3>
-            <p>Bring a CSV or Excel file with an email column. Ntern checks the format, tells you exactly which rows need fixing, and reads each company's website.</p>
+            <p>Bring a CSV or Excel file with an email column. Ntern checks the format, reads each company's website, finds what matches your CV — and writes in the company's own language.</p>
             <a class="lp-link" href="{{ url_for('auth.register') }}">Start for free {{ arrow() }}</a>
             <dl class="lp-sub">
-              <div><dt>Format checker</dt><dd>Clear errors per row instead of a silent bad import.</dd></div>
-              <div><dt>Company research</dt><dd>What they do, in their own words, with the source page.</dd></div>
-              <div><dt>Language detection</dt><dd>French sites get French emails; everyone else gets English.</dd></div>
+              <div><dt>Company research</dt><dd>What they do, in their own words, with the page it came from.</dd></div>
+              <div><dt>Automatic language</dt><dd>A French website gets a French email, everyone else English — switch any single email with one click.</dd></div>
+              <div><dt>Honest matching</dt><dd>Companies that match nothing on your CV are set aside, not dressed up.</dd></div>
             </dl>
           </div>
           <div class="lp-feature__visual lp-feature__visual--blue" aria-hidden="true">
@@ -155,41 +172,42 @@
           </div>
         </article>
 
-        <article class="lp-feature" id="step-write">
+        <article class="lp-feature" id="step-write" data-reveal>
           <div class="lp-feature__text">
-            <span class="lp-kicker">Write</span>
-            <h3>Emails written from your CV, <b>in your voice.</b></h3>
-            <p>Upload your CV once. Ntern drafts your profile in both languages, you check every sentence, then pick the style that sounds like you.</p>
+            <span class="lp-kicker">2 · You review &amp; edit</span>
+            <h3>Many drafts ready at once. <b>Keep what fits you.</b></h3>
+            <p>With a whole list prepared, you can read drafts side by side, star the ones you like, rewrite any sentence, or switch an email to another style in one click — no new research needed.</p>
             <a class="lp-link" href="{{ url_for('auth.register') }}">Start for free {{ arrow() }}</a>
             <dl class="lp-sub">
-              <div><dt>Five writing styles</dt><dd>Specialist, concise, project-led, formal or research lab.</dd></div>
-              <div><dt>EN ⇄ FR switch</dt><dd>Change the language of any single email with one click.</dd></div>
-              <div><dt>Edit in place</dt><dd>Every draft stays yours to rewrite before it leaves.</dd></div>
+              <div><dt>Edit in place</dt><dd>Every subject and sentence is yours to change before it leaves.</dd></div>
+              <div><dt>Switch the style instantly</dt><dd>See the same company as a call request, a formal letter or a short note.</dd></div>
+              <div><dt>Your own letter</dt><dd>Prefer your own words? Ntern keeps them and fills in what is specific to each company.</dd></div>
             </dl>
           </div>
           <div class="lp-feature__visual lp-feature__visual--amber" aria-hidden="true">
-            <div class="lp-card lp-styles">
-              <span class="is-on">Specialist</span><span>Concise</span><span>Project-led</span><span>Formal</span><span>Research lab</span>
+            <div class="lp-card lp-styles" data-style-tabs>
+              <span class="is-on" data-style="0">Specialist</span><span data-style="1">Short &amp; direct</span><span data-style="2">Call request</span><span data-style="3">Spontaneous</span>
             </div>
             <div class="lp-card lp-mail">
-              <div class="lp-mail__head"><span>To</span><b>rh@cyberlyon.fr</b><span>Subject</span><b>Stage de fin d'études — Tests d'intrusion</b></div>
-              <p>Madame, Monsieur,</p>
-              <p>Ce qui m'intéresse le plus chez CyberLyon, c'est votre travail sur <mark>les tests d'intrusion pour vos clients industriels</mark>.</p>
+              <div class="lp-mail__head"><span>To</span><b>careers@northwind.io</b><span>Subject</span><b data-demo="subject">End-of-Study Internship — Security Operations</b></div>
+              <p data-demo="greeting">Dear Northwind Team,</p>
+              <p data-demo="body">What interests me most about Northwind is your work on <mark>managed detection and response for mid-sized banks</mark>.</p>
               <div class="lp-mail__lines"><i></i><i></i><i></i></div>
+              <div class="lp-mail__edit"><span>Edit</span><span class="is-on">Preview</span></div>
             </div>
           </div>
         </article>
 
-        <article class="lp-feature" id="step-send">
+        <article class="lp-feature" id="step-send" data-reveal>
           <div class="lp-feature__text">
-            <span class="lp-kicker">Send</span>
-            <h3>Review, then send <b>from your own inbox.</b></h3>
-            <p>Nothing leaves without you. Pick the drafts you like and Ntern sends them from your Gmail with a random gap and a daily cap.</p>
+            <span class="lp-kicker">3 · You send</span>
+            <h3>Send what you chose, <b>from your own inbox.</b></h3>
+            <p>Pick the drafts you're happy with. Ntern sends them from your Gmail, Outlook or school mailbox, one by one, with human-like gaps and a daily limit you set.</p>
             <a class="lp-link" href="{{ url_for('auth.register') }}">Start for free {{ arrow() }}</a>
             <dl class="lp-sub">
-              <div><dt>One-click Gmail</dt><dd>Sign in with Google and sending is connected.</dd></div>
-              <div><dt>Safe pacing</dt><dd>Human-like gaps keep your address in good standing.</dd></div>
-              <div><dt>Bounce tracking</dt><dd>Dead mailboxes are detected in your inbox and flagged.</dd></div>
+              <div><dt>Your mailbox</dt><dd>Gmail and Outlook in one click, or any school mail server.</dd></div>
+              <div><dt>Paced, not blasted</dt><dd>A random gap between emails and a daily cap.</dd></div>
+              <div><dt>Bounce tracking</dt><dd>Dead addresses are found in your inbox and flagged.</dd></div>
             </dl>
           </div>
           <div class="lp-feature__visual lp-feature__visual--green" aria-hidden="true">
@@ -206,16 +224,71 @@
       </div>
     </section>
 
-    {# --------------------------------------------------------- grounded #}
-    <section class="lp-dark" id="grounded">
+    {# ----------------------------------------------------------- styles #}
+    <section class="lp-wrap lp-section" id="styles">
+      <div class="lp-head" data-reveal>
+        <span class="lp-pill lp-pill--plain">Built on research</span>
+        <h2>{{ styles | length }} email styles, <b>each backed by real numbers</b></h2>
+        <p>We studied hiring guides, recruiter surveys and outreach studies covering millions of emails. Each style says when it works best and why — pick one for your profile, or switch any single email.</p>
+      </div>
+      <div class="lp-styles-grid">
+        {% for s in styles %}
+        <article class="lp-style" data-reveal style="--d: {{ loop.index0 % 3 }}">
+          <h3>{{ s.name }}</h3>
+          <p>{{ s.description }}</p>
+          <p class="lp-style__best"><b>Best for</b> {{ s.best_for }}</p>
+          {% if s.evidence %}
+          <div class="lp-style__proof">
+            <p>{{ s.evidence[0].text }}</p>
+            <a href="{{ s.evidence[0].url }}" target="_blank" rel="noopener noreferrer">{{ s.evidence[0].source }}</a>
+          </div>
+          {% endif %}
+        </article>
+        {% endfor %}
+        <article class="lp-style lp-style--own" data-reveal style="--d: {{ styles | length % 3 }}">
+          <h3>Your own letter</h3>
+          <p>Already have wording you love? Keep it. Ntern uses your sentences and only fills in what is specific to each company — what they do, and how it matches you.</p>
+          <p class="lp-style__best"><b>Best for</b> Students who want every word to be theirs.</p>
+        </article>
+      </div>
+      {% if rules %}
+      <div class="lp-rules" data-reveal>
+        <b>What the data says</b>
+        <ul>
+          {% for r in rules if "follow" not in r.text | lower %}{% if loop.index <= 3 %}<li>{{ r.text }} <a href="{{ r.url }}" target="_blank" rel="noopener noreferrer">{{ r.source }}</a></li>{% endif %}{% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    </section>
+
+    {# --------------------------------------------------------- deliverability #}
+    <section class="lp-dark" id="inbox">
       <div class="lp-wrap lp-dark__grid">
-        <div>
-          <span class="lp-pill lp-pill--dark">Grounded in your CV</span>
-          <h2>Recruiters notice invented claims. <span>We make sure there are none.</span></h2>
-          <p>When your profile is drafted, every number and every name is compared with your CV. Anything that doesn't match is flagged until you fix it or confirm it's true — and each email is checked again before it's marked ready.</p>
-          <a class="button button--light button--lg" href="{{ url_for('auth.register') }}">Try it with your CV</a>
+        <div data-reveal>
+          <span class="lp-pill lp-pill--dark">Out of the spam folder</span>
+          <h2>Many emails, <span>none of them looking like a mass mailing.</span></h2>
+          <p>Spam filters punish identical blasts from unknown servers. Ntern sends the opposite: one personal, plain-text email at a time, from the mailbox you already use.</p>
+          <a class="button button--light button--lg" href="{{ url_for('auth.register') }}">Start sending the right way</a>
         </div>
-        <div class="lp-flags" aria-hidden="true">
+        <ul class="lp-shield" data-reveal>
+          <li><b>Your own address</b><span>Sent from your Gmail, Outlook or school account — never from a shared server.</span></li>
+          <li><b>Every email is different</b><span>Each one is written for its company, so no two look alike.</span></li>
+          <li><b>Human pace</b><span>Random gaps between sends and a daily limit you control.</span></li>
+          <li><b>Plain and clean</b><span>No tracking pixels, no link shorteners, no HTML tricks.</span></li>
+          <li><b>Bounces caught</b><span>Dead addresses are detected and flagged so you stop writing to them.</span></li>
+        </ul>
+      </div>
+    </section>
+
+    {# --------------------------------------------------------- grounded #}
+    <section class="lp-wrap lp-section" id="grounded">
+      <div class="lp-split lp-split--center">
+        <div class="lp-head lp-head--left" data-reveal>
+          <span class="lp-pill lp-pill--plain">Grounded in your CV</span>
+          <h2>Recruiters notice invented claims. <b>There are none.</b></h2>
+          <p>When your profile is drafted, every number and every name is compared with your CV. Anything that doesn't match is flagged until you fix it or confirm it — and each email is checked again before it's marked ready.</p>
+        </div>
+        <div class="lp-flags lp-flags--light" aria-hidden="true" data-reveal>
           <div class="lp-flag lp-flag--ok"><u>EN</u><p>At KPMG I built a valuation model for 12 SMEs.</p><span>{{ check() }} Matches your CV</span></div>
           <div class="lp-flag lp-flag--warn"><u>EN</u><p>I led <mark>45</mark> analysts at a global bank.</p><span>“45” isn't in your CV — fix or confirm</span></div>
           <div class="lp-flag lp-flag--ok"><u class="is-fr">FR</u><p>Chez KPMG, j'ai construit un modèle d'évaluation pour 12 PME.</p><span>{{ check() }} Matches your CV</span></div>
@@ -224,45 +297,45 @@
     </section>
 
     {# --------------------------------------------------------- security #}
-    <section class="lp-wrap lp-section" id="security">
-      <div class="lp-split">
-        <div class="lp-head lp-head--left">
+    <section class="lp-band lp-band--plain" id="security">
+      <div class="lp-wrap lp-split">
+        <div class="lp-head lp-head--left" data-reveal>
           <span class="lp-pill lp-pill--plain">Security</span>
           <h2>Your account is yours alone</h2>
           <p>Ntern was built for many students at once. Each account is sealed off from every other one.</p>
         </div>
-        <ul class="lp-facts">
+        <ul class="lp-facts" data-reveal>
           <li><b>Separate workspaces</b><span>Your companies, drafts and CV are never visible to another user.</span></li>
           <li><b>Encrypted secrets</b><span>AI keys and mail tokens are encrypted at rest and never shown again.</span></li>
           <li><b>Hashed passwords</b><span>Stored with Argon2id — nobody, including the administrator, can read them.</span></li>
-          <li><b>Your key, your mailbox</b><span>You bring your own AI key and send from your own Gmail.</span></li>
+          <li><b>Your key, your mailbox</b><span>You bring your own AI key and send from your own address.</span></li>
         </ul>
       </div>
     </section>
 
     {# -------------------------------------------------------------- faq #}
-    <section class="lp-band lp-band--plain" id="faq">
-      <div class="lp-wrap lp-faq-wrap">
-        <div class="lp-head">
-          <span class="lp-pill lp-pill--plain">FAQ</span>
-          <h2>Questions, answered</h2>
-        </div>
-        <div class="lp-faq">
-          <details><summary>Does Ntern send emails on its own?</summary><p>No. It prepares drafts. You read them, edit them if you want, and choose which ones to send.</p></details>
-          <details><summary>What do I need to start?</summary><p>Your CV, a list of companies with an email address each, and an AI key — Groq offers a free tier that is enough to begin.</p></details>
-          <details><summary>How do I create an account?</summary><p>{% if google %}Click “Continue with Google”. Your account is created, you are signed in, and your Gmail is connected for sending — all in one step. You can also sign up with an email and a password.{% else %}Sign up with your email and a password, then connect your Gmail in Settings.{% endif %}</p></details>
-          <details><summary>Which languages are supported?</summary><p>English and French. Ntern picks the language from each company's website, and you can switch any single email with the EN / FR button.</p></details>
-          <details><summary>What file format does my company list need?</summary><p>A CSV or Excel file with a company name and an email column. A template is provided, and the import tells you exactly which rows need fixing.</p></details>
-          <details><summary>Can other people see my data?</summary><p>No. Every account has its own workspace, keys and mailbox connection.</p></details>
-        </div>
+    <section class="lp-wrap lp-section lp-faq-wrap" id="faq">
+      <div class="lp-head" data-reveal>
+        <span class="lp-pill lp-pill--plain">FAQ</span>
+        <h2>Questions, answered</h2>
+      </div>
+      <div class="lp-faq" data-reveal>
+        <details><summary>Does Ntern send emails on its own?</summary><p>No. It prepares drafts. You read them, edit them if you want, and choose which ones to send.</p></details>
+        <details><summary>Isn't automation bad for quality?</summary><p>Usually, yes — the same text is sent to everyone. Ntern researches each company separately, matches it to your CV and checks every claim, so a long list still gets personal emails.</p></details>
+        <details><summary>Can I use my own cover letter?</summary><p>Yes. Keep your own wording and Ntern fills in only what is specific to each company. You can also pick one of the {{ styles | length }} styles, or switch a single email to another style at any time.</p></details>
+        <details><summary>Will my emails end up in spam?</summary><p>Ntern does what keeps you out of it: it sends from your own mailbox, one plain-text email at a time, with random gaps and a daily limit, and every email is different. It also flags addresses that bounce.</p></details>
+        <details><summary>Which languages are supported?</summary><p>English and French. Ntern picks the language from each company's website automatically, and you can switch any single email with the EN / FR button.</p></details>
+        <details><summary>What do I need to start?</summary><p>Your CV, a list of companies with an email address each, and an AI key — several providers offer a free tier that is enough to begin.</p></details>
+        <details><summary>How do I create an account?</summary><p>{% if google %}Click “Continue with Google”. Your account is created, you are signed in, and your Gmail is connected for sending — all in one step. You can also sign up with an email and a password.{% else %}Sign up with your email and a password, then connect your mailbox in Settings.{% endif %}</p></details>
+        <details><summary>Can other people see my data?</summary><p>No. Every account has its own workspace, keys and mailbox connection.</p></details>
       </div>
     </section>
 
     {# -------------------------------------------------------------- cta #}
     <section class="lp-wrap lp-cta-wrap">
-      <div class="lp-cta">
+      <div class="lp-cta" data-reveal>
         {{ mark(56, "cta") }}
-        <h2>Your next internship starts with a better first email.</h2>
+        <h2>Apply to more companies. <b>Sound like yourself in every email.</b></h2>
         <p>Create your account, upload your CV, and review your first drafts today.</p>
         <div class="lp-hero__cta">
           <a class="button button--primary button--lg" href="{{ url_for('auth.register') }}">Get started for free</a>
@@ -276,10 +349,10 @@
     <div class="lp-wrap lp-footer__inner">
       <div class="lp-footer__brand">
         {{ logo(22) }}
-        <p>Internship applications that sound like you.</p>
+        <p>Hundreds of internship applications. Every one personal.</p>
       </div>
-      <nav aria-label="Product"><b>Product</b><a href="#product">Overview</a><a href="#workflow">How it works</a><a href="#grounded">Accuracy</a></nav>
-      <nav aria-label="Trust"><b>Trust</b><a href="#security">Security</a><a href="#faq">FAQ</a></nav>
+      <nav aria-label="Product"><b>Product</b><a href="#quality">Quality</a><a href="#workflow">How it works</a><a href="#styles">Email styles</a></nav>
+      <nav aria-label="Trust"><b>Trust</b><a href="#inbox">Deliverability</a><a href="#grounded">Accuracy</a><a href="#security">Security</a><a href="#faq">FAQ</a></nav>
       <nav aria-label="Account"><b>Account</b><a href="{{ url_for('auth.login') }}">Log in</a><a href="{{ url_for('auth.register') }}">Create an account</a></nav>
     </div>
     <div class="lp-wrap lp-footer__base">© {{ year }} Ntern</div>
