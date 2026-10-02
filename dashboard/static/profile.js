@@ -9,11 +9,17 @@
   const LANG_LABEL = { en: "English", fr: "Français" };
 
   async function postJSON(url, body) {
-    const response = await fetch(url, {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
-      body: JSON.stringify(body || {}),
-    });
+    // A request that never reaches the server must say so, not fail silently.
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+        body: JSON.stringify(body || {}),
+      });
+    } catch (_) {
+      return { ok: false, message: "Couldn't reach Ntern — check your connection, reload the page and try again." };
+    }
     if (response.status === 401) { window.location.href = "/login"; return { ok: false, message: "Session ended." }; }
     try { return await response.json(); } catch (_) { return { ok: false, message: `Server error (${response.status}).` }; }
   }

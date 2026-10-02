@@ -12,17 +12,23 @@
   const csrfToken = () => (document.querySelector('meta[name="csrf-token"]') || {}).content || "";
 
   async function postJSON(url, body) {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
-      credentials: "same-origin",
-      body: JSON.stringify(body || {}),
-    });
+    // A request that never reaches the server must say so, not fail silently.
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+        credentials: "same-origin",
+        body: JSON.stringify(body || {}),
+      });
+    } catch (_) {
+      return { ok: false, message: "Couldn't reach Ntern — check your connection, reload the page and try again." };
+    }
     if (response.status === 401) {
       window.location.href = "/login?next=" + encodeURIComponent(window.location.pathname);
       return { ok: false, message: "Your session ended — sign in again." };
     }
-    return response.json();
+    try { return await response.json(); } catch (_) { return { ok: false, message: `Server error (${response.status}).` }; }
   }
 
   // ── Confirm modal ────────────────────────────────────────────────────────

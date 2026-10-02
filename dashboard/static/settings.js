@@ -6,14 +6,23 @@
   const $ = (id) => document.getElementById(id);
   const csrfToken = () => (document.querySelector('meta[name="csrf-token"]') || {}).content || "";
 
+  // A request that never reaches the server (connection dropped, the app
+  // restarting) must say so — it used to fail silently, so buttons looked dead.
+  const UNREACHABLE = "Couldn't reach Ntern — check your connection, reload the page and try again.";
+
   async function post(url, body, isForm) {
-    const response = await fetch(url, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: isForm ? { "X-CSRF-Token": csrfToken() }
-                      : { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
-      body: isForm ? body : JSON.stringify(body || {}),
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: isForm ? { "X-CSRF-Token": csrfToken() }
+                        : { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+        body: isForm ? body : JSON.stringify(body || {}),
+      });
+    } catch (_) {
+      return { ok: false, message: UNREACHABLE };
+    }
     if (response.status === 401) {
       window.location.href = "/login";
       return { ok: false, message: "Session ended." };
@@ -32,7 +41,12 @@
   // Connect a key (checked against the provider before it's saved), then
   // tick models from the provider's live list — nothing is typed by hand.
   async function getJSON(url) {
-    const response = await fetch(url, { credentials: "same-origin" });
+    let response;
+    try {
+      response = await fetch(url, { credentials: "same-origin" });
+    } catch (_) {
+      return { ok: false, models: [], message: UNREACHABLE };
+    }
     if (response.status === 401) { window.location.href = "/login"; return { ok: false, models: [] }; }
     try { return await response.json(); } catch (_) { return { ok: false, models: [], message: `Server error (${response.status}).` }; }
   }
