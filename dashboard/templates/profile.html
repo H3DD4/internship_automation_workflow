@@ -21,6 +21,53 @@
 {% endif %}
 
 <div class="profile-steps">
+  {% if facts %}
+  {% set intern = facts.get('internship') or {} %}
+  <section class="settings-card dates-card" id="dates">
+    <div class="dates-card__head">
+      <div>
+        <h2>Your internship dates</h2>
+        <p class="section-copy">Every email says when you can start. Change it here any time — instant, no AI, and only for your account.</p>
+      </div>
+      <span class="dates-card__now">Now: <strong>{{ (facts.get('start_date') or {}).get('en', '—') }}</strong>{% if intern.get('duration') %} · {{ intern.get('duration') }} months{% endif %}</span>
+    </div>
+    <form class="dates-form" method="post" action="{{ url_for('profile.save_dates') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-group">
+        <label for="dates-kind">Looking for</label>
+        <select id="dates-kind" name="kind">
+          {% for key, k in kinds.items() %}<option value="{{ key }}" {% if key == intern.get('kind', 'end_of_study') %}selected{% endif %}>{{ k.role_en }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="dates-month">Starting</label>
+        <div class="input-row">
+          <select id="dates-month" name="start_month" required>
+            {% for m in months %}<option value="{{ loop.index }}" {% if intern.get('month') == loop.index %}selected{% endif %}>{{ m }}</option>{% endfor %}
+          </select>
+          <select name="start_year" required aria-label="Start year">
+            {% for y in range(this_year, this_year + 3) %}<option value="{{ y }}" {% if intern.get('year') == y %}selected{% endif %}>{{ y }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="dates-duration">Duration (months)</label>
+        <input id="dates-duration" name="duration" type="number" min="1" max="36" value="{{ intern.get('duration') or '' }}" placeholder="Optional">
+      </div>
+      <div class="form-group dates-form__actions">
+        <label class="check-control"><input type="checkbox" name="open_to_hire" {% if intern.get('open_to_hire', True) %}checked{% endif %}> Open to staying afterwards</label>
+        <button class="button button--primary" type="submit">Save dates</button>
+      </div>
+    </form>
+    {% if ready_count %}
+    <div class="dates-card__drafts">
+      <span>Changed your dates? Your <strong>{{ ready_count }}</strong> draft{{ "s" if ready_count != 1 }} waiting for review keep{{ "s" if ready_count == 1 }} the wording {{ "they were" if ready_count != 1 else "it was" }} written with.</span>
+      <button class="button button--sm" type="button" id="rebuild-ready-btn" data-count="{{ ready_count }}">Update {{ "them" if ready_count != 1 else "it" }} with my current profile</button>
+      <span class="field-hint" id="rebuild-ready-result" aria-live="polite"></span>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
 
   {# ── 1. From the CV ──────────────────────────────────────────────── #}
   <details class="settings-card profile-step" id="step-cv" {% if not facts and mode != 'custom' %}open{% endif %}>

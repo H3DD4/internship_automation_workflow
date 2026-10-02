@@ -280,4 +280,22 @@
       $("analyze-note").textContent = "Reading your CV and drafting both languages — keep this tab open.";
     });
   }
+
+  // ── Update every draft waiting for review with the current profile ───────
+  const rebuildBtn = document.getElementById("rebuild-ready-btn");
+  if (rebuildBtn) {
+    rebuildBtn.addEventListener("click", async () => {
+      const n = rebuildBtn.dataset.count;
+      if (!window.confirm(`Rewrite your ${n} draft(s) waiting for review with your current profile and dates?\n\n` +
+          "It's instant and uses no AI, but any edits you made by hand to those drafts are replaced. " +
+          "Sent emails are never changed.")) return;
+      rebuildBtn.disabled = true;
+      rebuildBtn.textContent = "Updating…";
+      const result = document.getElementById("rebuild-ready-result");
+      const data = await postJSON("/api/drafts/rebuild-ready", {});
+      result.textContent = (data.ok ? "✓ " : "✗ ") + data.message;
+      rebuildBtn.textContent = data.ok ? "Done" : "Try again";
+      rebuildBtn.disabled = !!data.ok;
+    });
+  }
 })();

@@ -52,6 +52,7 @@ def _profile_context(profile: dict | None) -> dict:
         "kinds": profiles.INTERNSHIP_KINDS,
         "this_year": date.today().year,
         "months": profiles.MONTHS["en"],
+        "ready_count": db.for_user(g.user["id"]).get_grouped_stats().get("ready", 0),
     }
 
 
@@ -117,6 +118,55 @@ def analyze():
     flash("Your profile was drafted from your CV. Read every section, fix anything that isn't "
           "exactly right, then save.", "success")
     return redirect(url_for("profile.page") + "#editor")
+
+
+@bp.post("/profile/dates")
+def save_dates():
+    """Your internship dates on their own — instant, no AI, no re-analysis."""
+    try:
+        result = profiles.update_dates(
+            g.user["id"], kind=request.form.get("kind", "end_of_study"),
+            month=int(request.form.get("start_month") or 0), year=int(request.form.get("start_year") or 0),
+            duration_months=int(request.form.get("duration") or 0) or None,
+            open_to_hire=request.form.get("open_to_hire") == "on")
+    except (profiles.ProfileError, ValueError) as exc:
+        return security.flash_and_back(str(exc), "error", "profile.page")
+    accounts.audit("profile_dates_changed", actor=g.user["id"])
+    flash(f"Saved — new emails now say {result['new']['en']}.", "success")
+    return redirect(url_for("profile.page") + "#dates")
+
+
+@bp.post("/api/drafts/rebuild-ready")
+def rebuild_ready():
+    """Rewrite every draft waiting for review with the current profile (new
+    dates, new wording) — instant, from the saved research, no AI."""
+    import cache_store
+    import drafting
+    import pipeline
+    from agents.draft_guard import GuardRejection
+    try:
+        dcfg = drafting.load_config(g.user["id"], g.cfg)
+    except drafting.NotReady as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    d = db.for_user(g.user["id"])
+    rows, _ = d.get_applications_paginated(status="ready", limit=5000)
+    done = failed = 0
+    for app in rows:
+        research = pipeline._load_research(g.user["id"], app["email"], app) or {}
+        try:
+            draft = drafting.compose_for(dcfg, app, research, lang=app.get("language") or None)
+        except (GuardRejection, drafting.NotReady, KeyError, ValueError):
+            failed += 1
+            continue
+        cache_store.save_draft(g.user["id"], app["email"], draft)
+        d.update_application(app["id"], subject=draft["subject"], body=draft["body"],
+                             language=draft["language"], template_id=draft.get("template_id"))
+        done += 1
+    accounts.audit("drafts_rebuilt", actor=g.user["id"], detail={"done": done, "failed": failed})
+    message = f"{done} draft{'s' if done != 1 else ''} updated."
+    if failed:
+        message += f" {failed} couldn't be rebuilt and were left as they were."
+    return jsonify({"ok": True, "updated": done, "failed": failed, "message": message})
 
 
 @bp.post("/api/profile/save")

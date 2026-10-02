@@ -612,3 +612,16 @@ a.notice:hover { background: #FFEFC9; }
 .style-note p { margin: 0 0 4px; }
 .style-evidence { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; color: var(--st-sent); }
 @media (max-width: 760px) { .style-switch { grid-template-columns: 1fr; } }
+
+
+/* ------------------------------------------------- internship dates card */
+.dates-card__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 24px; flex-wrap: wrap; margin-bottom: 16px; }
+.dates-card__head h2 { margin: 0 0 4px; font-size: 18px; }
+.dates-card__now { padding: 6px 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 13px; white-space: nowrap; }
+.dates-card__now strong { font-weight: 600; }
+.dates-form { display: grid; grid-template-columns: 1fr 1.3fr 0.8fr auto; gap: 14px; align-items: end; }
+.dates-form__actions { display: flex; align-items: center; gap: 14px; }
+.dates-card__drafts { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 16px; padding: 12px 14px;
+  border: 1px solid #F3DDA6; border-radius: var(--radius-sm); background: var(--amber-soft); font-size: 13.5px; color: var(--text-2); }
+@media (max-width: 900px) { .dates-form { grid-template-columns: 1fr 1fr; } .dates-form__actions { grid-column: 1 / -1; justify-content: space-between; } }
+@media (max-width: 560px) { .dates-form { grid-template-columns: 1fr; } }

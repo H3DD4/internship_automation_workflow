@@ -21,6 +21,7 @@ the user's own answers (type, start date, duration) by internship_ask().
 from __future__ import annotations
 
 import io
+import copy
 import json
 import re
 import zipfile
@@ -148,6 +149,53 @@ def internship_ask(*, kind: str, month: int, year: int, duration_months: int | N
                          if open_to_hire else ".")
         result[lang] = sentence
     return result
+
+
+def update_dates(user_id: int, *, kind: str, month: int, year: int, duration_months: int | None,
+                 open_to_hire: bool) -> dict:
+    """Change only what the user is asking for — kind, start, duration — with
+    no AI and without touching anything else in the profile. Each user's own
+    dates; nothing here is shared.
+
+    The template styles are rebuilt from the new facts. Hand-written wording
+    keeps every word, except that the old start date ("February 2027") is
+    replaced by the new one wherever it appears in the subject and the ask.
+    Returns {"old": {...}, "new": {...}} start-date texts."""
+    profile = load(user_id) or {}
+    facts = copy.deepcopy(profile.get("facts") or {})
+    if not facts:
+        raise ProfileError("Build your profile from your CV first (step 1).")
+    if kind not in INTERNSHIP_KINDS:
+        kind = "internship"
+    duration = int(duration_months) if duration_months else None
+    if duration is not None and not 1 <= duration <= 36:
+        raise ProfileError("Pick a duration between 1 and 36 months.")
+    new_start = {lang: start_date_text(month, year, lang) for lang in LANGS}
+    old_start = dict(facts.get("start_date") or {})
+    info = INTERNSHIP_KINDS[kind]
+    facts["internship_ask"] = internship_ask(kind=kind, month=month, year=year, duration_months=duration,
+                                             degree_context=None, open_to_hire=open_to_hire)
+    facts["start_date"] = new_start
+    facts["target_role"] = {"en": info["role_en"], "fr": info["role_fr"]}
+    facts["internship"] = {"kind": kind, "month": int(month), "year": int(year), "duration": duration,
+                           "open_to_hire": bool(open_to_hire)}
+
+    template_id = profile.get("template_id") or email_templates.DEFAULT_TEMPLATE
+    if profile.get("mode") == "custom":
+        specs = {}
+        for lang in LANGS:
+            spec = copy.deepcopy(profile.get(f"spec_{lang}"))
+            if spec and old_start.get(lang) and old_start[lang] != new_start[lang]:
+                for key in ("subject", "internship_ask"):
+                    if key in spec.get("email", {}):
+                        spec["email"][key] = spec["email"][key].replace(old_start[lang], new_start[lang])
+                allowed = set(spec.get("verified_facts", {}).get("allowed_numbers") or [])
+                spec.setdefault("verified_facts", {})["allowed_numbers"] = sorted(allowed | {str(int(year))})
+            specs[lang] = spec
+        save(user_id, facts=facts, spec_en=specs["en"], spec_fr=specs["fr"])
+    else:
+        apply_template(user_id, facts, template_id)
+    return {"old": old_start, "new": new_start}
 
 
 # ---------------------------------------------------------------------------
