@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% set bare = true %}
 {% from "_brand.html" import logo, mark with context %}
-{% block title %}Internix — internship applications that sound like you{% endblock %}
+{% block title %}ntern — internship applications that sound like you{% endblock %}
 {% block head %}<link rel="stylesheet" href="{{ asset('landing.css') }}">{% endblock %}
 
 {% macro check() %}<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7"/><path d="m5.2 8.2 1.9 1.9 3.7-4"/></svg>{% endmacro %}
@@ -17,7 +17,7 @@
 
   <header class="lp-nav">
     <div class="lp-wrap lp-nav__inner">
-      <a class="lp-nav__brand" href="{{ url_for('index') }}" aria-label="Internix home">{{ logo(24) }}</a>
+      <a class="lp-nav__brand" href="{{ url_for('index') }}" aria-label="ntern home">{{ logo(24) }}</a>
       <nav class="lp-nav__links" aria-label="Sections">
         <a href="#product">Product</a>
         <a href="#workflow">How it works</a>
@@ -38,7 +38,7 @@
       <div class="lp-wrap lp-hero__inner">
         <span class="lp-pill"><span class="lp-pill__dot"></span>For students applying to internships</span>
         <h1>Land the internship with emails that <span class="lp-accent">sound like you</span>.</h1>
-        <p class="lp-lead">Internix reads each company's website, matches it to your CV and writes a personal application — in English or French. You review it, then send from your own Gmail.</p>
+        <p class="lp-lead">ntern reads each company's website, matches it to your CV and writes a personal application — in English or French. You review it, then send from your own Gmail.</p>
         <div class="lp-hero__cta">
           <a class="button button--primary button--lg" href="{{ url_for('auth.register') }}">Get started for free</a>
           {% if google %}
@@ -124,7 +124,7 @@
         <div class="lp-head">
           <span class="lp-pill lp-pill--plain">End-to-end workflow</span>
           <h2>From a list of companies to sent applications</h2>
-          <p>Import hundreds of companies once. Internix prepares a tailored draft for each one while you do something else.</p>
+          <p>Import hundreds of companies once. ntern prepares a tailored draft for each one while you do something else.</p>
           <nav class="lp-tabs" aria-label="Workflow steps">
             <a href="#step-research"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>Research</a>
             <a href="#step-write"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13h10M4 10.5 10.8 3.7a1.2 1.2 0 0 1 1.7 1.7L5.7 12.2 3.5 12.5z"/></svg>Write</a>
@@ -136,7 +136,7 @@
           <div class="lp-feature__text">
             <span class="lp-kicker">Research</span>
             <h3>Know every company <b>before you write to it.</b></h3>
-            <p>Bring a CSV or Excel file with an email column. Internix checks the format, tells you exactly which rows need fixing, and reads each company's website.</p>
+            <p>Bring a CSV or Excel file with an email column. ntern checks the format, tells you exactly which rows need fixing, and reads each company's website.</p>
             <a class="lp-link" href="{{ url_for('auth.register') }}">Start for free {{ arrow() }}</a>
             <dl class="lp-sub">
               <div><dt>Format checker</dt><dd>Clear errors per row instead of a silent bad import.</dd></div>
@@ -159,7 +159,7 @@
           <div class="lp-feature__text">
             <span class="lp-kicker">Write</span>
             <h3>Emails written from your CV, <b>in your voice.</b></h3>
-            <p>Upload your CV once. Internix drafts your profile in both languages, you check every sentence, then pick the style that sounds like you.</p>
+            <p>Upload your CV once. ntern drafts your profile in both languages, you check every sentence, then pick the style that sounds like you.</p>
             <a class="lp-link" href="{{ url_for('auth.register') }}">Start for free {{ arrow() }}</a>
             <dl class="lp-sub">
               <div><dt>Five writing styles</dt><dd>Specialist, concise, project-led, formal or research lab.</dd></div>
@@ -184,7 +184,7 @@
           <div class="lp-feature__text">
             <span class="lp-kicker">Send</span>
             <h3>Review, then send <b>from your own inbox.</b></h3>
-            <p>Nothing leaves without you. Pick the drafts you like and Internix sends them from your Gmail with a random gap and a daily cap.</p>
+            <p>Nothing leaves without you. Pick the drafts you like and ntern sends them from your Gmail with a random gap and a daily cap.</p>
             <a class="lp-link" href="{{ url_for('auth.register') }}">Start for free {{ arrow() }}</a>
             <dl class="lp-sub">
               <div><dt>One-click Gmail</dt><dd>Sign in with Google and sending is connected.</dd></div>
@@ -229,7 +229,7 @@
         <div class="lp-head lp-head--left">
           <span class="lp-pill lp-pill--plain">Security</span>
           <h2>Your account is yours alone</h2>
-          <p>Internix was built for many students at once. Each account is sealed off from every other one.</p>
+          <p>ntern was built for many students at once. Each account is sealed off from every other one.</p>
         </div>
         <ul class="lp-facts">
           <li><b>Separate workspaces</b><span>Your companies, drafts and CV are never visible to another user.</span></li>
@@ -248,10 +248,10 @@
           <h2>Questions, answered</h2>
         </div>
         <div class="lp-faq">
-          <details><summary>Does Internix send emails on its own?</summary><p>No. It prepares drafts. You read them, edit them if you want, and choose which ones to send.</p></details>
+          <details><summary>Does ntern send emails on its own?</summary><p>No. It prepares drafts. You read them, edit them if you want, and choose which ones to send.</p></details>
           <details><summary>What do I need to start?</summary><p>Your CV, a list of companies with an email address each, and an AI key — Groq offers a free tier that is enough to begin.</p></details>
           <details><summary>How do I create an account?</summary><p>{% if google %}Click “Continue with Google”. Your account is created, you are signed in, and your Gmail is connected for sending — all in one step. You can also sign up with an email and a password.{% else %}Sign up with your email and a password, then connect your Gmail in Settings.{% endif %}</p></details>
-          <details><summary>Which languages are supported?</summary><p>English and French. Internix picks the language from each company's website, and you can switch any single email with the EN / FR button.</p></details>
+          <details><summary>Which languages are supported?</summary><p>English and French. ntern picks the language from each company's website, and you can switch any single email with the EN / FR button.</p></details>
           <details><summary>What file format does my company list need?</summary><p>A CSV or Excel file with a company name and an email column. A template is provided, and the import tells you exactly which rows need fixing.</p></details>
           <details><summary>Can other people see my data?</summary><p>No. Every account has its own workspace, keys and mailbox connection.</p></details>
         </div>
@@ -282,7 +282,7 @@
       <nav aria-label="Trust"><b>Trust</b><a href="#security">Security</a><a href="#faq">FAQ</a></nav>
       <nav aria-label="Account"><b>Account</b><a href="{{ url_for('auth.login') }}">Log in</a><a href="{{ url_for('auth.register') }}">Create an account</a></nav>
     </div>
-    <div class="lp-wrap lp-footer__base">© {{ year }} Internix</div>
+    <div class="lp-wrap lp-footer__base">© {{ year }} ntern</div>
   </footer>
 </div>
 {% endblock %}

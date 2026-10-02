@@ -153,7 +153,7 @@ def test_a_new_person_signing_up_with_google_lands_inside_the_app(google, app_mo
     user = accounts.get_user_by_email("student@gmail.com")
     assert user["status"] == "active" and user["role"] == "user" and user["full_name"] == "Student One"
     home = c.get("/", base_url=LOCAL).data.decode()
-    assert "Welcome to Internix" in home and "Getting started" in home
+    assert "Welcome to ntern" in home and "Getting started" in home
     assert UserConfig(user["id"]).get("GMAIL_ADDRESS") == "student@gmail.com"
 
 

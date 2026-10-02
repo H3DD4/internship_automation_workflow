@@ -1230,7 +1230,7 @@ def _finish_google_login(creds, granted: set):
     token, _ = accounts.create_session(user["id"], security.client_ip(), request.headers.get("User-Agent", ""))
     accounts.audit("login_google", actor=user["id"], ip=security.client_ip())
     if session.pop("welcome", False):
-        flash("Welcome to Internix — your account is ready. Follow the four steps below to prepare your first applications.", "success")
+        flash("Welcome to ntern — your account is ready. Follow the four steps below to prepare your first applications.", "success")
     elif not sending:
         flash("Signed in. To send from this Gmail, connect it in Settings → Email account.", "success")
     response = redirect(session.pop("oauth_next", None) or url_for("index"))

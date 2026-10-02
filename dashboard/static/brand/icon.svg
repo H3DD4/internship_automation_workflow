@@ -1,13 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <defs>
-    <linearGradient id="internix-bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#6B79FE"/>
-      <stop offset="1" stop-color="#3B4ADB"/>
-    </linearGradient>
-  </defs>
-  <rect width="1024" height="1024" rx="224" fill="url(#internix-bg)"/>
-  <polygon points="262,262 512,262 512,512" fill="#F5F2E9"/>
-  <polygon points="512,512 262,762 512,762" fill="#F5F2E9"/>
-  <polygon points="512,262 762,262 512,512" fill="#F4B544"/>
-  <polygon points="512,512 512,762 762,762" fill="#F4B544"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
+  <rect width="96" height="96" rx="22" fill="#FFFFFF"/>
+  <g transform="translate(14 12)">
+    <rect x="0" y="0" width="16" height="72" rx="3" fill="#3F4151"/>
+    <polygon points="32,0 68,0 32,32" fill="#F6C469"/>
+    <polygon points="68,0 68,32 50,16" fill="#858BFF"/>
+    <polygon points="32,40 32,72 68,72" fill="#F6C469"/>
+    <polygon points="68,40 68,72 50,56" fill="#858BFF"/>
+  </g>
 </svg>

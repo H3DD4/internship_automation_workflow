@@ -1,23 +1,22 @@
-{# The Internix brand, in one place.
-   mark()  the app icon (cream + amber on the blue gradient), inline SVG.
-   logo()  the full wordmark from static/brand (light or dark ground). #}
-{% macro mark(size=28, uid="m") -%}
-<svg class="brand-mark" width="{{ size }}" height="{{ size }}" viewBox="0 0 1024 1024" aria-hidden="true">
-  <defs>
-    <linearGradient id="ixg-{{ uid }}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#6B79FE"/>
-      <stop offset="1" stop-color="#3B4ADB"/>
-    </linearGradient>
-  </defs>
-  <rect width="1024" height="1024" rx="224" fill="url(#ixg-{{ uid }})"/>
-  <polygon points="262,262 512,262 512,512" fill="#F5F2E9"/>
-  <polygon points="512,512 262,762 512,762" fill="#F5F2E9"/>
-  <polygon points="512,262 762,262 512,512" fill="#F4B544"/>
-  <polygon points="512,512 512,762 762,762" fill="#F4B544"/>
+{# The ntern brand, in one place.
+   mark()  the symbol: a navy stem beside a block of amber and periwinkle
+           triangles that leave a white diamond in the middle. Inline SVG,
+           so it stays sharp at any size.
+   logo()  the symbol + the "ntern" wordmark, set in the heading font.
+   `dark` draws the stem and the word in white for dark grounds. #}
+{% macro mark(size=28, uid="m", dark=false) -%}
+<svg class="brand-mark" height="{{ size }}" width="{{ (size * 68 / 72) | round(1) }}" viewBox="0 0 68 72" aria-hidden="true">
+  <rect x="0" y="0" width="16" height="72" rx="3" fill="{{ '#FFFFFF' if dark else '#3F4151' }}"/>
+  <polygon points="32,0 68,0 32,32" fill="#F6C469"/>
+  <polygon points="68,0 68,32 50,16" fill="#858BFF"/>
+  <polygon points="32,40 32,72 68,72" fill="#F6C469"/>
+  <polygon points="68,40 68,72 50,56" fill="#858BFF"/>
 </svg>
 {%- endmacro %}
 
 {% macro logo(height=26, dark=false) -%}
-<img class="brand-logo" src="{{ asset('brand/wordmark-on-dark.png' if dark else 'brand/wordmark.png') }}"
-     alt="Internix" height="{{ height }}" style="height: {{ height }}px; width: auto;">
+<span class="brand-logo{{ ' brand-logo--dark' if dark }}" style="--logo-h: {{ height }}px" role="img" aria-label="ntern">
+  {{- mark(height, "logo", dark) -}}
+  <span class="brand-logo__word" aria-hidden="true">ntern</span>
+</span>
 {%- endmacro %}

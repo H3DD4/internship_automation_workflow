@@ -643,3 +643,12 @@ a.notice:hover { background: #FFEFC9; }
 #mail-form .form-actions { margin-top: 4px; }
 .style-switch__hint { grid-column: 1 / -1; order: 3; margin-top: -2px; }
 mark.style-changed { background: var(--amber-soft); box-shadow: inset 0 -2px 0 #F0CD7E; color: inherit; border-radius: 2px; }
+
+/* ── ntern wordmark: the symbol + the word, sized from one height ───────── */
+.brand-logo { display: inline-flex; align-items: center; gap: calc(var(--logo-h) * .3); line-height: 1; color: #3F4151; }
+.brand-logo .brand-mark { flex: none; display: block; }
+.brand-logo__word {
+  font-family: var(--font-head); font-weight: 700; letter-spacing: -.035em;
+  font-size: calc(var(--logo-h) * 1.08); line-height: 1; transform: translateY(-.04em);
+}
+.brand-logo--dark { color: #FFFFFF; }

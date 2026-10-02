@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Platform · Internix admin{% endblock %}
+{% block title %}Platform · ntern admin{% endblock %}
 {% block content %}
 {% set admin_title = "Platform" %}
 {% set admin_subtitle = "Settings that apply to every account" %}
@@ -72,7 +72,7 @@
       <li>Redirect URI, platform <strong>Web</strong>:<br><code class="copyable">{{ ms_redirect_uri }}</code>{% if ms_redirect_uri.startswith('http://') %}<br><span class="field-hint">Plain http is accepted only for <code>localhost</code>; in production use your https domain.</span>{% endif %}</li>
       <li>Under <strong>API permissions → Microsoft Graph → Delegated</strong>, add <code>Mail.Send</code>, <code>Mail.Read</code>, <code>User.Read</code>, <code>offline_access</code>, <code>openid</code>, <code>email</code>, <code>profile</code>.</li>
       <li>Under <strong>Certificates &amp; secrets</strong>, create a client secret. Paste its <em>Value</em> and the <em>Application (client) ID</em> below.</li>
-      <li>Recommended: <strong>publisher verification</strong> (free with a Microsoft AI Cloud Partner Program ID). Many universities only let students approve apps from verified publishers; otherwise their IT has to approve Internix once.</li>
+      <li>Recommended: <strong>publisher verification</strong> (free with a Microsoft AI Cloud Partner Program ID). Many universities only let students approve apps from verified publishers; otherwise their IT has to approve ntern once.</li>
     </ol>
     <form method="post" class="settings-grid" autocomplete="off">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

@@ -4,8 +4,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>{% block title %}Internix{% endblock %}</title>
-  <meta name="description" content="Internix researches every company and writes internship applications from your own CV — in English or French — for you to review and send.">
+  <title>{% block title %}ntern{% endblock %}</title>
+  <meta name="description" content="ntern researches every company and writes internship applications from your own CV — in English or French — for you to review and send.">
   {% if current_user %}<meta name="csrf-token" content="{{ csrf_token() }}">{% endif %}
   <link rel="icon" type="image/svg+xml" href="{{ asset('brand/icon.svg') }}">
   <meta name="theme-color" content="#FFFFFF">
@@ -69,7 +69,7 @@
 
   <header class="appbar">
     <div class="appbar__inner">
-      <a class="appbar__brand" href="{{ url_for('index') }}" aria-label="Internix home">{{ logo(22) }}</a>
+      <a class="appbar__brand" href="{{ url_for('index') }}" aria-label="ntern home">{{ logo(22) }}</a>
       <nav class="appbar__nav" aria-label="Main navigation">{{ nav_items("appbar") }}</nav>
       <details class="usermenu" data-menu>
         <summary class="usermenu__toggle" aria-label="Account menu">
