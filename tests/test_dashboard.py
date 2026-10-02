@@ -180,7 +180,7 @@ def test_signed_out_visitors_see_the_landing_page(anon_client):
     page = anon_client.get("/")
     assert page.status_code == 200
     html = page.data.decode()
-    assert "ntern" in html and "/register" in html and 'class="appbar"' not in html
+    assert "Ntern" in html and "/register" in html and 'class="appbar"' not in html
     assert anon_client.post("/", headers={"Origin": "http://localhost"}).status_code in (400, 403, 405)
 
 

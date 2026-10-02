@@ -1,8 +1,8 @@
-{# The ntern brand, in one place.
-   mark()  the symbol: a navy stem beside a block of amber and periwinkle
-           triangles that leave a white diamond in the middle. Inline SVG,
-           so it stays sharp at any size.
-   logo()  the symbol + the "ntern" wordmark, set in the heading font.
+{# The Ntern brand, in one place.
+   mark()  the N: a navy stem, then amber and periwinkle triangles around a
+           white diamond. Inline SVG, so it stays sharp at any size.
+   logo()  "Ntern": that N as the first letter, then "tern" in the heading
+           font, sitting on the same baseline.
    `dark` draws the stem and the word in white for dark grounds. #}
 {% macro mark(size=28, uid="m", dark=false) -%}
 <svg class="brand-mark" height="{{ size }}" width="{{ (size * 68 / 72) | round(1) }}" viewBox="0 0 68 72" aria-hidden="true">
@@ -15,8 +15,8 @@
 {%- endmacro %}
 
 {% macro logo(height=26, dark=false) -%}
-<span class="brand-logo{{ ' brand-logo--dark' if dark }}" style="--logo-h: {{ height }}px" role="img" aria-label="ntern">
+<span class="brand-logo{{ ' brand-logo--dark' if dark }}" style="--logo-h: {{ height }}px" role="img" aria-label="Ntern">
   {{- mark(height, "logo", dark) -}}
-  <span class="brand-logo__word" aria-hidden="true">ntern</span>
+  <span class="brand-logo__word" aria-hidden="true">tern</span>
 </span>
 {%- endmacro %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Settings · ntern{% endblock %}
+{% block title %}Settings · Ntern{% endblock %}
 {% block content %}
 
 <header class="topbar">
@@ -40,12 +40,12 @@
     <section class="settings-card" id="s-ai">
       <div class="settings-card__head">
         <h2>AI models</h2>
-        <p class="section-copy">ntern uses AI to read each company's website and compare it with your CV. You connect your <strong>own free key</strong>, so your usage never competes with anyone else's. The emails themselves are built from your approved wording, not written by the AI.</p>
+        <p class="section-copy">Ntern uses AI to read each company's website and compare it with your CV. You connect your <strong>own free key</strong>, so your usage never competes with anyone else's. The emails themselves are built from your approved wording, not written by the AI.</p>
       </div>
 
       <div class="ai-tip">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/></svg>
-        <p><strong>Connect more than one, and tick several models.</strong> Free plans limit how many requests you can make per minute. Every provider and model you add joins your pool: when one is busy or out of free quota, ntern moves to the next by itself — so your preparation keeps going instead of waiting.</p>
+        <p><strong>Connect more than one, and tick several models.</strong> Free plans limit how many requests you can make per minute. Every provider and model you add joins your pool: when one is busy or out of free quota, Ntern moves to the next by itself — so your preparation keeps going instead of waiting.</p>
       </div>
 
       {% set connected = provider_cards | selectattr("connected") | list %}
@@ -86,7 +86,7 @@
           <div class="provider-models" data-models {% if not p.connected %}hidden{% endif %}>
             <div class="provider-models__head">
               <strong>Models in your pool</strong>
-              <span class="field-hint">Ticked models are used. Recommended ones are tested with ntern.</span>
+              <span class="field-hint">Ticked models are used. Recommended ones are tested with Ntern.</span>
             </div>
             <div class="model-list" data-model-list>
               {% for m in p.models %}<label class="model-option"><input type="checkbox" value="{{ m }}" checked><span>{{ m }}</span></label>{% endfor %}

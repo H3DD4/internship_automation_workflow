@@ -95,7 +95,7 @@ def _consent_blocked_message(description: str) -> str:
     client = microsoft_auth.client_config() or {}
     link = (f"https://login.microsoftonline.com/organizations/adminconsent?client_id={client.get('client_id', '')}"
             if client else "")
-    return ("Your university only lets its IT administrators approve apps like ntern. Ask them to "
+    return ("Your university only lets its IT administrators approve apps like Ntern. Ask them to "
             "approve it" + (f" with this link: {link}" if link else "") + " — or, meanwhile, send "
             "through your mail server's settings (SMTP) if your university allows it.")
 
@@ -189,7 +189,7 @@ def _finish_login(token: dict, who: dict, granted: set):
                                                request.headers.get("User-Agent", ""))
     accounts.audit("login_microsoft", actor=user["id"], ip=security.client_ip())
     if session.pop("welcome", False):
-        flash("Welcome to ntern — your account is ready and your Outlook mailbox is connected. "
+        flash("Welcome to Ntern — your account is ready and your Outlook mailbox is connected. "
               "Follow the four steps below.", "success")
     elif not sending:
         flash("Signed in. To send from this mailbox, connect it in Settings → Email account.", "success")
