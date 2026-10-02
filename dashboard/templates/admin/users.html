@@ -5,6 +5,16 @@
 {% set admin_subtitle = all_count ~ " account(s) · sign-up is " ~ {"approval": "open with approval", "open": "open to anyone", "closed": "closed (invite only)"}[signup_mode] %}
 {% include "admin/_nav.html" %}
 
+<form class="auto-accept" method="post" action="{{ url_for('admin.auto_accept') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="auto_accept" value="{{ 'off' if signup_mode == 'open' else 'on' }}">
+  <div>
+    <strong>Auto-accept new accounts</strong>
+    <span class="field-hint">{% if signup_mode == 'open' %}On — anyone who signs up starts right away, no approval needed.{% elif signup_mode == 'closed' %}Off — sign-up is closed; only you create accounts.{% else %}Off — password sign-ups wait for your approval{% if pending_count %} ({{ pending_count }} waiting; turning it on lets them in){% endif %}.{% endif %}</span>
+  </div>
+  <button class="switch{% if signup_mode == 'open' %} is-on{% endif %}" type="submit" role="switch" aria-checked="{{ 'true' if signup_mode == 'open' else 'false' }}" aria-label="Auto-accept new accounts"><span></span></button>
+</form>
+
 {% if pending_count %}
 <a class="notice notice--warn" href="{{ url_for('admin.users', status='pending') }}">
   <strong>{{ pending_count }}</strong> account{{ "s" if pending_count != 1 }} waiting for your approval →

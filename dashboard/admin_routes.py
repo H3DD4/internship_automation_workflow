@@ -116,6 +116,27 @@ def create_user():
                            password=password, created=True)
 
 
+@bp.post("/auto-accept")
+@security.admin_required
+def auto_accept():
+    """One switch: on = anyone who signs up starts right away (sign-up mode
+    "open"), and whoever is already waiting is let in; off = password
+    sign-ups wait for approval again."""
+    if request.form.get("auto_accept") == "on":
+        accounts.set_system_setting("signup_mode", "open")
+        waiting = [u for u in accounts.list_users() if u["status"] == "pending"]
+        for u in waiting:
+            accounts.update_user(u["id"], status="active", approved_at=accounts._now(), approved_by=g.user["id"])
+        _audit("admin_auto_accept", on=True, approved=len(waiting))
+        flash("Auto-accept is on: new accounts start right away."
+              + (f" {len(waiting)} waiting account(s) were approved." if waiting else ""), "success")
+    else:
+        accounts.set_system_setting("signup_mode", "approval")
+        _audit("admin_auto_accept", on=False)
+        flash("Auto-accept is off: new password sign-ups wait for your approval.", "success")
+    return redirect(url_for("admin.users"))
+
+
 @bp.post("/users/<int:user_id>/approve")
 @security.admin_required
 def approve(user_id):

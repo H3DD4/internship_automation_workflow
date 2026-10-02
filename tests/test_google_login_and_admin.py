@@ -222,3 +222,24 @@ def test_a_forged_callback_is_refused(google, app_module, make_user):
 def test_google_sign_in_starts_on_the_public_address(google, app_module):
     response = app_module.app.test_client().get("/auth/google", base_url="http://localhost:5050")
     assert response.headers["Location"].startswith(f"{LOCAL}/auth/google")
+
+
+def test_auto_accept_lets_new_and_waiting_accounts_in(admin_client, anon_client, make_user):
+    import accounts
+    waiting = make_user("wait@example.com", status="pending")
+    page = admin_client.get("/admin/").data.decode()
+    assert "Auto-accept new accounts" in page
+    reply = admin_client.post("/admin/auto-accept", headers=admin_client.origin,
+                              data={"csrf_token": admin_client.csrf, "auto_accept": "on"})
+    assert reply.status_code == 302
+    assert accounts.signup_mode() == "open"
+    assert accounts.get_user(waiting)["status"] == "active"
+    admin_client.post("/admin/auto-accept", headers=admin_client.origin,
+                      data={"csrf_token": admin_client.csrf, "auto_accept": "off"})
+    assert accounts.signup_mode() == "approval"
+
+
+def test_only_an_admin_can_flip_auto_accept(client):
+    import accounts
+    client.post("/admin/auto-accept", headers=client.origin, data={"csrf_token": client.csrf, "auto_accept": "on"})
+    assert accounts.signup_mode() != "open"
