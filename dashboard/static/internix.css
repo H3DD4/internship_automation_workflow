@@ -625,3 +625,18 @@ a.notice:hover { background: #FFEFC9; }
   border: 1px solid #F3DDA6; border-radius: var(--radius-sm); background: var(--amber-soft); font-size: 13.5px; color: var(--text-2); }
 @media (max-width: 900px) { .dates-form { grid-template-columns: 1fr 1fr; } .dates-form__actions { grid-column: 1 / -1; justify-content: space-between; } }
 @media (max-width: 560px) { .dates-form { grid-template-columns: 1fr; } }
+
+
+/* ------------------------------------------------------ Microsoft + detect */
+.button-microsoft { margin-top: 10px; }
+.mail-detect { margin: 0 0 20px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
+.mail-detect > label { display: block; margin-bottom: 8px; font-size: 13.5px; font-weight: 500; }
+.mail-detect .input-row input { flex: 1 1 260px; }
+.mail-detect__result { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+  font-size: 13.5px; display: grid; gap: 8px; }
+.mail-detect__result strong { color: var(--text); }
+.mail-detect__result .button-google { justify-self: start; }
+#mail-form { display: block; }
+#mail-form .method-picker { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-bottom: 16px; }
+#mail-form .method-panel { margin-bottom: 16px; }
+#mail-form .form-actions { margin-top: 4px; }

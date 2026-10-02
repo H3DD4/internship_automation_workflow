@@ -12,8 +12,8 @@ import mailer
 from mailer import AuthenticationError, PermanentSendError, TransientSendError
 from user_config import UserConfig
 
-PROVIDER_LABELS = {"oauth": "Gmail (Google sign-in)", "app_password": "Gmail (app password)",
-                   "smtp": "SMTP"}
+PROVIDER_LABELS = {"oauth": "Gmail (Google sign-in)", "microsoft": "Outlook / Microsoft 365",
+                   "app_password": "Gmail (app password)", "smtp": "SMTP"}
 
 
 @dataclass
@@ -34,6 +34,9 @@ def sending_method(cfg: UserConfig) -> str:
         return chosen
     if google_auth_helper.token_exists(cfg):
         return "oauth"
+    import microsoft_auth
+    if microsoft_auth.token_exists(cfg):
+        return "microsoft"
     if cfg.get("SMTP_HOST") and cfg.has_secret("GMAIL_APP_PASSWORD"):
         return "smtp"
     if cfg.get("GMAIL_ADDRESS") and cfg.has_secret("GMAIL_APP_PASSWORD"):
@@ -64,6 +67,9 @@ def from_address(cfg: UserConfig, method: str) -> str:
     import google_auth_helper
     if method == "oauth":
         return google_auth_helper.get_authorized_email(cfg) or cfg.get("GMAIL_ADDRESS")
+    if method == "microsoft":
+        import microsoft_auth
+        return microsoft_auth.sender_address(cfg)
     return cfg.get("GMAIL_ADDRESS") or cfg.get("SMTP_USERNAME")
 
 
@@ -85,6 +91,13 @@ def send(cfg: UserConfig, app: dict) -> SendResult:
         sender = from_address(cfg, method)
         if not sender:
             raise AuthenticationError("No sender address — reconnect your email account in Settings.")
+        if method == "microsoft":
+            # Graph sends from the mailbox itself, with its own display name.
+            import microsoft_auth
+            message_id = microsoft_auth.send(cfg, to_email=app["email"], subject=app["subject"],
+                                             body=app["body"], attachment=cv)
+            return SendResult(True, message=f"Sent to {app['email']}", message_id=message_id or "",
+                              provider=provider)
         msg = mailer.build_message(from_address=sender, display_name=display_name(cfg),
                                    to_email=app["email"], subject=app["subject"], body=app["body"],
                                    attachment=cv)

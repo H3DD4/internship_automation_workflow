@@ -54,7 +54,8 @@ for _pid in PROVIDERS:
     SETTING_DEFAULTS[f"AI_MODELS_{_pid.upper()}"] = ""
 
 # Secrets: stored encrypted, never sent back to a browser.
-SECRET_NAMES = {p["key_env"] for p in PROVIDERS.values()} | {"GMAIL_APP_PASSWORD", "GOOGLE_TOKEN"}
+SECRET_NAMES = {p["key_env"] for p in PROVIDERS.values()} | {"GMAIL_APP_PASSWORD", "GOOGLE_TOKEN",
+                                                              "MICROSOFT_TOKEN"}
 
 CV_TYPES = {
     ".pdf": "application/pdf",

@@ -14,6 +14,8 @@ pypdf==6.19.0
 google-auth==2.58.0
 google-auth-oauthlib==1.4.1
 google-api-python-client==2.200.0
+# MX/SPF lookup to tell which mail service hosts an address.
+dnspython==2.8.0
 # Web servers: waitress runs everywhere (local Windows), gunicorn in the Linux image.
 waitress==3.0.2
 gunicorn==23.0.0; sys_platform != "win32"

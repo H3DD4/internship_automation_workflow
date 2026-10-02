@@ -217,6 +217,16 @@
         <p class="section-copy">Applications are sent from your own mailbox, so replies come straight to you.{% if setup.mail_label %} Currently: <strong>{{ setup.mail_label }}</strong>{% if setup.from_address %} as <strong>{{ setup.from_address }}</strong>{% endif %}.{% endif %}</p>
       </div>
 
+      <div class="mail-detect">
+        <label for="mail-detect-input">Which email will you send from?</label>
+        <div class="input-row">
+          <input id="mail-detect-input" type="email" placeholder="you@university.edu" value="{{ setup.ms_email or setup.oauth_email or setup.gmail_address }}" autocomplete="email" maxlength="320">
+          <button class="button" type="button" id="mail-detect-btn">Find how to connect it</button>
+        </div>
+        <p class="field-hint">Works for university addresses too — we look up who runs the mailbox (Microsoft 365, Google or your school's own server) and show the right way to connect.</p>
+        <div class="mail-detect__result" id="mail-detect-result" hidden></div>
+      </div>
+
       <form class="setup-form" action="{{ url_for('save_settings') }}" method="post" autocomplete="off" id="mail-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="section" value="mail">
@@ -224,10 +234,12 @@
         <div class="method-picker" role="radiogroup" aria-label="How to send">
           <label class="method-card"><input type="radio" name="mail_method" value="oauth" {% if method == 'oauth' %}checked{% endif %} {% if not setup.oauth_configured and not setup.oauth_connected %}disabled{% endif %}>
             <span><strong>Sign in with Google</strong><span class="field-hint">{{ "One click, nothing to copy." if setup.oauth_configured else "Not enabled on this platform yet." }}</span></span></label>
+          <label class="method-card"><input type="radio" name="mail_method" value="microsoft" {% if method == 'microsoft' %}checked{% endif %} {% if not setup.ms_configured and not setup.ms_connected %}disabled{% endif %}>
+            <span><strong>Outlook / Microsoft 365</strong><span class="field-hint">{{ "Outlook, Hotmail and most university mailboxes." if setup.ms_configured else "Not enabled on this platform yet." }}</span></span></label>
           <label class="method-card"><input type="radio" name="mail_method" value="app_password" {% if method == 'app_password' %}checked{% endif %}>
             <span><strong>Gmail + app password</strong><span class="field-hint">Works for any Gmail with 2-Step Verification.</span></span></label>
           <label class="method-card"><input type="radio" name="mail_method" value="smtp" {% if method == 'smtp' %}checked{% endif %}>
-            <span><strong>Other provider (SMTP)</strong><span class="field-hint">Outlook, university or company mail.</span></span></label>
+            <span><strong>Other provider (SMTP)</strong><span class="field-hint">Your school's own server, Yahoo, iCloud, Zoho…</span></span></label>
         </div>
 
         <div class="method-panel" data-method="oauth" {% if method != 'oauth' %}hidden{% endif %}>
@@ -260,7 +272,32 @@
           {% endif %}
         </div>
 
-        <div class="method-panel settings-grid" data-method="app_password smtp" {% if method == 'oauth' %}hidden{% endif %}>
+        <div class="method-panel" data-method="microsoft" {% if method != 'microsoft' %}hidden{% endif %}>
+          {% if setup.ms_connected %}
+          <div class="google-connected-card">
+            <div class="google-connected-left">
+              <svg class="google-icon-sm" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#F25022"/><rect x="11" y="1" width="9" height="9" fill="#7FBA00"/><rect x="1" y="11" width="9" height="9" fill="#00A4EF"/><rect x="11" y="11" width="9" height="9" fill="#FFB900"/></svg>
+              <div>
+                <div class="google-connected-email">{{ setup.ms_email }}</div>
+                <div class="google-connected-label">Connected · sends through Microsoft Graph{% if setup.ms_can_read_inbox %} · bounce detection on{% endif %}</div>
+              </div>
+            </div>
+            <button type="submit" form="ms-disconnect-form" class="button button--ghost button--sm">Disconnect</button>
+          </div>
+          {% else %}
+          <div class="google-connect-card">
+            <div class="google-connect-desc">Send from your Outlook, Hotmail or university Microsoft 365 mailbox — sign in once, no password to copy. Microsoft is switching off password-based sending for these mailboxes, so this is the way that keeps working.</div>
+            {% if setup.ms_configured %}
+            <a href="{{ url_for('microsoft.connect') }}" class="button-google"><svg class="google-icon" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#F25022"/><rect x="11" y="1" width="9" height="9" fill="#7FBA00"/><rect x="1" y="11" width="9" height="9" fill="#00A4EF"/><rect x="11" y="11" width="9" height="9" fill="#FFB900"/></svg>
+              Connect with Microsoft</a>
+            {% else %}
+            <span class="field-hint">The administrator hasn't enabled Microsoft sign-in yet.</span>
+            {% endif %}
+          </div>
+          {% endif %}
+        </div>
+
+        <div class="method-panel settings-grid" data-method="app_password smtp" {% if method in ('oauth', 'microsoft') %}hidden{% endif %}>
           <div class="form-group">
             <label for="gmail-address">Email address</label>
             <input id="gmail-address" name="gmail_address" type="email" value="{{ setup.gmail_address }}" placeholder="you@gmail.com" autocomplete="email" maxlength="320">
@@ -354,6 +391,7 @@
   </div>
 </div>
 
+<form id="ms-disconnect-form" method="post" action="{{ url_for('microsoft.disconnect') }}" hidden><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form>
 <form id="oauth-disconnect-form" action="{{ url_for('oauth_disconnect') }}" method="post" hidden>
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 </form>

@@ -64,10 +64,12 @@ if config.bool_setting("TRUST_PROXY", config.is_production()):
 from dashboard.admin_routes import bp as admin_bp  # noqa: E402
 from dashboard.auth_routes import bp as auth_bp  # noqa: E402
 from dashboard.profile_routes import bp as profile_bp  # noqa: E402
+from dashboard.microsoft_routes import bp as microsoft_bp  # noqa: E402
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
 app.register_blueprint(profile_bp)
+app.register_blueprint(microsoft_bp)
 
 STATUS_LABELS = {
     "pending": "Pending", "researching": "Researching", "researched": "Researched",
@@ -87,6 +89,12 @@ FILTER_GROUPS = db.STATUS_GROUPS
 LANGUAGE_LABELS = {"en": "English", "fr": "Français"}
 
 _started = False
+
+
+@app.context_processor
+def _microsoft_flag():
+    import microsoft_auth
+    return {"microsoft_enabled": microsoft_auth.is_configured}
 
 
 @app.before_request
@@ -219,7 +227,9 @@ def _setup_state() -> dict:
     method = mail_service.sending_method(cfg)
     oauth = _oauth_status(cfg)
     oauth_connected, oauth_email, oauth_valid = oauth["connected"], oauth["email"], oauth["valid"]
-    has_gmail = bool(method) and (method != "oauth" or oauth_valid)
+    import microsoft_auth
+    ms_connected = microsoft_auth.token_exists(cfg)
+    has_gmail = bool(method) and (method != "oauth" or oauth_valid) and (method != "microsoft" or ms_connected)
     has_api_key = bool(ai["api_key"]) or any(p["key_env"] in saved for p in PROVIDERS.values())
     prep_ready = has_api_key and has_profile and companies_rows > 0
     return {
@@ -239,6 +249,10 @@ def _setup_state() -> dict:
         "oauth_email": oauth_email,
         "oauth_configured": google_auth_helper.oauth_is_configured(),
         "oauth_can_read_inbox": oauth["can_read"],
+        "ms_configured": microsoft_auth.is_configured(),
+        "ms_connected": ms_connected,
+        "ms_email": microsoft_auth.sender_address(cfg) if ms_connected else "",
+        "ms_can_read_inbox": ms_connected and microsoft_auth.can_read_inbox(cfg),
         "has_mail_password": "GMAIL_APP_PASSWORD" in saved,
         "gmail_address": cfg.get("GMAIL_ADDRESS"),
         "smtp_host": cfg.get("SMTP_HOST"), "smtp_port": cfg.get("SMTP_PORT"),
@@ -867,7 +881,7 @@ def save_settings():
 
     elif section == "mail":
         method = request.form.get("mail_method", "")
-        if method not in ("oauth", "app_password", "smtp"):
+        if method not in ("oauth", "microsoft", "app_password", "smtp"):
             return security.flash_and_back("Choose how to send.", "error", "settings_page")
         updates["MAIL_METHOD"] = method
         if method in ("app_password", "smtp"):

@@ -151,6 +151,79 @@
     });
   }
 
+  // ── Which mail service hosts this address? ───────────────────────────────
+  // A university address rarely says whether it's Microsoft 365, Google or
+  // the school's own server; the server looks it up and we show the one way
+  // to connect that works, filling in SMTP settings when that's the way.
+  const detectBtn = $("mail-detect-btn");
+  if (detectBtn) {
+    const detectInput = $("mail-detect-input");
+    const out = $("mail-detect-result");
+    const pickMethod = (value) => {
+      const radio = document.querySelector(`input[name="mail_method"][value="${value}"]`);
+      if (radio && !radio.disabled) { radio.checked = true; radio.dispatchEvent(new Event("change", { bubbles: true })); }
+    };
+    const line = (html) => { const p = el("p"); p.innerHTML = html; out.appendChild(p); };
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const linkButton = (href, label) => {
+      const a = el("a", { class: "button-google", href });
+      a.textContent = label;
+      out.appendChild(a);
+    };
+
+    const run = async () => {
+      const address = detectInput.value.trim();
+      if (!address) { detectInput.focus(); return; }
+      detectBtn.disabled = true;
+      detectBtn.textContent = "Checking…";
+      out.hidden = false;
+      out.innerHTML = "";
+      try {
+        const data = await getJSON(`/api/mail/detect?email=${encodeURIComponent(address)}`);
+        if (!data.ok) { line(`✗ ${esc(data.message || "Couldn't check that address.")}`); return; }
+        const who = `<strong>${esc(address)}</strong> is ${data.kind === "smtp" ? "on" : "a"} <strong>${esc(data.label)}</strong>${data.kind === "smtp" ? "" : " mailbox"}${data.school ? " (your school's)" : ""}.`;
+        line(who);
+        if (data.kind === "microsoft") {
+          if (data.available.microsoft) {
+            line("Sign in once with Microsoft — no password to copy, and it keeps working after Microsoft switches off password-based sending.");
+            linkButton("/oauth/microsoft/start", "Connect with Microsoft");
+            pickMethod("microsoft");
+          } else {
+            line("Microsoft sign-in isn't enabled on this platform yet — ask the administrator to turn it on (Admin → Platform). It's free.");
+          }
+        } else if (data.kind === "google") {
+          if (data.available.google) {
+            line("Sign in once with Google — no password to copy.");
+            linkButton("/oauth/start", "Sign in with Google");
+            pickMethod("oauth");
+          } else {
+            line("Use a Google app password below (needs 2-Step Verification on the account).");
+            pickMethod("app_password");
+            $("gmail-address").value = address;
+          }
+        } else {
+          pickMethod("smtp");
+          $("gmail-address").value = address;
+          if (data.smtp) {
+            $("smtp-host").value = data.smtp.host;
+            $("smtp-port").value = data.smtp.port;
+            $("smtp-security").value = data.smtp.security;
+          }
+          if (data.imap_host) $("imap-host").value = data.imap_host;
+          line(data.smtp && data.smtp.guess
+            ? "We filled in the usual server names — check them on your school's IT help page, then enter your mailbox password and press <em>Test login</em>."
+            : "We filled in the server settings. Enter your password (or an app password) and press <em>Test login</em>.");
+          if (data.app_password_url) line(`This provider needs an app password: <a href="${esc(data.app_password_url)}" target="_blank" rel="noopener noreferrer">create one here</a>.`);
+        }
+      } finally {
+        detectBtn.disabled = false;
+        detectBtn.textContent = "Find how to connect it";
+      }
+    };
+    detectBtn.addEventListener("click", run);
+    detectInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); run(); } });
+  }
+
   // ── Email method: show only the fields that method needs ─────────────────
   const radios = Array.from(document.querySelectorAll('input[name="mail_method"]'));
   function paintMethod() {

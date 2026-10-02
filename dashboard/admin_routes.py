@@ -226,6 +226,24 @@ def platform():
                 flash("Google OAuth client saved (encrypted). Users can now sign in with Google.", "success")
             else:
                 flash(detail, "error")
+        elif action == "microsoft_client":
+            import microsoft_auth
+            try:
+                microsoft_auth.save_client(request.form.get("ms_client_id", ""), request.form.get("ms_client_secret", ""))
+                _audit("admin_microsoft_client")
+                flash("Microsoft app saved (encrypted). Students can now use their Microsoft accounts.", "success")
+            except microsoft_auth.MicrosoftError as exc:
+                flash(str(exc), "error")
+        elif action == "microsoft_client_remove":
+            import microsoft_auth
+            microsoft_auth.remove_client()
+            _audit("admin_microsoft_client_removed")
+            flash("Microsoft app removed.", "success")
+        elif action == "microsoft_scope":
+            value = "on" if request.form.get("microsoft_inbox_read") == "on" else "off"
+            accounts.set_system_setting("microsoft_inbox_read", value)
+            _audit("admin_microsoft_scope", inbox_read=value)
+            flash("Microsoft permissions saved. They apply to the next connection.", "success")
         elif action == "google_client_remove":
             from user_config import set_system_secret
             set_system_secret(google_auth_helper.CLIENT_SECRET_NAME, "")
@@ -233,7 +251,12 @@ def platform():
             flash("Google OAuth client removed.", "success")
         return redirect(url_for("admin.platform"))
     from dashboard.app import oauth_redirect_uri
+    from dashboard.microsoft_routes import redirect_uri as ms_redirect_uri
+    import microsoft_auth
     return render_template("admin/platform.html", signup_mode=accounts.signup_mode(),
+                           ms_configured=microsoft_auth.is_configured(),
+                           ms_inbox_read=microsoft_auth.inbox_read_enabled(),
+                           ms_redirect_uri=ms_redirect_uri(),
                            google_configured=google_auth_helper.oauth_is_configured(),
                            google_inbox_read=google_auth_helper.inbox_read_scope_enabled(),
                            redirect_uri=oauth_redirect_uri())

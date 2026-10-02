@@ -59,5 +59,43 @@
       <div><button class="button button--primary" type="submit">Save</button></div>
     </form>
   </section>
+
+  <section class="settings-card">
+    <div class="settings-card__head">
+      <h2>Sign in with Microsoft</h2>
+      <p class="section-copy">For Outlook, Hotmail and university Microsoft 365 accounts — most universities. One free app registration for the whole platform; students click “Continue with Microsoft” or “Connect with Microsoft” and send from their own mailbox through Microsoft Graph.</p>
+    </div>
+    <p class="setup-status{% if ms_configured %} setup-status--ready{% endif %}"><span class="dot"></span>{{ "Configured (stored encrypted)" if ms_configured else "Not configured" }}</p>
+    <ol class="oauth-steps">
+      <li>In the <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">Microsoft Entra admin center → App registrations</a> (free with any Microsoft account), choose <strong>New registration</strong>.</li>
+      <li>Supported account types: <strong>Accounts in any organizational directory and personal Microsoft accounts</strong>.</li>
+      <li>Redirect URI, platform <strong>Web</strong>:<br><code class="copyable">{{ ms_redirect_uri }}</code>{% if ms_redirect_uri.startswith('http://') %}<br><span class="field-hint">Plain http is accepted only for <code>localhost</code>; in production use your https domain.</span>{% endif %}</li>
+      <li>Under <strong>API permissions → Microsoft Graph → Delegated</strong>, add <code>Mail.Send</code>, <code>Mail.Read</code>, <code>User.Read</code>, <code>offline_access</code>, <code>openid</code>, <code>email</code>, <code>profile</code>.</li>
+      <li>Under <strong>Certificates &amp; secrets</strong>, create a client secret. Paste its <em>Value</em> and the <em>Application (client) ID</em> below.</li>
+      <li>Recommended: <strong>publisher verification</strong> (free with a Microsoft AI Cloud Partner Program ID). Many universities only let students approve apps from verified publishers; otherwise their IT has to approve Internix once.</li>
+    </ol>
+    <form method="post" class="settings-grid" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="microsoft_client">
+      <div class="form-group"><label for="ms-client-id">Application (client) ID</label><input id="ms-client-id" name="ms_client_id" type="text" maxlength="100" placeholder="00000000-0000-0000-0000-000000000000"></div>
+      <div class="form-group"><label for="ms-client-secret">Client secret value</label><input id="ms-client-secret" name="ms_client_secret" type="password" maxlength="200" autocomplete="new-password"></div>
+      <div class="form-actions"><button class="button button--primary" type="submit">Save Microsoft app</button></div>
+    </form>
+    {% if ms_configured %}
+    <form method="post" class="inline-form" style="margin-top:10px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="microsoft_client_remove">
+      <button class="button button--danger button--sm" type="submit">Remove Microsoft app</button>
+    </form>
+    {% endif %}
+    <form method="post" class="stack-form" style="margin-top:18px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="microsoft_scope">
+      <label class="choice"><input type="checkbox" name="microsoft_inbox_read" value="on" {% if ms_inbox_read %}checked{% endif %}>
+        <span><strong>Also ask for “Read mail” (bounce detection)</strong>
+        <span class="field-hint">An ordinary delegated permission on Microsoft — no paid assessment. Some universities require IT approval for it; turn it off if students get blocked.</span></span></label>
+      <div><button class="button button--primary" type="submit">Save</button></div>
+    </form>
+  </section>
 </div>
 {% endblock %}

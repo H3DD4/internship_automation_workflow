@@ -70,6 +70,25 @@ For one-click "Sign in with Google":
 While the Google app is in **Testing**, only listed test users (max 100) can
 sign in and tokens expire after 7 days. To open it to everyone, submit the
 app for verification: `gmail.send` is a *sensitive* scope (a review, no fee).
+
+For "Continue with Microsoft" / "Connect with Microsoft" (Outlook, Hotmail and
+university Microsoft 365 — most universities; free):
+
+1. Microsoft Entra admin center → App registrations → *New registration*,
+   account types **any organizational directory and personal Microsoft accounts**.
+2. Redirect URI, platform *Web*: `https://<DOMAIN>/oauth/microsoft/callback`
+   (plain http is accepted only for `localhost`).
+3. API permissions → Microsoft Graph → *Delegated*: `Mail.Send`, `Mail.Read`,
+   `User.Read`, `offline_access`, `openid`, `email`, `profile`.
+4. Certificates & secrets → new client secret. Paste the client ID and secret
+   value in **Admin → Platform** (stored encrypted), or set
+   `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET`.
+5. Recommended: publisher verification (free with a Microsoft AI Cloud Partner
+   Program ID) — many universities only let students approve verified apps;
+   otherwise their IT approves the app once for the whole university.
+
+Why not SMTP passwords for Outlook: Microsoft 365 disables password ("basic")
+authentication for SMTP by default from the end of December 2026.
 Keep **"Read email"** off in Admin → Platform for a public launch —
 `gmail.readonly` is *restricted* and requires a paid yearly security
 assessment; bounce detection keeps working through app passwords (IMAP).

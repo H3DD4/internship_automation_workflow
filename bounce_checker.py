@@ -46,9 +46,11 @@ FAILED_ADDRESS_PATTERNS = [
     re.compile(r"n'est pas parvenu à\s+(\S+@[\w.-]+)", re.IGNORECASE),
     re.compile(r"distribution de votre message à\s+(\S+@[\w.-]+)", re.IGNORECASE),
     re.compile(r"Votre message à\s+(\S+@[\w.-]+)", re.IGNORECASE),
+    # Exchange / Outlook non-delivery reports.
+    re.compile(r"(?:couldn't be delivered to|n'a pas pu être remis à)\s+(\S+@[\w.-]+)", re.IGNORECASE),
 ]
 
-BOUNCE_SENDER_HINTS = ["mailer-daemon", "postmaster", "mail delivery subsystem"]
+BOUNCE_SENDER_HINTS = ["mailer-daemon", "postmaster", "mail delivery subsystem", "microsoftexchange"]
 
 
 def _extract_failed_email(raw_message: str) -> str | None:
@@ -224,6 +226,17 @@ def _check_bounces_via_gmail_api(data, credentials, days_back: int) -> int:
     return updated
 
 
+def _check_bounces_via_microsoft(data, cfg, days_back: int) -> int:
+    import microsoft_auth
+    updated = 0
+    for raw in microsoft_auth.bounce_messages(cfg, days_back):
+        msg = email.message_from_bytes(raw)
+        if _record_bounce_if_sent(data, msg.get("From") or "", msg.get("Subject") or "",
+                                  _get_body_text(msg), msg):
+            updated += 1
+    return updated
+
+
 LAST_CHECK_KEY = "bounce_check"
 
 
@@ -247,6 +260,9 @@ def credentials_available(cfg: UserConfig) -> bool:
     import google_auth_helper
     if google_auth_helper.token_exists(cfg) and google_auth_helper.can_read_inbox(cfg):
         return True
+    import microsoft_auth
+    if microsoft_auth.token_exists(cfg) and microsoft_auth.can_read_inbox(cfg):
+        return True
     return _imap_login(cfg) is not None
 
 
@@ -259,6 +275,9 @@ def check_bounces(cfg: UserConfig, days_back: int = 3) -> int:
         credentials = google_auth_helper.get_credentials(cfg)
         if credentials is not None:
             return _check_bounces_via_gmail_api(data, credentials, days_back)
+    import microsoft_auth
+    if microsoft_auth.token_exists(cfg) and microsoft_auth.can_read_inbox(cfg):
+        return _check_bounces_via_microsoft(data, cfg, days_back)
     login = _imap_login(cfg)
     if login is None:
         raise RuntimeError("No way to read your inbox: sign in with Google with inbox access, "
