@@ -288,6 +288,44 @@
     });
   }
 
+  // ── After a style switch: highlight the sentences the new style changed ──
+  (function highlightStyleChanges() {
+    const select = $("style-select");
+    const preview = $("preview-body");
+    if (!select || !preview) return;
+    let saved = null;
+    try {
+      const key = `style-diff-${select.dataset.appId}`;
+      saved = JSON.parse(sessionStorage.getItem(key) || "null");
+      sessionStorage.removeItem(key);
+    } catch (_) { return; }
+    if (!saved || !saved.body) return;
+    const split = (text) => text.split(/(?<=[.!?:])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
+    const before = new Set(split(saved.body));
+    const text = preview.textContent;
+    let changed = 0;
+    // Rebuild the preview as text nodes and <mark>s — never as HTML from the draft.
+    const parts = text.split(/((?<=[.!?:])\s+|\n+)/);
+    preview.textContent = "";
+    parts.forEach((part) => {
+      const sentence = part.trim();
+      if (sentence && !/^\s+$/.test(part) && !before.has(sentence)) {
+        const mark = document.createElement("mark");
+        mark.className = "style-changed";
+        mark.textContent = part;
+        preview.appendChild(mark);
+        changed += 1;
+      } else {
+        preview.appendChild(document.createTextNode(part));
+      }
+    });
+    if (changed) {
+      setResult(`✓ Rewritten in “${saved.name}” — the highlighted sentences are what changed.`, true);
+    } else {
+      setResult(`“${saved.name}” produced the same text as before for this company.`);
+    }
+  })();
+
   // ── Style switch ─────────────────────────────────────────────────────────
   // Picking a style shows what it's for; confirming rewrites this email in it
   // from the same research and approved facts (instant, no AI).
@@ -316,6 +354,12 @@
           return;
         }
         setResult(`✓ Rewritten in “${name}”`, true);
+        // Remember the old text so the reloaded page can highlight what changed.
+        try {
+          const preview = $("preview-body");
+          sessionStorage.setItem(`style-diff-${styleSelect.dataset.appId}`,
+            JSON.stringify({ body: preview ? preview.textContent : "", name }));
+        } catch (_) { /* storage unavailable: no highlight, nothing else lost */ }
         setTimeout(() => window.location.reload(), 500);
       } catch (err) {
         setResult(`✗ ${err.message}`, false);

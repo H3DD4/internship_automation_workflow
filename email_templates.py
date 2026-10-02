@@ -162,6 +162,8 @@ TEMPLATES = {
             "fr": "Une candidature classique et formelle — pour les grands groupes, les "
                   "institutions publiques et les secteurs traditionnels.",
         },
+        # Facts only: the personal "why" sentence is left out of a formal letter.
+        "include_motivation": False,
         "en": {
             "subject": "Application — {target_role} from <<start_date>> | {applicant_name}",
             "intro_with_hook": "I am <<identity>>, and I would like to apply for an internship at {company}, whose work on {hook} closely matches my interests.",
@@ -202,6 +204,10 @@ TEMPLATES = {
             "fr": "Pour les laboratoires, équipes R&D et stages de recherche : présente votre "
                   "travail comme de la recherche et propose de contribuer au leur.",
         },
+        # One highlight plus the personal motivation — a lab wants to know why.
+        "strengths_budget": [1, 1],
+        "include_motivation": True,
+        "min_words": 70,
         "en": {
             "subject": "Research {target_role} from <<start_date>> — {topic} | {applicant_name}",
             "intro_with_hook": "I'm <<identity>>. I'm writing because the research at {company} on {hook} is closely related to what I want to work on.",

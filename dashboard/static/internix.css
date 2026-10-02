@@ -641,3 +641,4 @@ a.notice:hover { background: #FFEFC9; }
 #mail-form .method-panel { margin-bottom: 16px; }
 #mail-form .form-actions { margin-top: 4px; }
 .style-switch__hint { grid-column: 1 / -1; order: 3; margin-top: -2px; }
+mark.style-changed { background: var(--amber-soft); box-shadow: inset 0 -2px 0 #F0CD7E; color: inherit; border-radius: 2px; }

@@ -91,6 +91,22 @@ def spec_for_style(dcfg: DraftingConfig, style: str | None, lang: str) -> dict:
     if not style or style == dcfg.template_id or style not in email_templates.TEMPLATES or not dcfg.facts:
         return dcfg.specs[lang]
     spec = email_templates.build_spec(dcfg.facts, style, lang)
+    own = dcfg.specs.get(lang) if dcfg.template_id == "custom" else None
+    if own:
+        # A user with hand-written wording keeps their own content — the
+        # areas research matches companies against (same ids, so the "your
+        # focus on X is where my experience is strongest" paragraph appears)
+        # and their own strengths — and the style changes only the wording
+        # around it.
+        spec["areas"] = own.get("areas") or spec["areas"]
+        spec["strengths"] = own.get("strengths") or spec["strengths"]
+        own_email = own.get("email") or {}
+        for key in ("motivation", "default_topic"):
+            if own_email.get(key):
+                spec["email"][key] = own_email[key]
+        allowed = set(spec["verified_facts"].get("allowed_numbers") or [])
+        allowed |= set((own.get("verified_facts") or {}).get("allowed_numbers") or [])
+        spec["verified_facts"] = {**spec["verified_facts"], "allowed_numbers": sorted(allowed)}
     problems = email_templates.spec_problems(spec)
     if problems:
         raise NotReady(f"Your profile has no {lang.upper()} wording for {', '.join(problems)} yet.")

@@ -116,3 +116,31 @@ def test_a_rescanned_company_is_written_again_in_its_chosen_style(client, ready_
 def test_the_profile_page_lists_the_proven_rules(client, template_user):
     page = client.get("/profile").data.decode()
     assert "What the data says works" in page and "Backlinko" in page and "Best for:" in page
+
+
+def test_hand_written_users_keep_their_cv_match_in_every_style(with_profile, spec):
+    """The research tags companies with the area ids of the hand-written
+    wording; a template built from the CV analysis used other ids, so the
+    "your focus on X is where my experience is strongest" paragraph vanished
+    from every style and they all read alike."""
+    import drafting
+    from user_config import UserConfig
+    profiles.save(with_profile, facts=FACTS)
+    dcfg = drafting.load_config(with_profile, UserConfig(with_profile))
+    area = spec["areas"][0]
+    research = {"company_hook": "", "areas": [area["id"]], "hook_status": "none offered"}
+    app = {"company_name": "Acme", "email": "jobs@acme.com", "website": "", "contact_name": "", "language": "en"}
+    for style in ("specialist", "concise", "formal", "conversation", "spontaneous"):
+        body = drafting.compose_for(dcfg, app, research, lang="en", style=style)["body"]
+        assert area["evidence"][:40] in body, style
+
+
+def test_the_styles_really_differ(with_profile):
+    import drafting
+    from user_config import UserConfig
+    profiles.save(with_profile, facts=FACTS)
+    dcfg = drafting.load_config(with_profile, UserConfig(with_profile))
+    app = {"company_name": "Acme", "email": "jobs@acme.com", "website": "", "contact_name": "", "language": "en"}
+    bodies = {s["id"]: drafting.compose_for(dcfg, app, {"company_hook": "", "areas": []}, lang="en",
+                                            style=s["id"])["body"] for s in drafting.style_choices(dcfg)}
+    assert len(set(bodies.values())) == len(bodies)
