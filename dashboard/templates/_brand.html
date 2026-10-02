@@ -1,22 +1,11 @@
-{# The Ntern brand, in one place.
-   mark()  the N: a navy stem, then amber and periwinkle triangles around a
-           white diamond. Inline SVG, so it stays sharp at any size.
-   logo()  "Ntern": that N as the first letter, then "tern" in the heading
-           font, sitting on the same baseline.
-   `dark` draws the stem and the word in white for dark grounds. #}
-{% macro mark(size=28, uid="m", dark=false) -%}
-<svg class="brand-mark" height="{{ size }}" width="{{ (size * 68 / 72) | round(1) }}" viewBox="0 0 68 72" aria-hidden="true">
-  <rect x="0" y="0" width="16" height="72" rx="3" fill="{{ '#FFFFFF' if dark else '#3F4151' }}"/>
-  <polygon points="32,0 68,0 32,32" fill="#F6C469"/>
-  <polygon points="68,0 68,32 50,16" fill="#858BFF"/>
-  <polygon points="32,40 32,72 68,72" fill="#F6C469"/>
-  <polygon points="68,40 68,72 50,56" fill="#858BFF"/>
-</svg>
+{# The Ntern brand, in one place — the logo image as supplied, nothing redrawn.
+   logo()  the ".ntern" wordmark (static/brand/logo.png, transparent).
+   mark()  the ".n" part alone, for square spots (static/brand/icon.png). #}
+{% macro logo(height=26, dark=false) -%}
+<img class="brand-logo" src="{{ asset('brand/logo.png') }}" alt="Ntern"
+     height="{{ height }}" width="{{ (height * 1023 / 233) | round | int }}" style="height: {{ height }}px; width: auto;">
 {%- endmacro %}
 
-{% macro logo(height=26, dark=false) -%}
-<span class="brand-logo{{ ' brand-logo--dark' if dark }}" style="--logo-h: {{ height }}px" role="img" aria-label="Ntern">
-  {{- mark(height, "logo", dark) -}}
-  <span class="brand-logo__word" aria-hidden="true">tern</span>
-</span>
+{% macro mark(size=28, uid="m", dark=false) -%}
+<img class="brand-mark" src="{{ asset('brand/apple-touch-icon.png') }}" alt="" width="{{ size }}" height="{{ size }}">
 {%- endmacro %}

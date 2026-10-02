@@ -7,7 +7,8 @@
   <title>{% block title %}Ntern{% endblock %}</title>
   <meta name="description" content="Ntern researches every company and writes internship applications from your own CV — in English or French — for you to review and send.">
   {% if current_user %}<meta name="csrf-token" content="{{ csrf_token() }}">{% endif %}
-  <link rel="icon" type="image/svg+xml" href="{{ asset('brand/icon.svg') }}">
+  <link rel="icon" type="image/png" href="{{ asset('brand/icon.png') }}">
+  <link rel="apple-touch-icon" href="{{ asset('brand/apple-touch-icon.png') }}">
   <meta name="theme-color" content="#FFFFFF">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -69,7 +70,7 @@
 
   <header class="appbar">
     <div class="appbar__inner">
-      <a class="appbar__brand" href="{{ url_for('index') }}" aria-label="Ntern home">{{ logo(22) }}</a>
+      <a class="appbar__brand" href="{{ url_for('index') }}" aria-label="Ntern home">{{ logo(26) }}</a>
       <nav class="appbar__nav" aria-label="Main navigation">{{ nav_items("appbar") }}</nav>
       <details class="usermenu" data-menu>
         <summary class="usermenu__toggle" aria-label="Account menu">
