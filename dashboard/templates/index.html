@@ -250,7 +250,7 @@
     </fieldset>
     {% endif %}
     <label class="batch-limit-label">Batch size
-      <input type="number" name="batch_limit" class="batch-limit-input" min="1" placeholder="All" title="Leave empty to prepare every company that still needs work">
+      <input type="number" name="batch_limit" class="batch-limit-input" min="1" value="50" placeholder="All" title="How many companies this run prepares — empty prepares every company that still needs work">
     </label>
     {# Kept live by app.js from /api/overview: the page used to show
        "Preparing…" until a manual reload, even after the run had stopped. #}

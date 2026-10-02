@@ -129,3 +129,8 @@ def test_a_new_user_is_told_the_ntern_list_is_ready(client):
     page = client.get("/").data.decode()
     assert "the Ntern list has 2 companies" in page and "add your own list any time" in page
     assert "Import your companies list" not in page
+
+
+def test_a_run_prepares_50_companies_unless_the_user_changes_it(client):
+    page = client.get("/").data.decode()
+    assert 'name="batch_limit" class="batch-limit-input" min="1" value="50"' in page
