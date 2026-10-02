@@ -30,7 +30,8 @@ CSRF_FIELD = "csrf_token"
 
 # Endpoints reachable without signing in.
 PUBLIC_ENDPOINTS = {"static", "auth.login", "auth.register", "health", "auth.logout",
-                    "auth_google", "oauth_callback", "microsoft.login", "microsoft.callback"}
+                    "auth_google", "oauth_callback", "microsoft.login", "microsoft.callback",
+                    "privacy", "terms"}
 # Endpoints that render a public page when nobody is signed in (and the normal
 # page, with every check, when someone is).
 LANDING_ENDPOINTS = {"index"}

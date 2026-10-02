@@ -365,6 +365,25 @@ def _table_context(page: int, status_param: str, search_param: str, limit: int =
 # The tracker
 # ---------------------------------------------------------------------------
 
+LEGAL_UPDATED = "2 October 2026"
+
+
+def _legal(page: str):
+    # CONTACT_EMAIL in .env: the address shown for privacy questions.
+    return render_template("legal.html", page=page, updated=LEGAL_UPDATED, year=date.today().year,
+                           contact=config.get("CONTACT_EMAIL"))
+
+
+@app.get("/privacy")
+def privacy():
+    return _legal("privacy")
+
+
+@app.get("/terms")
+def terms():
+    return _legal("terms")
+
+
 @app.route("/")
 def index():
     if g.user is None:

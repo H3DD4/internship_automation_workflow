@@ -420,3 +420,11 @@ def test_the_run_controls_are_live(client):
     assert 'id="start-prep-btn"' in page and 'id="stop-prep-btn"' in page
     data = client.get("/api/overview").get_json()
     assert data["running"] is False and "stop_requested" in data
+
+
+
+def test_privacy_and_terms_are_public(anon_client):
+    privacy = anon_client.get("/privacy")
+    assert privacy.status_code == 200 and b"Limited Use" in privacy.data and b"gmail.send" in privacy.data
+    terms = anon_client.get("/terms")
+    assert terms.status_code == 200 and b"Terms of use" in terms.data

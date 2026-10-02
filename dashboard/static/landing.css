@@ -406,3 +406,12 @@ html { scroll-behavior: smooth; scroll-padding-top: 84px; }
   .lp-qq__plus { animation: lp-pop 1.6s cubic-bezier(.2, .7, .2, 1) infinite alternate; }
   @keyframes lp-pop { from { transform: scale(.92); } to { transform: scale(1.06); } }
 }
+
+/* ----------------------------------------------------------- legal pages */
+.lp-legal { max-width: 760px; padding-top: 56px; padding-bottom: 72px; }
+.lp-legal h1 { font-size: clamp(32px, 4vw, 44px); }
+.lp-legal h2 { font-size: 22px; font-weight: 600; margin-top: 36px; }
+.lp-legal p, .lp-legal li { font-size: 15.5px; line-height: 1.65; color: var(--text-2); }
+.lp-legal p { margin-top: 12px; }
+.lp-legal ul { margin: 12px 0 0; padding-left: 20px; display: grid; gap: 8px; }
+.lp-legal__date { color: var(--text-muted) !important; font-size: 14px !important; }

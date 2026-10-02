@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% set bare = true %}
+{% from "_brand.html" import logo with context %}
+{% block title %}{{ "Privacy policy" if page == "privacy" else "Terms of use" }} · Ntern{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ asset('landing.css') }}">{% endblock %}
+
+{% block bare %}
+<div class="lp">
+  <header class="lp-nav">
+    <div class="lp-wrap lp-nav__inner">
+      <a class="lp-nav__brand" href="{{ url_for('index') }}" aria-label="Ntern home">{{ logo(28) }}</a>
+      <div class="lp-nav__cta">
+        <a class="lp-nav__login" href="{{ url_for('privacy') }}">Privacy</a>
+        <a class="lp-nav__login" href="{{ url_for('terms') }}">Terms</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="lp-wrap lp-legal">
+    {% if page == "privacy" %}
+    <h1>Privacy policy</h1>
+    <p class="lp-legal__date">Last updated: {{ updated }}</p>
+
+    <p>Ntern helps students prepare and send internship applications. This page explains what data Ntern stores, why, and what it does — and never does — with your Google or Microsoft account.</p>
+
+    <h2>What we store</h2>
+    <ul>
+      <li><b>Your account:</b> your name, email address and, if you set one, a password stored only as an Argon2id hash.</li>
+      <li><b>Your CV and profile:</b> the CV you upload, the text extracted from it and the profile you confirm, used to write your emails.</li>
+      <li><b>Your company list and drafts:</b> the companies you import, the research about their public websites, the drafts and their sending history.</li>
+      <li><b>Your keys and mail connection:</b> your AI provider keys and mailbox tokens, encrypted at rest and never shown again.</li>
+      <li><b>Security records:</b> sign-in sessions (with IP address and browser) and an audit log of account actions.</li>
+    </ul>
+    <p>Your data is kept in a separate workspace: no other user can see it. We do not sell it, rent it or use it for advertising.</p>
+
+    <h2>Google user data</h2>
+    <p>If you sign in with Google or connect Gmail, Ntern asks only for what it needs:</p>
+    <ul>
+      <li><b>Your email address and name</b> — to create and identify your account.</li>
+      <li><b>Sending email (gmail.send)</b> — to send, from your own Gmail, only the application emails you reviewed and chose to send. Ntern never sends anything on its own.</li>
+      <li><b>Reading your inbox (gmail.readonly)</b>, only if the platform enables it — to find delivery-failure notices ("bounces") for emails Ntern sent, so you know which addresses don't work. Other messages are not stored.</li>
+    </ul>
+    <p>Ntern's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener noreferrer">Google API Services User Data Policy</a>, including the Limited Use requirements. Google user data is not used to train AI models, not transferred to others except as needed to provide the features above, and never used for advertising.</p>
+
+    <h2>Microsoft accounts</h2>
+    <p>If you sign in with Microsoft or connect Outlook, the same rules apply: Ntern uses your address and name to identify you, sends only the emails you choose (Mail.Send) and, if enabled, reads delivery-failure notices (Mail.Read).</p>
+
+    <h2>AI providers</h2>
+    <p>To research companies and draft your profile, Ntern sends text (your CV text, company website text) to the AI provider whose key <em>you</em> connected — for example Groq, Google Gemini or Mistral — under that provider's own terms. Ntern does not send your Gmail or Outlook data to AI providers.</p>
+
+    <h2>Keeping and deleting your data</h2>
+    <p>Your data is kept while your account exists. You can disconnect Google or Microsoft at any time in Settings, and revoke access from your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener noreferrer">Google account</a>. To delete your account and everything in it, contact us{% if contact %} at <a href="mailto:{{ contact }}">{{ contact }}</a>{% endif %} — the deletion removes your CV, drafts, keys and tokens.</p>
+
+    <h2>Contact</h2>
+    <p>{% if contact %}Questions about your data: <a href="mailto:{{ contact }}">{{ contact }}</a>.{% else %}Questions about your data: contact the administrator of this platform.{% endif %}</p>
+
+    {% else %}
+    <h1>Terms of use</h1>
+    <p class="lp-legal__date">Last updated: {{ updated }}</p>
+
+    <h2>What Ntern does</h2>
+    <p>Ntern researches companies you list, drafts application emails from your CV, and sends the ones you approve from your own mailbox. It is a tool that prepares; you decide.</p>
+
+    <h2>Your responsibilities</h2>
+    <ul>
+      <li>Only import companies and addresses you are allowed to contact, and send applications — not advertising or unrelated messages.</li>
+      <li>Read every email before sending it. You are responsible for what is sent from your mailbox.</li>
+      <li>Only upload a CV and information that are yours and true.</li>
+      <li>Keep your password, AI keys and mailbox access to yourself, and respect the terms of your AI and email providers.</li>
+    </ul>
+
+    <h2>What we don't promise</h2>
+    <p>Ntern checks drafts against your CV and the company's website, but research can be wrong and websites change. Ntern does not guarantee replies, interviews or internships, and is provided "as is", without warranty.</p>
+
+    <h2>Your account</h2>
+    <p>The administrator may approve, suspend or delete accounts, for example in case of abuse such as spam. You can stop using Ntern and ask for your data to be deleted at any time — see the <a href="{{ url_for('privacy') }}">privacy policy</a>.</p>
+
+    <h2>Contact</h2>
+    <p>{% if contact %}<a href="mailto:{{ contact }}">{{ contact }}</a>{% else %}Contact the administrator of this platform.{% endif %}</p>
+    {% endif %}
+  </main>
+
+  <footer class="lp-footer">
+    <div class="lp-wrap lp-footer__base">© {{ year }} Ntern · <a href="{{ url_for('privacy') }}">Privacy</a> · <a href="{{ url_for('terms') }}">Terms</a></div>
+  </footer>
+</div>
+{% endblock %}
