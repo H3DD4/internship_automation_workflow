@@ -119,7 +119,9 @@ def compose_email(spec: dict, research: dict, company_name: str, greeting: str,
             if picked or tail:
                 paragraphs.append(" ".join(picked + tail))
         elif section == "ask":
-            paragraphs.append(email["internship_ask"].format(**fields))
+            # A style may phrase the ask itself (a short call instead of a
+            # job); otherwise it's the user's own internship sentence.
+            paragraphs.append((email.get("ask_text") or email["internship_ask"]).format(**fields))
         elif section == "closing":
             paragraphs.append(_pick(email["closing_variants"], f"{company_name}#closing").format(**fields))
 

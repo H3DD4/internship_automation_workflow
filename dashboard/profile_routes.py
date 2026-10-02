@@ -45,6 +45,7 @@ def _profile_context(profile: dict | None) -> dict:
         "template_id": (profile or {}).get("template_id") or email_templates.DEFAULT_TEMPLATE,
         "language_mode": (profile or {}).get("language_mode") or "auto",
         "templates": email_templates.template_choices("en"),
+        "proven_rules": email_templates.proven_rules("en"),
         "cv": g.cfg.cv_info(),
         "has_ai_key": bool(g.cfg.saved_secret_names() & {
             p["key_env"] for p in __import__("ai_client").PROVIDERS.values()}),

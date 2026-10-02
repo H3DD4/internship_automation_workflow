@@ -192,6 +192,9 @@ applications = Table(
     # en | fr — the language the current draft is written in. NULL on rows
     # drafted before languages existed, which were all English.
     Column("language", String(8)),
+    # The email style this draft was written in, when the user switched it
+    # for this one company; NULL = the profile's style.
+    Column("template_id", String(32)),
     UniqueConstraint("user_id", "email", name="uq_applications_user_email"),
     Index("idx_applications_user_status", "user_id", "status"),
     Index("idx_applications_user_updated", "user_id", "updated_at"),
@@ -280,7 +283,7 @@ prep_runs = Table(
     Index("idx_prep_runs_user", "user_id", "id"),
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # ---------------------------------------------------------------------------
 # Engine
@@ -390,6 +393,11 @@ def _migrate(conn) -> None:
         if "targets" not in columns:
             conn.execute(text("ALTER TABLE prep_runs ADD COLUMN targets TEXT"))
         conn.execute(text("INSERT INTO schema_version (version) VALUES (3)"))
+    if version < 4:
+        columns = {c["name"] for c in inspect(conn).get_columns("applications")}
+        if "template_id" not in columns:
+            conn.execute(text("ALTER TABLE applications ADD COLUMN template_id VARCHAR(32)"))
+        conn.execute(text("INSERT INTO schema_version (version) VALUES (4)"))
 
 
 def _dialect_insert(conn, table):

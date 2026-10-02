@@ -70,9 +70,29 @@
     <section class="panel">
       <div class="panel-heading-row">
         <h2>Email</h2>
-        <span class="word-count{% if word_count and (word_count < 180 or word_count > 360) %} word-count--warn{% endif %}"
-              id="word-count">{{ word_count }} words (target 200–320)</span>
+        <span class="word-count{% if word_count and (word_count < 50 or word_count > 200) %} word-count--warn{% endif %}"
+              id="word-count" title="Emails of 50–125 words get the most replies (Boomerang, 40M emails)">{{ word_count }} words · most replies at 50–125</span>
       </div>
+
+      {# Style: rewrite this one email in another style — same research, same
+         approved facts, instant, no AI. #}
+      {% if styles | length > 1 and (application.editable or application.status in ('researched', 'pending')) %}
+      <div class="style-switch">
+        <label for="style-select">Style</label>
+        <select id="style-select" data-app-id="{{ application.id }}" data-current="{{ current_style }}">
+          {% for s in styles %}<option value="{{ s.id }}"{% if s.id == current_style %} selected{% endif %}>{{ s.name }}</option>{% endfor %}
+        </select>
+        {% for s in styles %}
+        <div class="style-note" data-style-note="{{ s.id }}"{% if s.id != current_style %} hidden{% endif %}>
+          <p>{{ s.description }}</p>
+          {% if s.best_for %}<p><strong>Best for:</strong> {{ s.best_for }}</p>{% endif %}
+          {% if s.evidence %}<ul class="style-evidence">
+            {% for e in s.evidence %}<li>{{ e.text }} <a href="{{ e.url }}" target="_blank" rel="noopener noreferrer">{{ e.source }}</a></li>{% endfor %}
+          </ul>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
 
       <div class="detail-tabs" role="tablist">
         <button class="detail-tab detail-tab--active" type="button" role="tab" data-tab="preview">Preview</button>

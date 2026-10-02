@@ -441,7 +441,7 @@ def api_sendable_favorites():
         for r in data().get_sendable_favorites()]})
 
 
-def _rebuild(app_id: int, lang: str | None):
+def _rebuild(app_id: int, lang: str | None, style: str | None = None):
     import pipeline as pipeline_module
     from agents.draft_guard import GuardRejection
     d = data()
@@ -458,14 +458,18 @@ def _rebuild(app_id: int, lang: str | None):
         return jsonify({"ok": False, "message": f"No {LANGUAGE_LABELS.get(lang, lang)} wording yet — "
                                                 "add it on your Profile page."}), 400
     context = pipeline_module._load_research(g.user["id"], application["email"], application) or {}
-    # Rebuilding keeps the language the draft is in unless a switch was asked.
+    # Rebuilding keeps the language and style the draft is in unless a switch was asked.
     try:
-        draft = drafting.compose_for(dcfg, application, context, lang=lang or application.get("language"))
+        draft = drafting.compose_for(dcfg, application, context, lang=lang or application.get("language"),
+                                     style=style)
+    except drafting.NotReady as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
     except GuardRejection as exc:
         return jsonify({"ok": False, "message": f"Your wording produced an invalid email: {exc}"}), 400
     cache_store.save_draft(g.user["id"], application["email"], draft)
     d.update_application(app_id, status="ready", subject=draft["subject"], body=draft["body"],
-                         language=draft["language"], error_message=None)
+                         language=draft["language"], template_id=draft.get("template_id"),
+                         error_message=None)
     d.log_event(app_id, "write", f"Draft rebuilt ({draft['language'].upper()}): \"{draft['subject']}\"",
                 detail=draft)
     return jsonify({"ok": True, "subject": draft["subject"], "body": draft["body"],
@@ -477,6 +481,20 @@ def api_regenerate(app_id):
     """Rebuild one draft from its saved research and the current profile —
     instant, no AI."""
     return _rebuild(app_id, None)
+
+
+@app.post("/api/style/<int:app_id>")
+def api_style(app_id):
+    """The style switch: rewrite this company's draft in another email style,
+    from the same research and the same approved facts — instant, no AI."""
+    style = str((request.get_json(silent=True) or {}).get("style") or "")
+    try:
+        dcfg = drafting.load_config(g.user["id"], g.cfg)
+    except drafting.NotReady as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    if style not in {c["id"] for c in drafting.style_choices(dcfg)}:
+        return jsonify({"ok": False, "message": "That style isn't available for your profile."}), 400
+    return _rebuild(app_id, None, style)
 
 
 @app.post("/api/language/<int:app_id>")
@@ -665,8 +683,15 @@ def company_detail(app_id):
     _, spec_en, spec_fr = profiles.specs_for(g.user["id"])
     import pipeline as pipeline_module
     research = pipeline_module._load_research(g.user["id"], application["email"], application) or {}
+    try:
+        dcfg = drafting.load_config(g.user["id"], g.cfg)
+        styles = drafting.style_choices(dcfg)
+        current_style = application.get("template_id") or dcfg.template_id
+    except drafting.NotReady:
+        styles, current_style = [], ""
     return render_template(
         "detail.html", application=application, events=events,
+        styles=styles, current_style=current_style,
         email_name=drafting.email_company_name(application, research),
         earlier_events=earlier_events, current_events=current_events,
         earlier_failed=sum(1 for e in earlier_events if e["error_summary"]),

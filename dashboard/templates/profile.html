@@ -95,9 +95,18 @@
         <input type="radio" name="template_id" value="{{ t.id }}" {% if template_id == t.id %}checked{% endif %} {% if not facts %}disabled{% endif %}>
         <strong>{{ t.name }}</strong>
         <span class="field-hint">{{ t.description }}</span>
+        {% if t.best_for %}<span class="template-card__best"><b>Best for:</b> {{ t.best_for }}</span>{% endif %}
+        {% for e in t.evidence[:1] %}<span class="template-card__proof">{{ e.text }} <em>— {{ e.source }}</em></span>{% endfor %}
       </label>
       {% endfor %}
     </div>
+    <details class="proven-rules">
+      <summary>What the data says works — for every style</summary>
+      <ul>
+        {% for r in proven_rules %}<li>{{ r.text }} <a href="{{ r.url }}" target="_blank" rel="noopener noreferrer">{{ r.source }}</a></li>{% endfor %}
+      </ul>
+      <p class="field-hint">You can switch the style of any single email on its page, while reviewing it.</p>
+    </details>
     {% if mode == 'custom' and not facts %}<p class="field-hint">The other styles need a CV profile — use step 1 to create one. Your own wording stays available.</p>{% endif %}
     <div class="settings-grid">
       <div class="form-group">

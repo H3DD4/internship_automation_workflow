@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import email_templates
 import language
 import profiles
 from agents.composer import compose_email
@@ -27,6 +28,8 @@ class DraftingConfig:
     specs: dict            # {"en": spec, "fr": spec or None}
     target_roles: dict     # {"en": ..., "fr": ...}
     language_mode: str     # auto | en | fr
+    facts: dict = None     # the profile's facts, so any style can be built on the spot
+    template_id: str = ""  # the profile's own style ("custom" = hand-written wording)
 
     @property
     def available_languages(self) -> tuple:
@@ -55,7 +58,8 @@ def load_config(user_id: int, cfg: UserConfig | None = None) -> DraftingConfig:
         roles[lang] = role or fallback_role or ("Internship" if lang == "en" else "Stage")
     return DraftingConfig(user_id=user_id, applicant_name=name,
                           specs={"en": spec_en, "fr": spec_fr}, target_roles=roles,
-                          language_mode=profile.get("language_mode") or "auto")
+                          language_mode=profile.get("language_mode") or "auto",
+                          facts=facts, template_id=profile.get("template_id") or "")
 
 
 def pick_language(dcfg: DraftingConfig, app: dict, research: dict | None,
@@ -66,18 +70,48 @@ def pick_language(dcfg: DraftingConfig, app: dict, research: dict | None,
         available=dcfg.available_languages)
 
 
+def style_choices(dcfg: DraftingConfig, lang: str = "en") -> list:
+    """The styles one email can be switched to: the profile's own
+    hand-written wording (when it has one) and every template its facts can
+    fill."""
+    choices = []
+    if dcfg.template_id == "custom":
+        choices.append({"id": "custom", "name": "Your own wording" if lang == "en" else "Votre propre texte",
+                        "description": "The hand-tuned wording on your profile.", "best_for": "", "evidence": []})
+    if dcfg.facts:
+        choices += email_templates.template_choices(lang)
+    elif dcfg.template_id in email_templates.TEMPLATES:
+        choices += [c for c in email_templates.template_choices(lang) if c["id"] == dcfg.template_id]
+    return choices
+
+
+def spec_for_style(dcfg: DraftingConfig, style: str | None, lang: str) -> dict:
+    """The wording for `style` in `lang`: the profile's own specs for its own
+    style, any other template built from the profile's facts on the spot."""
+    if not style or style == dcfg.template_id or style not in email_templates.TEMPLATES or not dcfg.facts:
+        return dcfg.specs[lang]
+    spec = email_templates.build_spec(dcfg.facts, style, lang)
+    problems = email_templates.spec_problems(spec)
+    if problems:
+        raise NotReady(f"Your profile has no {lang.upper()} wording for {', '.join(problems)} yet.")
+    return spec
+
+
 def compose_for(dcfg: DraftingConfig, app: dict, research: dict | None,
-                lang: str | None = None) -> dict:
-    """{"subject", "body", "language"} for one application. `lang` forces a
-    language (the EN/FR switch); otherwise the usual rule decides."""
+                lang: str | None = None, style: str | None = None) -> dict:
+    """{"subject", "body", "language", "template_id"} for one application.
+    `lang` forces a language (the EN/FR switch), `style` an email style (the
+    style switch); otherwise this company's saved style, then the profile's."""
     lang = pick_language(dcfg, app, research, override=lang)
-    spec = dcfg.specs[lang]
+    style = style or app.get("template_id") or None
+    spec = spec_for_style(dcfg, style, lang)
     company = email_company_name(app, research)
     greeting = build_greeting(app.get("contact_name"), company, lang)
     draft = compose_email(spec, language.research_for_language(research, lang),
                           company, greeting, dcfg.applicant_name,
                           dcfg.target_roles[lang], lang)
-    return {**draft, "language": lang}
+    chosen = style if style and style != dcfg.template_id and spec is not dcfg.specs[lang] else None
+    return {**draft, "language": lang, "template_id": chosen}
 
 
 def email_company_name(app: dict, research: dict | None) -> str:

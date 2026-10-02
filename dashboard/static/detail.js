@@ -93,8 +93,8 @@
     if (bodyField) {
       const words = bodyField.value.trim().split(/\s+/).filter(Boolean).length;
       if (wordCountEl) {
-        wordCountEl.textContent = `${words} words (target 200–320)`;
-        wordCountEl.classList.toggle("word-count--warn", words < 180 || words > 360);
+        wordCountEl.textContent = `${words} words · most replies at 50–125`;
+        wordCountEl.classList.toggle("word-count--warn", words < 50 || words > 200);
       }
       const previewBody = $("preview-body");
       if (previewBody) previewBody.textContent = bodyField.value;
@@ -283,6 +283,43 @@
       } finally {
         regenBtn.disabled = false;
         regenBtn.textContent = original;
+      }
+    });
+  }
+
+  // ── Style switch ─────────────────────────────────────────────────────────
+  // Picking a style shows what it's for; confirming rewrites this email in it
+  // from the same research and approved facts (instant, no AI).
+  const styleSelect = $("style-select");
+  if (styleSelect) {
+    const showNote = (id) => document.querySelectorAll("[data-style-note]").forEach((n) => {
+      n.hidden = n.dataset.styleNote !== id;
+    });
+    styleSelect.addEventListener("change", async () => {
+      const style = styleSelect.value;
+      const name = styleSelect.options[styleSelect.selectedIndex].text;
+      showNote(style);
+      if (!window.confirm(`Rewrite this email in the “${name}” style? Any edits you made by hand to this draft will be replaced.`)) {
+        styleSelect.value = styleSelect.dataset.current;
+        showNote(styleSelect.dataset.current);
+        return;
+      }
+      styleSelect.disabled = true;
+      setResult(`Rewriting in “${name}”…`);
+      try {
+        const data = await postJSON(`/api/style/${styleSelect.dataset.appId}`, { style });
+        if (!data.ok) {
+          setResult(`✗ ${data.message}`, false);
+          styleSelect.value = styleSelect.dataset.current;
+          showNote(styleSelect.dataset.current);
+          return;
+        }
+        setResult(`✓ Rewritten in “${name}”`, true);
+        setTimeout(() => window.location.reload(), 500);
+      } catch (err) {
+        setResult(`✗ ${err.message}`, false);
+      } finally {
+        styleSelect.disabled = false;
       }
     });
   }

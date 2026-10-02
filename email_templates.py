@@ -233,14 +233,232 @@ TEMPLATES = {
             "sign_off": "Cordialement,\n{applicant_name}",
         },
     },
+    # ------------------------------------------------------------------
+    # Jason Chen's method (CRV): show you know their work, link it to yours,
+    # and ask for a short call rather than a job. A small ask is easy to say
+    # yes to, and a question at the end draws replies.
+    "conversation": {
+        "name": {"en": "Short call request", "fr": "Demande d'échange"},
+        "description": {
+            "en": "Asks for a 15-minute call instead of a job: what you know of their work, how it "
+                  "links to yours, then one easy question. Under 125 words.",
+            "fr": "Demande un échange de 15 minutes plutôt qu'un poste : ce que vous savez de leur "
+                  "travail, le lien avec le vôtre, puis une question simple. Moins de 125 mots.",
+        },
+        "layout": ["intro", "match", "ask", "closing"],
+        "strengths_budget": [0, 1],
+        "include_motivation": False,
+        "min_words": 55,
+        "max_words": 170,
+        "en": {
+            "subject": "Quick call about {topic}?",
+            "intro_with_hook": "I'm <<identity>>. I've been reading about {company}'s work on {hook}, and I'd like to learn more about it.",
+            "intro_standard_variants": [
+                "I'm <<identity>>, and I'd like to learn more about the work your team does at {company}.",
+                "I'm <<identity>>, and {company} is a team I'd really like to learn from.",
+            ],
+            "match_lead_one": "It connects with my own work in {area_1}.",
+            "match_lead_two": "It connects with my own work in {area_1} and {area_2}.",
+            "ask_text": "Would you have 15 minutes in the coming days for a short call? I'd like to hear how your team works, and whether there could be room for an intern from <<start_date>>.",
+            "closing_variants": [
+                "My CV is attached in case it's useful.",
+                "I've attached my CV for context — I hope we can talk.",
+            ],
+            "sign_off": "Thanks in advance,\n{applicant_name}",
+        },
+        "fr": {
+            "subject": "Un court échange sur {topic} ?",
+            "intro_with_hook": "Je suis <<identity>>. Je m'intéresse au travail de {company} sur {hook}, et j'aimerais en apprendre davantage.",
+            "intro_standard_variants": [
+                "Je suis <<identity>>, et j'aimerais en savoir plus sur le travail de votre équipe chez {company}.",
+                "Je suis <<identity>>, et {company} est une équipe auprès de laquelle j'aimerais beaucoup apprendre.",
+            ],
+            "match_lead_one": "Cela rejoint directement mon propre travail en {area_1}.",
+            "match_lead_two": "Cela rejoint directement mon propre travail en {area_1} et en {area_2}.",
+            "ask_text": "Auriez-vous 15 minutes dans les prochains jours pour un court échange ? J'aimerais comprendre comment travaille votre équipe, et savoir s'il pourrait y avoir une place pour un stage à partir de <<start_date>>.",
+            "closing_variants": [
+                "Mon CV est en pièce jointe, au cas où il vous serait utile.",
+                "Vous trouverez mon CV en pièce jointe pour le contexte — au plaisir d'échanger.",
+            ],
+            "sign_off": "Merci par avance,\n{applicant_name}",
+        },
+    },
+    # ------------------------------------------------------------------
+    # The spontaneous application: what you ask for — the internship, its
+    # dates, its length — comes second, before anything else, so the reader
+    # sees at once whether it fits their plans.
+    "spontaneous": {
+        "name": {"en": "Spontaneous application", "fr": "Candidature spontanée"},
+        "description": {
+            "en": "Says right after the first line what you ask for — the internship, its dates and "
+                  "length — then why them and your best match, and ends on a question.",
+            "fr": "Dit dès la deuxième phrase ce que vous demandez — le stage, ses dates et sa "
+                  "durée — puis pourquoi eux et votre meilleur atout, et finit par une question.",
+        },
+        "layout": ["intro", "ask", "match", "strengths", "closing"],
+        "strengths_budget": [1, 1],
+        "include_motivation": False,
+        "min_words": 60,
+        "max_words": 200,
+        "en": {
+            "subject": "Internship from <<start_date>> — {topic}",
+            "intro_with_hook": "I'm <<identity>>, and I'm writing to {company} with a spontaneous application — your work on {hook} is why I chose you.",
+            "intro_standard_variants": [
+                "I'm <<identity>>, and I'm writing to {company} with a spontaneous internship application.",
+                "I'm <<identity>>, and I'd like to send {company} a spontaneous internship application.",
+            ],
+            "match_lead_one": "Your focus on {area_1} is exactly where my experience lies.",
+            "match_lead_two": "Your focus on {area_1} and {area_2} is exactly where my experience lies.",
+            "closing_variants": [
+                "My CV is attached. Could an internship on these dates fit your plans?",
+                "My CV is attached with the details. Would these dates work for your team?",
+            ],
+            "sign_off": "Thank you,\n{applicant_name}",
+        },
+        "fr": {
+            "subject": "Candidature spontanée — stage à partir de <<start_date>>",
+            "intro_with_hook": "Je suis <<identity>> et je vous adresse une candidature spontanée : c'est votre travail sur {hook} qui m'a donné envie d'écrire à {company}.",
+            "intro_standard_variants": [
+                "Je suis <<identity>> et je vous adresse une candidature spontanée pour un stage au sein de {company}.",
+                "Je suis <<identity>> et je souhaite proposer ma candidature spontanée pour un stage chez {company}.",
+            ],
+            "match_lead_one": "Votre expertise en {area_1} correspond exactement à mon expérience.",
+            "match_lead_two": "Votre expertise en {area_1} et en {area_2} correspond exactement à mon expérience.",
+            "closing_variants": [
+                "Mon CV est en pièce jointe. Un stage à ces dates pourrait-il s'inscrire dans vos projets ?",
+                "Vous trouverez mon CV en pièce jointe. Ces dates pourraient-elles convenir à votre équipe ?",
+            ],
+            "sign_off": "Merci par avance,\n{applicant_name}",
+        },
+    },
 }
+
+# ---------------------------------------------------------------------------
+# What the Profile page and the per-email style switch say about each style:
+# when to use it, and only evidence that was actually published. A study is
+# cited by name; nothing is presented as a "success rate" that nobody measured.
+# ---------------------------------------------------------------------------
+
+SOURCES = {
+    "boomerang": ("Boomerang, 40M emails", "https://blog.boomerangapp.com/2016/02/7-tips-for-getting-more-responses-to-your-emails-with-data/"),
+    "boomerang_close": ("Boomerang, 350k emails", "https://blog.boomerangapp.com/2017/01/how-to-end-an-email-email-sign-offs/"),
+    "backlinko": ("Backlinko & Pitchbox, 12M emails", "https://backlinko.com/email-outreach-study"),
+    "jason": ("Jason Chen, CRV", "https://medium.com/@venturetwins/from-cold-email-to-internship-with-jason-chen-1cff6d560ae3"),
+    "dares": ("DARES survey, INSEE Économie et Statistique 2022",
+              "https://www.insee.fr/fr/statistiques/fichier/6530515/04_ES534-35_Lhommeau-Remy_FR.pdf"),
+    "insee": ("INSEE Première n°1660", "https://www.insee.fr/fr/statistiques/2901587"),
+    "resumego": ("ResumeGo hiring-manager survey", "https://resumegenius.com/blog/cover-letter-help/cover-letter-statistics"),
+    "nace": ("NACE 2025 Internship Report", "https://www.naceweb.org/talent-acquisition/internships/intern-conversion-rate-hits-highest-mark-in-five-years"),
+    "prosple": ("Prosple", "https://au.prosple.com/career-planning/internship-email"),
+    "indeed": ("Indeed Career Guide", "https://www.indeed.com/career-advice/finding-a-job/how-to-write-email-asking-for-internship"),
+    "pearl": ("Pearl Lemon placement programme", "https://medium.com/an-idea/how-to-send-cold-emails-to-get-an-internship-job-offer-936909507c77"),
+    "kevin": ("Kevin Li", "https://medium.com/@kevinli1/five-tips-about-apply-internship-using-emails-a24560733a8d"),
+}
+
+TEMPLATE_GUIDE = {
+    "specialist": {
+        "best_for": {"en": "Most companies — whenever the research found something specific on their website.",
+                     "fr": "La plupart des entreprises — dès que la recherche a trouvé un élément précis sur leur site."},
+        "evidence": [
+            ("backlinko", {"en": "A personalised email body gets 32.7% more replies.",
+                           "fr": "Un message personnalisé obtient 32,7 % de réponses en plus."}),
+            ("resumego", {"en": "78% of hiring managers can tell when an application was tailored.",
+                          "fr": "78 % des recruteurs voient quand une candidature a été adaptée."}),
+        ],
+    },
+    "concise": {
+        "best_for": {"en": "Busy people at small companies, and anyone reading on a phone.",
+                     "fr": "Les personnes très occupées des petites structures, et la lecture sur téléphone."},
+        "evidence": [
+            ("boomerang", {"en": "Emails of 50–125 words get the most replies — above 50%.",
+                           "fr": "Les emails de 50 à 125 mots obtiennent le plus de réponses — plus de 50 %."}),
+            ("indeed", {"en": "Keep it to two paragraphs: recruiters read many emails a day.",
+                        "fr": "Deux paragraphes au plus : les recruteurs lisent beaucoup d'emails par jour."}),
+        ],
+    },
+    "project_led": {
+        "best_for": {"en": "When you have one standout project with a concrete result.",
+                     "fr": "Quand un projet se démarque, avec un résultat concret."},
+        "evidence": [
+            ("nace", {"en": "Employers choose interns on skills and past experience before grades or major.",
+                      "fr": "Les employeurs choisissent leurs stagiaires sur les compétences et l'expérience avant les notes ou la filière."}),
+            ("prosple", {"en": "A concrete result beats “hardworking” or “excellent communication skills”.",
+                         "fr": "Un résultat concret vaut mieux que « motivé » ou « excellent relationnel »."}),
+        ],
+    },
+    "formal": {
+        "best_for": {"en": "Large groups, banks and public institutions, where HR follows a fixed process.",
+                     "fr": "Grands groupes, banques et institutions publiques, où les RH suivent une procédure fixe."},
+        "evidence": [
+            ("pearl", {"en": "Firms with rigid hiring usually redirect cold emails to their official process — apply on their careers site too.",
+                       "fr": "Les entreprises au recrutement très cadré redirigent souvent vers leur procédure officielle — postulez aussi sur leur site carrières."}),
+        ],
+    },
+    "research_lab": {
+        "best_for": {"en": "Laboratories, R&D teams and research internships.",
+                     "fr": "Laboratoires, équipes R&D et stages de recherche."},
+        # No published study covers research internships specifically, so
+        # none is cited.
+        "evidence": [],
+    },
+    "conversation": {
+        "best_for": {"en": "Startups, small teams, investment and consulting firms, alumni — anyone who can say yes to a chat without going through HR.",
+                     "fr": "Startups, petites équipes, fonds et cabinets de conseil, anciens de votre école — toute personne qui peut accepter un échange sans passer par les RH."},
+        "evidence": [
+            ("jason", {"en": "485 emails like this led to 350 calls or interviews (72%) and an internship.",
+                       "fr": "485 emails de ce type ont mené à 350 appels ou entretiens (72 %) et à un stage."}),
+            ("boomerang", {"en": "Emails that ask 1–3 questions are 50% more likely to get a reply.",
+                           "fr": "Les emails qui posent 1 à 3 questions ont 50 % de chances en plus d'obtenir une réponse."}),
+        ],
+    },
+    "spontaneous": {
+        "best_for": {"en": "Companies with no posted internship, and end-of-study internships with fixed dates (France, Switzerland).",
+                     "fr": "Les entreprises sans offre publiée, et les stages de fin d'études à dates fixes (France, Suisse)."},
+        "evidence": [
+            ("dares", {"en": "French employers examine spontaneous applications in 68% of their recruitments; 21% of hires come from them.",
+                       "fr": "Les employeurs français examinent des candidatures spontanées dans 68 % de leurs recrutements ; 21 % des embauches en viennent."}),
+            ("boomerang", {"en": "Ending on a question gets 50% more replies than ending on a statement.",
+                           "fr": "Finir sur une question obtient 50 % de réponses en plus qu'une simple affirmation."}),
+        ],
+    },
+}
+
+# Rules every style follows, and what the data says about each — shown on the
+# Profile page under the styles.
+PROVEN_RULES = [
+    ("boomerang", {"en": "Short: 50–125 words get the most replies (above 50%); 3–4-word subject lines reply best.",
+                   "fr": "Court : 50 à 125 mots obtiennent le plus de réponses (plus de 50 %) ; les objets de 3 à 4 mots fonctionnent le mieux."}),
+    ("backlinko", {"en": "One follow-up raises replies by 65.8% — send it after about a week, then move on.",
+                   "fr": "Une relance augmente les réponses de 65,8 % — envoyez-la après environ une semaine, puis passez à la suite."}),
+    ("boomerang_close", {"en": "Closing with thanks: 62% replies vs 46% without.",
+                         "fr": "Finir par un remerciement : 62 % de réponses contre 46 % sans."}),
+    ("jason", {"en": "Send early in the week, early morning or just before lunch — not 2–5 pm.",
+               "fr": "Envoyez en début de semaine, tôt le matin ou juste avant midi — pas entre 14 h et 17 h."}),
+    ("kevin", {"en": "Volume matters: send to many companies (at least 10–20) and favour smaller ones.",
+               "fr": "Le volume compte : écrivez à beaucoup d'entreprises (au moins 10 à 20), plutôt de petite taille."}),
+]
+
+
+def guide(template_id: str, lang: str = "en") -> dict:
+    """best_for and evidence [{text, source, url}] for a style, in `lang`."""
+    entry = TEMPLATE_GUIDE.get(template_id) or {}
+    return {
+        "best_for": (entry.get("best_for") or {}).get(lang, ""),
+        "evidence": [{"text": text[lang], "source": SOURCES[key][0], "url": SOURCES[key][1]}
+                     for key, text in entry.get("evidence") or []],
+    }
+
+
+def proven_rules(lang: str = "en") -> list:
+    return [{"text": text[lang], "source": SOURCES[key][0], "url": SOURCES[key][1]}
+            for key, text in PROVEN_RULES]
 
 DEFAULT_TEMPLATE = "specialist"
 _STRUCTURE_KEYS = ("layout", "strengths_budget", "include_motivation", "min_words", "max_words")
 
 
 def template_choices(lang: str = "en") -> list:
-    return [{"id": tid, "name": t["name"][lang], "description": t["description"][lang]}
+    return [{"id": tid, "name": t["name"][lang], "description": t["description"][lang], **guide(tid, lang)}
             for tid, t in TEMPLATES.items()]
 
 
@@ -329,6 +547,7 @@ def build_spec(facts: dict, template_id: str, lang: str) -> dict:
     # email may state about them (the draft guard enforces it).
     allowed = set()
     for value in [email["motivation"], email["internship_ask"], fills["identity"], fills["start_date"],
+                  email.get("ask_text", ""),
                   *(a["evidence"] for a in areas), *(a.get("alt_evidence", "") for a in areas),
                   *(s["text"] for s in strengths)]:
         allowed |= _numbers(value)
