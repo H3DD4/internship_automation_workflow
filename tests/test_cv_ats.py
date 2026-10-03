@@ -128,3 +128,51 @@ def test_a_word_file_is_inspected_for_tables_and_header_contact():
 def test_an_unsupported_file_is_refused_clearly():
     report = cv_ats.check("cv.png", b"\x89PNG")
     assert report["blocking"] and _by_id(report)["file_type"]["status"] == "fail"
+
+
+# --- Found on real CVs: the same CV exported twice scored differently, with a
+# --- wrong "no Education section", because one PDF spaces its letters apart.
+
+def test_a_heading_with_spaced_letters_is_still_that_section():
+    lines = [l.replace("EDUCATION", "EDUCA TION") for l in GOOD]
+    report = cv_ats.evaluate(lines, dict(PDF))
+    ids = _by_id(report)
+    assert ids["section_education"]["status"] == "ok"           # the section is there
+    whole = ids["whole_words"]                                   # …and the broken text is its own finding
+    assert whole["status"] == "warn" and "EDUCA TION" in whole["detail"] and "standard font" in whole["fix"]
+    assert any(l["mark"] and "split" in l["mark"]["why"] for l in report["lines"])
+
+
+def test_letters_lost_at_fi_and_fl_are_reported_with_the_words():
+    lines = GOOD + ["- Earned 3 certi cations in arti cial intelligence", "- Automated 4 work ows",
+                    "- Wrote speci cations for 2 teams", "Honors & Certi"]
+    whole = _by_id(cv_ats.evaluate(lines, dict(PDF)))["whole_words"]
+    assert whole["status"] == "fail" and "certi cations" in whole["detail"] and "fi" in whole["detail"]
+
+
+def test_intact_words_raise_nothing():
+    assert cv_ats.broken_words(["Certifications in artificial intelligence", "Specific, significant workflows",
+                                "Profile", "The results and the projects", "Trading and testing"]) == []
+    assert _by_id(cv_ats.evaluate(GOOD, dict(PDF)))["whole_words"]["status"] == "ok"
+
+
+def test_common_heading_variants_are_recognised():
+    expected = {"TECHNICAL SKILLS": "skills", "Compétences Techniques": "skills", "KEY PROJECTS & ENGINEERING WORK": "projects",
+                "Projets Significatifs": "projects", "Profil Professionnel": "summary", "Expérience Professionnelle": "experience",
+                "Internships": "experience", "FORMA TION": "education", "Parcours Académique": "education",
+                "Leadership & Activities": "activities", "Honors & Awards": "awards", "CER TIFICA TIONS": "certifications"}
+    for line, section in expected.items():
+        assert cv_ats._heading(line) == section, line
+
+
+def test_ordinary_lines_are_not_mistaken_for_headings():
+    for line in ("MOHAMED HEDDA", "XGBoost", "- Built projects for 3 teams", "Responsable RH et Formation — Club ENSIT Junior",
+                 "I have experience in data engineering and education projects.", "Skills in Python, 2024",
+                 "Problem Solving & Critical Thinking"):
+        assert cv_ats._heading(line) is None, line
+
+
+def test_a_missing_section_lists_the_headings_that_were_found():
+    lines = [l for l in GOOD if l != "EDUCATION"]
+    detail = _by_id(cv_ats.evaluate(lines, dict(PDF)))["section_education"]["detail"]
+    assert "“SKILLS”" in detail and "“EXPERIENCE”" in detail

@@ -184,15 +184,98 @@ _LINK_RE = re.compile(r"linkedin\.com|github\.com|gitlab\.com|behance\.net|portf
 _GARBAGE_RE = re.compile(r"\(cid:\d+\)|�|[-]")
 
 
+# Word roots that announce each section, English and French. Matched on the
+# line with its spaces removed, so "EDUCA TION" (letters spaced apart by the
+# PDF's font) is still an Education heading.
+HEADING_ROOTS = {
+    "experience": ("experience", "expérience", "internship", "employment", "workhistory",
+                   "parcoursprofessionnel", "stages"),
+    "education": ("education", "éducation", "formation", "academic", "académique", "études",
+                  "etudes", "diplôme", "diplome", "cursus", "scolarité"),
+    "skills": ("skill", "compétence", "competence", "technologies", "outils", "savoirfaire",
+               "savoir-faire", "techstack", "competencies"),
+    "projects": ("project", "projet", "réalisation", "realisation"),
+    "languages": ("language", "langue"),
+    "certifications": ("certif", "licen"),
+    "awards": ("award", "honor", "honour", "distinction", "achievement", "prix", "récompense"),
+    "summary": ("summary", "profile", "profil", "aboutme", "objective", "objectif", "àpropos"),
+    "activities": ("activit", "leadership", "volunteer", "bénévol", "associati", "interest",
+                   "intérêt", "hobb", "loisir", "extracurricular"),
+}
+
+
+def _squash(text: str) -> str:
+    """Letters only, lower case — spacing and punctuation don't matter."""
+    return re.sub(r"[^a-zà-ÿ]", "", (text or "").lower())
+
+
+def _looks_like_heading(line: str) -> bool:
+    """Short, on its own, no sentence punctuation, written as a title."""
+    text = line.strip(" :-–—|")
+    if not text or len(text) > 48 or len(text.split()) > 6 or _bullet(line):
+        return False
+    if text[-1] in ".,;" or re.search(r"\d{2}|@|https?:", text):
+        return False
+    words = [w for w in re.split(r"[\s&/]+", text) if w]
+    small = {"de", "du", "des", "et", "and", "of", "the", "la", "le", "les", "en", "d", "l", "à", "a"}
+    # A word tail the PDF split off ("Associa tives") is part of the word before it.
+    return text.isupper() or all(w[:1].isupper() or w.lower() in small or w.lower() in _SPLIT_TAILS
+                                 for w in words)
+
+
 def _heading(line: str) -> str | None:
     """The standard section this line announces, if it is a heading."""
-    text = re.sub(r"[:\-–—|•\s]+$", "", line).strip(" :-–—|•").lower()
-    if not text or len(text) > 42 or len(text.split()) > 5:
+    if not _looks_like_heading(line):
         return None
-    for section, names in SECTIONS.items():
-        if text in names:
+    squashed = _squash(line)
+    if not squashed:
+        return None
+    for section, names in SECTIONS.items():           # an exact standard title
+        if squashed in {_squash(n) for n in names}:
             return section
-    return None
+    best = None                                        # else the first root it contains
+    for section, roots in HEADING_ROOTS.items():
+        for root in roots:
+            at = squashed.find(_squash(root))
+            if at != -1 and (best is None or at < best[0]):
+                best = (at, section)
+    return best[1] if best else None
+
+
+# Letter groups a PDF's font can separate from the rest of the word.
+_SPLIT_TAILS = {"tion", "tions", "tif", "tifs", "tive", "tives", "ts", "ting", "ted", "tique", "tiques",
+                "ture", "tures", "teur", "teurs", "tal", "taux", "rading"}
+# Words that lose "fi"/"fl" when the font's joined letter has no text behind it.
+_LIGATURE_GAPS = re.compile(
+    r"\b(pro\s(?:le|les)|certi\s?cat\w*|arti\s?ci\w*|speci\s?c(?:ation|ations|ally|ity)?|signi\s?can\w*|"
+    r"scienti\s?(?:c|que)s?|quali\s?cat\w*|identi\s?cat\w*|classi\s?cat\w*|con\sguration\w*|"
+    r"work\s?ows?|bene\s?ts?|ef\s?cien\w*|veri\s?cat\w*|noti\s?cat\w*|modi\s?cat\w*)\b",
+    re.IGNORECASE)
+_CUT_WORDS = re.compile(r"(?:^|\s)(certi|arti|scienti|speci|signi|quali|identi|classi|veri|noti|modi)$", re.IGNORECASE)
+
+
+def broken_words(lines: list) -> list:
+    """(line index, what was found, kind) for words the text layer breaks:
+    "split" — letters spaced apart ("EDUCA TION"); "gap" — letters missing
+    where the font joins fi/fl ("Certi cations"). Both make a keyword
+    unsearchable for a parser that reads the text as it is."""
+    found = []
+    for i, line in enumerate(lines):
+        tokens = line.split()
+        for j in range(1, len(tokens)):
+            tail, head = tokens[j].strip(".,;:()").lower(), tokens[j - 1]
+            if tail in _SPLIT_TAILS and head.isalpha() and len(head) >= 3 and head.lower() not in ("the", "and", "les", "des", "aux"):
+                found.append((i, f"{head} {tokens[j]}", "split"))
+                break
+        gap = _LIGATURE_GAPS.search(line)
+        cut = _CUT_WORDS.search(line)
+        if gap:
+            found.append((i, gap.group(0), "gap"))
+        elif cut:
+            found.append((i, cut.group(1) + "…", "gap"))
+        elif line.strip().lower() == "pro":            # "Profile" cut at its "fi"
+            found.append((i, line.strip() + "…", "gap"))
+    return found
 
 
 def _bullet(line: str) -> str:
@@ -258,6 +341,29 @@ def evaluate(lines: list, meta: dict) -> dict:
         _check(checks, "encoding", "Readable by machines", 5, "ok", "Fonts and symbols",
                "Every character is readable.")
 
+    broken = broken_words(lines)
+    gaps = [b for b in broken if b[2] == "gap"]
+    splits = [b for b in broken if b[2] == "split"]
+    if broken:
+        for i, _, kind_ in broken[:14]:
+            mark(i, "warn", "Letters missing in the text behind the page" if kind_ == "gap"
+                 else "Word split in two in the text behind the page")
+        examples = ", ".join(f"“{what}”" for _, what, _ in (gaps + splits)[:4])
+        what = []
+        if gaps:
+            what.append(f"{len(gaps)} word(s) lose letters where the font joins “fi” or “fl”")
+        if splits:
+            what.append(f"{len(splits)} word(s) come out split in two")
+        _check(checks, "whole_words", "Readable by machines", 6, "fail" if len(gaps) >= 4 else "warn",
+               "Words stay whole", f"The page looks right, but in the text behind it {' and '.join(what)}: {examples}. "
+               "A system searching for that keyword won't find it.",
+               "Export the CV again with a standard font (Arial, Calibri, Helvetica) and without letter-spacing; "
+               "in LaTeX add \\usepackage{cmap} and \\pdfgentounicode=1. Then select the text in your PDF and "
+               "paste it into a text editor — every word should come out whole.")
+    else:
+        _check(checks, "whole_words", "Readable by machines", 6, "ok", "Words stay whole",
+               "No word is split or missing letters in the text behind the page.")
+
     if kind == "docx":
         tables, boxes = meta.get("tables", 0), meta.get("text_boxes", 0)
         if tables or boxes:
@@ -317,10 +423,14 @@ def evaluate(lines: list, meta: dict) -> dict:
             _check(checks, f"section_{section}", "Structure", 5, "ok", f"“{SECTION_NAMES[section]}” section",
                    f"Found the heading “{lines[found[section]]}”.")
         else:
-            examples = " / ".join(n.title() for n in SECTIONS[section][:2]) + " / " + SECTIONS[section][-4].title()
+            suggestion = {"experience": "Experience / Professional Experience / Expérience professionnelle",
+                          "education": "Education / Formation",
+                          "skills": "Skills / Technical Skills / Compétences"}[section]
+            seen = [l for l in lines if _heading(l)][:6]
             _check(checks, f"section_{section}", "Structure", 5, "fail", f"“{SECTION_NAMES[section]}” section",
-                   "No heading a system recognises was found for it.",
-                   f"Add a line with a standard heading on its own, such as: {examples}.")
+                   "No line reads as a heading for it."
+                   + (f" The headings found were: {', '.join('“' + h + '”' for h in seen)}." if seen else ""),
+                   f"Put a standard heading on a line of its own, above that part of your CV: {suggestion}.")
 
     years = _YEAR_RE.findall(text)
     if len(years) >= 2:
