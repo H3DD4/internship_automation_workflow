@@ -773,3 +773,24 @@ mark.style-changed { background: var(--amber-soft); box-shadow: inset 0 -2px 0 #
 .places-more .ob-chips { margin-top: 10px; }
 html { scroll-padding-top: 130px; }
 @media (max-width: 720px) { .page-guide { position: static; } .page-guide__label { flex-basis: 100%; } }
+
+/* ── Company page: plain facts, proof on a click ───────────────────────── */
+.about-lead { margin: 0 0 14px; font-size: 15.5px; line-height: 1.55; color: var(--text); }
+.about-facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.about-facts li { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: baseline; font-size: 14px; overflow-wrap: anywhere; }
+.about-facts li > span:first-child { font-size: 12.5px; color: var(--text-muted); }
+.match-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+.match__label { margin: 8px 0 4px; font-size: 12.5px; color: var(--text-muted); }
+.match__quote { margin: 0 0 6px; padding: 9px 12px; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0;
+  background: var(--surface-2); font-size: 14px; line-height: 1.55; color: var(--text-2); }
+.match__quote mark { background: var(--amber-soft); color: inherit; padding: 0 2px; border-radius: 3px; box-shadow: inset 0 -1px 0 #F0CD7E; font-weight: 600; }
+.match__more { margin-top: 4px; font-size: 13px; }
+.match__more summary { cursor: pointer; color: var(--accent); font-weight: 500; }
+.match__more p { margin: 6px 0 0; color: var(--text-2); line-height: 1.5; }
+.match__more .chip { margin: 0 4px 4px 0; }
+.match-sub { margin: 20px 0 8px; padding-top: 16px; border-top: 1px solid var(--border-soft); font: 600 14px var(--font-ui); color: var(--text); }
+.timeline-facts { display: grid; grid-template-columns: 150px 1fr; gap: 5px 12px; margin: 8px 0 0; font-size: 13px; }
+.timeline-facts dt { color: var(--text-muted); }
+.timeline-facts dd { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
+@media (max-width: 640px) { .about-facts li, .timeline-facts { grid-template-columns: 1fr; gap: 2px; } }
+.about-facts .src-tag { justify-self: start; }

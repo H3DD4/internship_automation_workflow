@@ -1,6 +1,8 @@
 """Dashboard routes: CSRF, filters, edit protection, skip, overview, timeline,
 the EN/FR switch — and that every route only ever sees the signed-in user's rows."""
 
+import json
+
 import pytest
 from markupsafe import escape
 
@@ -140,8 +142,8 @@ def test_detail_shows_original_hook_with_translation_and_evidence(client, make_a
     response = client.get(f"/company/{app_id}")
     assert response.status_code == 200
     body = response.data.decode()
-    assert f"<strong>{hook}</strong>" in body
-    assert f'<dt>Original hook</dt><dd class="reasoning-text">{escape(original)}</dd>' in body
+    assert f"<mark>{hook}</mark>" in body                       # the line used in the email
+    assert f"In their words: “{escape(original)}”" in body      # shown on a click, safely escaped
     assert evidence in body
     assert '<script>alert("hook")</script>' not in body
 
@@ -151,7 +153,7 @@ def test_detail_omits_original_hook_when_not_translated(client, make_app, origin
     app_id = make_app(company_hook="cloud cost optimization with FinOps", hook_original=original)
     response = client.get(f"/company/{app_id}")
     assert response.status_code == 200
-    assert "<dt>Original hook</dt>" not in response.data.decode()
+    assert "In their words:" not in response.data.decode()
 
 
 def test_detail_404_for_unknown_company(client):
@@ -428,3 +430,36 @@ def test_privacy_and_terms_are_public(anon_client):
     assert privacy.status_code == 200 and b"Limited Use" in privacy.data and b"gmail.send" in privacy.data
     terms = anon_client.get("/terms")
     assert terms.status_code == 200 and b"Terms of use" in terms.data
+
+
+
+def test_the_company_page_proves_each_match_with_the_sites_own_words(client, make_app, with_profile, spec):
+    area = spec["areas"][0]
+    reasons = {area["id"]: {"how": "2 keyword(s) on the site", "keywords": ["red team", "pentest"],
+                            "passages": ["We run red team exercises for banks across Europe."]}}
+    app_id = make_app(matched_extra_mentions=json.dumps([area["id"]]), match_reasons=json.dumps(reasons),
+                      hook_status="model gave no usable answer")
+    page = client.get(f"/company/{app_id}").data.decode()
+    assert "Why this company matches you" in page and "Their website says:" in page
+    assert "We run <mark>red team</mark> exercises for banks across Europe." in page
+    # Plain words, no status codes and no raw data.
+    assert "model gave no usable answer" not in page and "Tone detected" not in page
+    assert "The AI wasn&#39;t available when this company was scanned" in page or "The AI wasn't available" in page
+
+
+def test_older_matches_without_stored_proof_say_how_to_get_it(client, make_app, with_profile, spec):
+    area = spec["areas"][0]
+    app_id = make_app(matched_extra_mentions=json.dumps([area["id"]]),
+                      match_reasons=json.dumps({area["id"]: "3 keyword(s) on the site"}))
+    page = client.get(f"/company/{app_id}").data.decode()
+    assert "Re-scan this company to see the exact sentences" in page and "keyword(s) on the site" not in page
+
+
+def test_the_timeline_never_shows_raw_data(client, make_app, data):
+    app_id = make_app()
+    data.log_event(app_id, "research", "Scraping and analyzing https://acme.com",
+                   detail={"industry": "Cybersecurity", "areas": [], "site_chars": 6000, "site_language": "fr",
+                           "area_notes": ["x: y"], "hook_status": "none offered"})
+    page = client.get(f"/company/{app_id}").data.decode()
+    assert "<dt>Industry</dt><dd>Cybersecurity</dd>" in page and "about 1000 words" in page and "French" in page
+    assert "area_notes" not in page and "site_chars" not in page and "{&#34;" not in page

@@ -259,10 +259,10 @@ def _keyword_present(keyword: str, text: str) -> bool:
     return re.search(pattern, text) is not None
 
 
-def keyword_hits(area: dict, site_text: str, lang: str = "") -> int:
-    """How many of the area's keywords the site uses. On a French site the
-    area's French keywords count too ("test d'intrusion", "vulnérabilité"),
-    which the English list alone never matched."""
+def keyword_matches(area: dict, site_text: str, lang: str = "") -> list:
+    """The area's keywords the site uses. On a French site the area's French
+    keywords count too ("test d'intrusion", "vulnérabilité"), which the
+    English list alone never matched."""
     text = (site_text or "").lower()
     keywords = list(area.get("keywords", []))
     required = list(area.get("requires_any") or [])
@@ -270,8 +270,48 @@ def keyword_hits(area: dict, site_text: str, lang: str = "") -> int:
         keywords += area.get("keywords_fr", [])
         required += area.get("requires_any_fr", []) if required else []
     if required and not any(term in text for term in required):
-        return 0
-    return sum(1 for keyword in keywords if _keyword_present(keyword, text))
+        return []
+    return [keyword for keyword in dict.fromkeys(keywords) if _keyword_present(keyword, text)]
+
+
+def keyword_hits(area: dict, site_text: str, lang: str = "") -> int:
+    return len(keyword_matches(area, site_text, lang))
+
+
+def passages_with(site_text: str, terms: list, limit: int = 2, width: int = 220) -> list:
+    """Up to `limit` sentences of the site that use one of `terms` — the
+    company's own words, so the student can see what was matched and judge
+    it. Long sentences are cut around the word."""
+    found, used = [], set()
+    sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+|\s[•|·▪]\s|\n", site_text or "") if x.strip()]
+    for term in terms:
+        for sentence in sentences:
+            lowered = sentence.lower()
+            if sentence in used or not _keyword_present(term.lower(), lowered):
+                continue
+            at = lowered.find(term.lower())
+            if len(sentence) > width:
+                start = max(0, at - width // 2)
+                piece = sentence[start:start + width].strip()
+                sentence_out = ("…" if start else "") + piece + ("…" if start + width < len(sentence) else "")
+            else:
+                sentence_out = sentence
+            found.append(sentence_out)
+            used.add(sentence)
+            break
+        if len(found) >= limit:
+            break
+    return found
+
+
+def area_proof(area: dict, site_text: str, lang: str = "", quote: str = "") -> dict:
+    """What on the site backs this match: the words found and where."""
+    words = keyword_matches(area, site_text, lang)
+    passages = passages_with(site_text, words)
+    quote = (quote or "").strip()
+    if quote and quote_on_site(quote, site_text) and not any(quote.lower() in p.lower() for p in passages):
+        passages = [quote] + passages[:1]
+    return {"keywords": words[:8], "passages": passages[:2]}
 
 
 _QUOTE_FOLD = str.maketrans({**{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2212"},
@@ -694,6 +734,11 @@ def get_company_context(client, model: str, company_name: str, website_url: str,
     context["areas"], context["area_notes"] = resolve_areas(model_areas, site_text, areas,
                                                             context["site_language"],
                                                             answer.get("area_evidence"))
+    quotes = answer.get("area_evidence") if isinstance(answer.get("area_evidence"), dict) else {}
+    by_id = {area["id"]: area for area in areas}
+    context["area_proof"] = {
+        area_id: area_proof(by_id[area_id], site_text, context["site_language"], str(quotes.get(area_id) or ""))
+        for area_id in context["areas"] if area_id in by_id}
 
     hook, status = verify_hook(str(answer.get("hook") or ""),
                                str(answer.get("hook_evidence") or ""), site_text)
@@ -778,8 +823,12 @@ def _with_display_fields(context: dict) -> dict:
     context["tone_of_voice"] = context.get("tone_of_voice", "unknown")
     context["talking_points"] = [context["company_hook"]] if context["company_hook"] else []
     context["matched_extra_mentions"] = list(context["areas"])
+    # Per matched area: how it was decided, and the proof to show the student
+    # (the words found on the site and the sentences that use them).
+    proof = context.get("area_proof") or {}
     context["match_reasons"] = {
-        note.split(":", 1)[0]: note.split(":", 1)[1].strip()
+        note.split(":", 1)[0]: {"how": note.split(":", 1)[1].strip(),
+                                **(proof.get(note.split(":", 1)[0]) or {})}
         for note in context.get("area_notes", []) if ":" in note
         and note.split(":", 1)[0] in context["areas"]
     }

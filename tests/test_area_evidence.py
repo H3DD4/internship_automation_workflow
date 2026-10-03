@@ -76,3 +76,35 @@ def test_a_site_that_could_not_be_read_is_not_filed_as_no_match(client, make_app
     data = client.get("/api/overview").get_json()
     assert "Unread" in data["rows_html"] and "Not checked" in data["rows_html"]
     assert data["no_match_count"] == 0
+
+
+def test_a_match_keeps_the_words_and_the_sentence_as_proof():
+    site = ("Acme is a consultancy. We run penetration testing and red team exercises for banks across Europe. "
+            "Careers | Contact us today.")
+    area = {"id": "offensive_security", "keywords": ["penetration testing", "red team", "pentest"], "keywords_fr": []}
+    proof = ra.area_proof(area, site, "en")
+    assert proof["keywords"] == ["penetration testing", "red team"]
+    assert proof["passages"] == ["We run penetration testing and red team exercises for banks across Europe."]
+
+
+def test_the_models_quote_is_shown_first_when_it_is_really_on_the_site():
+    proof = ra.area_proof(AREAS[0], KLART, "en", "autonomous AI employees to automate repetitive workflows")
+    assert proof["passages"][0] == "autonomous AI employees to automate repetitive workflows"
+    assert ra.area_proof(AREAS[0], KLART, "en", "something they never wrote")["passages"] == []
+
+
+def test_long_sentences_are_cut_around_the_word_found():
+    site = ("intro " * 80) + "our pentest team works here " + ("outro " * 80) + "."
+    passage = ra.passages_with(site, ["pentest"])[0]
+    assert "pentest" in passage and len(passage) < 240 and passage.startswith("…")
+
+
+def test_research_stores_the_proof_with_each_matched_area(monkeypatch):
+    site = "We run red team exercises and pentest campaigns for European banks. " * 3
+    monkeypatch.setattr(ra, "fetch_website_text", lambda url: site)
+    monkeypatch.setattr(ra, "ask_json", lambda *a, **k: ({"areas": ["offensive_security"], "hook": "",
+                                                         "hook_evidence": "", "industry": "", "summary": ""}, "m"))
+    areas = [dict(a, label=a["id"], match_description=a["id"]) for a in AREAS]
+    context = ra.get_company_context(None, "m", "Acme", "https://acme.com", areas)
+    reason = context["match_reasons"]["offensive_security"]
+    assert set(reason["keywords"]) == {"pentest", "red team"} and "European banks" in reason["passages"][0]

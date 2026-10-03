@@ -158,43 +158,61 @@
     {% endif %}
 
     <section class="panel">
-      <h2>Company research</h2>
-      <dl class="fact-list">
-        {% if email_name and email_name != application.company_name %}
-        <dt>Name in email</dt><dd><strong>{{ email_name }}</strong> <span class="field-hint">— the website's own name; your list says “{{ application.company_name }}”, which looks like one of their products.</span></dd>
-        {% endif %}
-        <dt>Industry</dt><dd>{{ application.industry or "unknown" }}</dd>
-        {% if application.location %}<dt>Location</dt><dd>{{ application.location }}</dd>{% endif %}
-        <dt>From</dt><dd><span class="src-tag src-tag--inline{% if application.source == 'ntern' %} src-tag--ntern{% endif %}">{{ source_label }}</span></dd>
-        <dt>Focus</dt><dd>{{ application.mission_or_focus or "—" }}</dd>
-        <dt>Tone detected</dt><dd>{{ application.tone_of_voice or "unknown" }}</dd>
-      </dl>
-      {% if talking_points %}
-      <h3>Talking points found</h3>
-      <ul class="bullet-list">
-        {% for t in talking_points %}<li>{{ t }}</li>{% endfor %}
-      </ul>
+      <h2>About this company</h2>
+      {% if application.mission_or_focus %}
+      <p class="about-lead">{{ application.mission_or_focus }}</p>
+      {% else %}
+      <p class="field-hint">{% if "no usable answer" in (application.hook_status or "") %}This company wasn't fully analysed — the AI wasn't available during the scan. Re-scan it to get a description.{% elif application.hook_status in ("no website text",) %}Their website couldn't be read, so there's no description.{% else %}Their website didn't give a clear description of what they do.{% endif %}</p>
       {% endif %}
+      <ul class="about-facts">
+        {% if application.industry and application.industry != "unknown" %}<li><span>Industry</span>{{ application.industry }}</li>{% endif %}
+        {% if application.location %}<li><span>Location</span>{{ application.location }}</li>{% endif %}
+        {% if application.website %}<li><span>Website</span><a href="{{ application.website }}" target="_blank" rel="noopener noreferrer">{{ application.website | replace("https://", "") | replace("http://", "") }}</a></li>{% endif %}
+        <li><span>From</span><span class="src-tag src-tag--inline{% if application.source == 'ntern' %} src-tag--ntern{% endif %}">{{ source_label }}</span></li>
+        {% if email_name and email_name != application.company_name %}
+        <li><span>Name in email</span><b>{{ email_name }}</b> <small class="field-hint">their site's own name — “{{ application.company_name }}” looks like one of their products</small></li>
+        {% endif %}
+      </ul>
     </section>
 
     <section class="panel">
-      <h2>How this email was tailored</h2>
-      <dl class="fact-list">
-        <dt>Interest line</dt>
-        <dd>{% if application.company_hook %}"…your work on <strong>{{ application.company_hook }}</strong>."{% else %}<span class="cell-empty">Standard wording — no phrase from their site could be verified{% if application.hook_status and application.hook_status not in ('grounded',) %} ({{ application.hook_status }}){% endif %}.</span>{% endif %}</dd>
-        {% if application.hook_original %}
-        <dt>Original hook</dt><dd class="reasoning-text">{{ application.hook_original }}</dd>
-        {% endif %}
-        {% if application.hook_evidence %}
-        <dt>From their site</dt><dd class="reasoning-text">“{{ application.hook_evidence }}”</dd>
-        {% endif %}
-        <dt>CV areas matched</dt>
-        <dd>{% if matched_extras %}{% for m in matched_extras %}<span class="chip chip--accent">{{ area_labels.get(m, m) }}</span>{% endfor %}{% else %}<span class="cell-empty">None — the match paragraph is left out.</span>{% endif %}</dd>
-      </dl>
-      {% if match_reasons %}
-      <ul class="reasoning-list" style="margin-top:12px;">
-        {% for m, reason in match_reasons.items() %}<li><span class="chip">{{ area_labels.get(m, m) }}</span><span class="reasoning-text">{{ reason }}</span></li>{% endfor %}
+      <h2>Why this company matches you</h2>
+      {% if matches %}
+      <ul class="match-list">
+        {% for m in matches %}
+        <li class="match">
+          <span class="chip chip--accent">{{ m.label }}</span>
+          {% if m.passages %}
+          <p class="match__label">Their website says:</p>
+          {% for passage in m.passages %}<blockquote class="match__quote">{{ passage | highlight(m.keywords) }}</blockquote>{% endfor %}
+          {% if m.keywords %}
+          <details class="match__more"><summary>Words found on their site</summary>
+            <p>{% for k in m.keywords %}<span class="chip">{{ k }}</span>{% endfor %}</p></details>
+          {% endif %}
+          {% elif m.keywords %}
+          <p class="match__label">Words found on their site: {% for k in m.keywords %}<span class="chip">{{ k }}</span>{% endfor %}</p>
+          {% else %}
+          <p class="field-hint">Matched on words from their website.{% if application.rescannable %} Re-scan this company to see the exact sentences.{% endif %}</p>
+          {% endif %}
+        </li>
+        {% endfor %}
       </ul>
+      {% else %}
+      <p class="field-hint">Nothing on their website matched the fields on your CV, so the email leaves that paragraph out and presents your strongest results.</p>
+      {% endif %}
+
+      <h3 class="match-sub">The opening line of your email</h3>
+      {% if interest.found %}
+      <blockquote class="match__quote">…your work on <mark>{{ interest.text }}</mark>.</blockquote>
+      {% if application.hook_evidence %}
+      <details class="match__more"><summary>Where this comes from</summary>
+        <p>On their website: “{{ application.hook_evidence }}”</p>
+        {% if application.hook_original and application.hook_original != application.company_hook %}<p>In their words: “{{ application.hook_original }}”</p>{% endif %}
+        {% if interest.note %}<p class="field-hint">{{ interest.note }}</p>{% endif %}
+      </details>
+      {% endif %}
+      {% else %}
+      <p class="field-hint">{{ interest.note }}</p>
       {% endif %}
     </section>
   </div>
@@ -208,10 +226,12 @@
           <span class="timeline-time cell-mono">{{ e.timestamp[:19].replace("T", " ") }}</span>
           <p class="timeline-message">{{ e.message }}</p>
           {% if e.error_summary %}<p class="timeline-error">{{ e.error_summary }}</p>{% endif %}
-          {% if e.detail_parsed %}
+          {% if e.facts %}
           <details class="timeline-detail">
-            <summary class="timeline-detail-toggle">details</summary>
-            <pre class="log-output">{{ e.detail_parsed | tojson(indent=2) }}</pre>
+            <summary class="timeline-detail-toggle">More</summary>
+            <dl class="timeline-facts">
+              {% for label, value in e.facts %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}
+            </dl>
           </details>
           {% endif %}
         </li>

@@ -12,6 +12,7 @@ row is indistinguishable from one that doesn't exist.
 """
 
 import json
+import re
 import os
 import sys
 from datetime import date
@@ -705,6 +706,102 @@ _ERROR_EXPLANATIONS = [
 _FAILURE_MESSAGES = {"Writer agent failed", "Research stage crashed"}
 
 
+# ---------------------------------------------------------------------------
+# The company page, in plain words
+# ---------------------------------------------------------------------------
+# Students of any field read this page: nothing technical is shown — no
+# status codes, no raw data. Short facts first, the rest on a click.
+
+def _interest_line(application: dict) -> dict:
+    """What the email's opening line is built on, and why — in plain words."""
+    hook = (application.get("company_hook") or "").strip()
+    status = (application.get("hook_status") or "").lower()
+    if hook:
+        note = ""
+        if "translated into english" in status:
+            note = "Translated from their site's language."
+        elif "kept in the original language" in status:
+            note = "Kept in their site's own language."
+        return {"found": True, "text": hook, "note": note}
+    if "model gave no usable answer" in status:
+        why = ("The AI wasn't available when this company was scanned, so the email uses its standard opening. "
+               "Re-scan it to get a line about what they do.")
+    elif "no website text" in status or status in db.NOT_CHECKED_HOOK_STATUSES:
+        why = "Their website couldn't be read (blocked, or it needs a login), so the email uses its standard opening."
+    elif "none offered" in status or not status:
+        why = "Their website doesn't say clearly what they work on, so the email uses its standard opening."
+    elif "no translation model" in status:
+        why = "A phrase was found on their site, but it couldn't be translated — the English email uses its standard opening."
+    else:
+        why = ("The AI suggested a phrase, but it couldn't be confirmed word for word on their website — "
+               "so it was left out rather than risk saying something untrue.")
+    return {"found": False, "text": "", "note": why}
+
+
+def _matches(application: dict, labels: dict) -> list:
+    """Each matched field with its proof: the words found on their site and
+    the sentences that use them."""
+    try:
+        areas = json.loads(application.get("matched_extra_mentions") or "[]")
+        reasons = json.loads(application.get("match_reasons") or "{}")
+    except (TypeError, ValueError):
+        areas, reasons = [], {}
+    out = []
+    for area in areas:
+        reason = reasons.get(area)
+        proof = reason if isinstance(reason, dict) else {}
+        out.append({"label": labels.get(area, str(area).replace("_", " ")),
+                    "keywords": [str(k) for k in proof.get("keywords") or []][:8],
+                    "passages": [str(p) for p in proof.get("passages") or []][:2]})
+    return out
+
+
+_FACT_LABELS = [
+    ("mission_or_focus", "What they do"), ("industry", "Industry"), ("site_company_name", "Name on their site"),
+    ("city", "City"), ("country", "Country"), ("company_hook", "Line used in your email"),
+    ("hook_evidence", "Where it comes from on their site"), ("subject", "Subject"), ("language", "Language"),
+    ("research_model", "AI model used"), ("error", "What went wrong"),
+]
+_LANGUAGE_NAMES = {"en": "English", "fr": "French", "other": "Another language"}
+
+
+def _event_facts(event: dict, labels: dict) -> list:
+    """An event's details as short labelled facts — never raw data."""
+    detail = event.get("detail_parsed")
+    if not isinstance(detail, dict):
+        return []
+    facts = []
+    for key, label in _FACT_LABELS:
+        value = detail.get(key)
+        if value in (None, "", [], {}, "unknown"):
+            continue
+        if key == "language":
+            value = _LANGUAGE_NAMES.get(str(value), str(value))
+        facts.append((label, str(value)[:400]))
+    areas = detail.get("areas")
+    if isinstance(areas, list) and areas:
+        facts.append(("Matches your", ", ".join(labels.get(a, str(a).replace("_", " ")) for a in areas)))
+    if detail.get("site_language"):
+        facts.append(("Their site is in", _LANGUAGE_NAMES.get(str(detail["site_language"]), str(detail["site_language"]))))
+    if isinstance(detail.get("site_chars"), int):
+        chars = detail["site_chars"]
+        facts.append(("Read from their site", f"about {max(1, round(chars / 6))} words" if chars else "nothing — the site couldn't be read"))
+    if isinstance(detail.get("body"), str) and detail["body"].strip():
+        facts.append(("Length", f"{len(detail['body'].split())} words"))
+    return facts
+
+
+@app.template_filter("highlight")
+def highlight(text: str, words: list):
+    """`text` with each of `words` marked — both escaped first."""
+    from markupsafe import Markup, escape
+    html = str(escape(text or ""))
+    for word in sorted({str(w) for w in (words or []) if w}, key=len, reverse=True):
+        pattern = re.compile(r"(?<![\w>])(" + re.escape(str(escape(word))) + r")", re.IGNORECASE)
+        html = pattern.sub(r"<mark>\1</mark>", html)
+    return Markup(html)
+
+
 def _event_error_summary(event: dict) -> str:
     detail = event.get("detail_parsed")
     error = detail.get("error") if isinstance(detail, dict) else None
@@ -747,6 +844,12 @@ def company_detail(app_id):
         except json.JSONDecodeError:
             e["detail_parsed"] = None
         e["error_summary"] = _event_error_summary(e)
+    labels = {}
+    for spec in profiles.specs_for(g.user["id"])[1:]:
+        for area in (spec or {}).get("areas", []):
+            labels.setdefault(area["id"], area.get("label") or area["id"])
+    for e in events:
+        e["facts"] = _event_facts(e, labels)
     earlier_events, current_events = _split_superseded_events(events)
 
     def _json(value, default):
@@ -780,6 +883,7 @@ def company_detail(app_id):
         talking_points=_json(application["talking_points"], "[]"),
         matched_extras=_json(application["matched_extra_mentions"], "[]"),
         match_reasons=_json(application["match_reasons"], "{}"),
+        matches=_matches(application, labels), interest=_interest_line(application),
         prev_id=d.get_adjacent_application_id(app_id, direction="prev"),
         next_id=d.get_adjacent_application_id(app_id, direction="next"),
         from_email=(mail_service.from_address(g.cfg, method) if method else "") or "your email account",
