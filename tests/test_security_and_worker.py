@@ -340,3 +340,32 @@ def test_a_user_stop_ends_the_run_with_nothing_left_half_way(user_id, monkeypatc
     w._execute_run(runs.claim_next("w"))
     assert runs.latest(user_id)["status"] == "stopped"
     assert data.get_application_by_id(stuck)["status"] == "pending"
+
+
+def test_keys_are_never_appended_to_an_env_file_that_has_them(tmp_path, monkeypatch):
+    """A check run without loading .env appended a second ENCRYPTION_KEYS;
+    the next deploy used it and no stored secret could be decrypted."""
+    import config
+    import vault
+    env = tmp_path / ".env"
+    env.write_text('SECRET_KEY="original-secret"\nENCRYPTION_KEYS="original-key"\n', encoding="utf-8")
+    monkeypatch.setattr(config, "ENV_PATH", env)
+    monkeypatch.setattr(config, "is_production", lambda: False)
+    monkeypatch.setattr(config, "get", lambda name, default="": "")      # as if the file wasn't loaded
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    before = env.read_text(encoding="utf-8")
+    vault.ensure_dev_keys()
+    assert env.read_text(encoding="utf-8") == before
+
+
+def test_a_run_with_dotenv_switched_off_never_writes_keys(tmp_path, monkeypatch):
+    import config
+    import vault
+    env = tmp_path / ".env"
+    env.write_text("APP_BIND=0.0.0.0\n", encoding="utf-8")
+    monkeypatch.setattr(config, "ENV_PATH", env)
+    monkeypatch.setattr(config, "is_production", lambda: False)
+    monkeypatch.setattr(config, "get", lambda name, default="": "")
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    vault.ensure_dev_keys()
+    assert env.read_text(encoding="utf-8") == "APP_BIND=0.0.0.0\n"

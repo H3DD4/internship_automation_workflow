@@ -54,11 +54,24 @@ def ensure_dev_keys() -> None:
         generated["SECRET_KEY"] = _secrets.token_urlsafe(48)
     if "ENCRYPTION_KEYS" in missing:
         generated["ENCRYPTION_KEYS"] = Fernet.generate_key().decode()
+    os.environ.update(generated)
+    # Only a .env that has no such key yet gets one written. A process that
+    # merely didn't LOAD the file (dotenv switched off for a check or a test)
+    # must never append a second key: Docker reads the last line, and every
+    # stored secret would stop decrypting on the next deploy.
+    try:
+        with open(config.ENV_PATH, encoding="utf-8") as handle:
+            defined = {line.split("=", 1)[0].strip() for line in handle
+                       if "=" in line and not line.lstrip().startswith("#")}
+    except OSError:
+        defined = set()
+    to_write = {name: value for name, value in generated.items() if name not in defined}
+    if not to_write or os.environ.get("PYTHON_DOTENV_DISABLED"):
+        return
     lines = ["", "# ---- Generated on first run: keep these, and keep them secret ----"]
-    lines += [f'{name}="{value}"' for name, value in generated.items()]
+    lines += [f'{name}="{value}"' for name, value in to_write.items()]
     with open(config.ENV_PATH, "a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
-    os.environ.update(generated)
 
 
 def _cipher() -> MultiFernet:
