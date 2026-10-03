@@ -36,6 +36,18 @@ SAMPLE = {
 }
 
 
+def _countries() -> tuple:
+    from dashboard.onboarding_routes import ALL_COUNTRIES, POPULAR_COUNTRIES
+    return ALL_COUNTRIES, POPULAR_COUNTRIES
+
+
+def _cv_report() -> dict | None:
+    """How hiring software reads the stored CV (rules only, see cv_ats)."""
+    import cv_ats
+    stored = g.cfg.cv()
+    return cv_ats.check(stored["filename"], stored["content"]) if stored else None
+
+
 def _profile_context(profile: dict | None) -> dict:
     facts = (profile or {}).get("facts")
     return {
@@ -54,6 +66,9 @@ def _profile_context(profile: dict | None) -> dict:
         "months": profiles.MONTHS["en"],
         "ready_count": db.for_user(g.user["id"]).get_grouped_stats().get("ready", 0),
         "own_template": (profile or {}).get("own_template"),
+        "target_countries": [c for c in (g.cfg.get("TARGET_COUNTRIES") or "").split("|") if c],
+        "all_countries": _countries()[0], "popular_countries": _countries()[1],
+        "cv_report": _cv_report(),
         "own_editor": {"template": (profile or {}).get("own_template"), "blank": profiles.blank_own_template(),
                        "fieldBlanks": email_templates.OWN_FIELD_BLANKS},
     }
@@ -74,9 +89,13 @@ def analyze():
     from ai_client import RateLimiter
     from model_router import build_router
 
+    # Started from the first-time setup: come back to it, whatever happens.
+    in_setup = request.form.get("next") == "welcome"
+    back = "onboarding.wizard" if in_setup else "profile.page"
+
     if security.rate_limited(f"analyze:{g.user['id']}", 8, 3600):
         return security.flash_and_back("You've analysed your CV many times this hour — edit the "
-                                       "profile by hand, or try again later.", "error", "profile.page")
+                                       "profile by hand, or try again later.", "error", back)
     upload = request.files.get("cv_file")
     try:
         if upload and upload.filename:
@@ -86,7 +105,7 @@ def analyze():
         else:
             stored = g.cfg.cv()
             if not stored:
-                return security.flash_and_back("Upload your CV first.", "error", "profile.page")
+                return security.flash_and_back("Upload your CV first.", "error", back)
             content, filename = stored["content"], stored["filename"]
         cv_text = profiles.extract_cv_text(filename, content)
 
@@ -105,7 +124,7 @@ def analyze():
                                            "analysis runs on your own key.", "error", "settings_page")
         facts = profiles.draft_profile_with_ai(router, cv_text)
     except (profiles.ProfileError, ValueError) as exc:
-        return security.flash_and_back(str(exc), "error", "profile.page")
+        return security.flash_and_back(str(exc), "error", back)
 
     info = profiles.INTERNSHIP_KINDS.get(kind) or profiles.INTERNSHIP_KINDS["internship"]
     facts["full_name"] = (request.form.get("full_name") or g.user.get("full_name") or "").strip()[:120]
@@ -118,6 +137,16 @@ def analyze():
     profiles.save(g.user["id"], facts=facts, cv_text=cv_text,
                   mode=current.get("mode") if current.get("spec_en") and current.get("mode") == "custom" else "template")
     accounts.audit("profile_analyzed", actor=g.user["id"])
+    if in_setup:
+        # Ready to use at once, in the default style; the next step lets them
+        # pick another, and every sentence stays editable on the Profile page.
+        try:
+            profiles.apply_template(g.user["id"], facts,
+                                    current.get("template_id") if current.get("template_id") in email_templates.TEMPLATES
+                                    else email_templates.DEFAULT_TEMPLATE)
+        except (profiles.ProfileError, KeyError, ValueError):
+            pass
+        return redirect(url_for("onboarding.wizard", step="profile"))
     flash("Your profile was drafted from your CV. Read every section, fix anything that isn't "
           "exactly right, then save.", "success")
     return redirect(url_for("profile.page") + "#editor")

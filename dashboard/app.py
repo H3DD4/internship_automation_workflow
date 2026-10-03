@@ -70,6 +70,8 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
 app.register_blueprint(profile_bp)
 app.register_blueprint(microsoft_bp)
+from dashboard.onboarding_routes import bp as onboarding_bp  # noqa: E402
+app.register_blueprint(onboarding_bp)
 
 STATUS_LABELS = {
     "pending": "Pending", "researching": "Researching", "researched": "Researched",
@@ -324,9 +326,13 @@ def _run_sources() -> list:
 
 
 def _decorate_rows(applications: list) -> list:
+    targets = set((g.cfg.get("TARGET_COUNTRIES") or "").split("|")) - {""}
     for a in applications:
         a["status_label"] = STATUS_LABELS.get(a["status"], a["status"])
         a["source_label"] = db.source_label(a.get("source"))
+        # "Lyon, France" -> France: is it one of the places the student targets?
+        country = (a.get("location") or "").rsplit(",", 1)[-1].strip()
+        a["in_target"] = bool(country and country in targets)
         a["source_is_ntern"] = a.get("source") == db.NTERN_SOURCE
         try:
             a["matched_extra_mentions_list"] = json.loads(a["matched_extra_mentions"] or "[]")
@@ -419,6 +425,9 @@ def index():
         return render_template("landing.html", google=google_auth_helper.oauth_is_configured(),
                                year=date.today().year, styles=email_templates.template_choices("en"),
                                rules=email_templates.proven_rules("en"))
+    from dashboard import onboarding_routes
+    if onboarding_routes.needed(g.user, g.cfg):
+        return redirect(url_for("onboarding.wizard"))
     page =max(1, request.args.get("page", 1, type=int))
     status_param = request.args.get("status", "").strip()[:40]
     search_param = request.args.get("q", "").strip()[:120]
@@ -426,6 +435,7 @@ def index():
     active_jobs = data().get_pending_send_jobs()
     return render_template(
         "index.html", setup=_setup_state(), run_state=_run_state(), run_sources=_run_sources(),
+        target_countries=[c for c in (g.cfg.get("TARGET_COUNTRIES") or "").split("|") if c],
         active_job=data().get_send_job(active_jobs[0]["id"]) if active_jobs else None,
         status_tabs=STATUS_TABS, **context)
 
@@ -583,8 +593,11 @@ def run_pipeline():
         if not sources:
             flash("Tick at least one list to scan.", "error")
             return redirect(url_for("index"))
+    countries = None
+    if request.form.get("targets_only") == "on":
+        countries = [c for c in (g.cfg.get("TARGET_COUNTRIES") or "").split("|") if c] or None
     try:
-        runs.request_run(g.user["id"], limit, sources=sources)
+        runs.request_run(g.user["id"], limit, sources=sources, countries=countries)
     except runs.RunConflict as exc:
         flash(str(exc), "error")
         return redirect(url_for("index"))
@@ -1142,6 +1155,8 @@ def _canonical_host_redirect():
 
 
 def _to_mail_settings():
+    if session.get("in_setup"):           # connecting a mailbox from the first-time setup
+        return redirect(url_for("onboarding.wizard", step="mail"))
     return redirect(url_for("settings_page") + "#s-gmail")
 
 
@@ -1293,7 +1308,7 @@ def _finish_google_login(creds, granted: set):
     token, _ = accounts.create_session(user["id"], security.client_ip(), request.headers.get("User-Agent", ""))
     accounts.audit("login_google", actor=user["id"], ip=security.client_ip())
     if session.pop("welcome", False):
-        flash("Welcome to Ntern — your account is ready. Follow the four steps below to prepare your first applications.", "success")
+        flash("Welcome to Ntern — your account is ready. Let's set it up together; it takes about five minutes.", "success")
     elif not sending:
         flash("Signed in. To send from this Gmail, connect it in Settings → Email account.", "success")
     response = redirect(session.pop("oauth_next", None) or url_for("index"))

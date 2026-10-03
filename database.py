@@ -305,11 +305,14 @@ prep_runs = Table(
     Column("targets", Text),
     # JSON list of the sources this run scans ("ntern", list names); NULL = all.
     Column("sources", Text),
+    # JSON list of countries this run keeps to (the student's target places);
+    # NULL = no filter.
+    Column("countries", Text),
     Index("idx_prep_runs_status", "status"),
     Index("idx_prep_runs_user", "user_id", "id"),
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # ---------------------------------------------------------------------------
 # Engine
@@ -438,6 +441,10 @@ def _migrate(conn) -> None:
             if column not in {c["name"] for c in inspect(conn).get_columns(table)}:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {kind}"))
         conn.execute(text("INSERT INTO schema_version (version) VALUES (6)"))
+    if version < 7:
+        if "countries" not in {c["name"] for c in inspect(conn).get_columns("prep_runs")}:
+            conn.execute(text("ALTER TABLE prep_runs ADD COLUMN countries TEXT"))
+        conn.execute(text("INSERT INTO schema_version (version) VALUES (7)"))
 
 
 def _dialect_insert(conn, table):

@@ -1,0 +1,63 @@
+{# The CV check report (cv_ats.evaluate): score, categories, findings with
+   their fixes, and the CV as a machine reads it with the problem lines
+   coloured. Rules only — the same file always gives the same report. #}
+{% macro ats_report(r) -%}
+<section class="ats ats--{{ r.tone }}" aria-label="CV check">
+  <div class="ats-head">
+    <div class="ats-ring" role="img" aria-label="Score {{ r.score }} out of 100">
+      <svg viewBox="0 0 120 120" aria-hidden="true">
+        <circle class="ats-ring__track" cx="60" cy="60" r="52"/>
+        <circle class="ats-ring__value" cx="60" cy="60" r="52" stroke-dasharray="{{ (326.7 * r.score / 100) | round(1) }} 326.7"/>
+      </svg>
+      <span class="ats-ring__num">{{ r.score }}<small>/100</small></span>
+    </div>
+    <div class="ats-head__text">
+      <span class="ats-label">{{ r.label }}</span>
+      <p>{% if r.blocking %}Hiring software can't read this file, so Ntern can't either. Fix the first point below and upload it again.
+         {% elif r.to_fix %}{{ r.to_fix }} thing{{ "s" if r.to_fix != 1 }} to improve. The red and amber lines below show exactly where.
+         {% else %}Hiring software will read this CV cleanly.{% endif %}</p>
+      <div class="ats-cats">
+        {% for c in r.categories %}
+        <div class="ats-cat"><span>{{ c.name }}</span>
+          <div class="ats-cat__bar"><i style="width: {{ (100 * c.earned / c.total) | round | int if c.total else 0 }}%"></i></div>
+          <b>{{ c.earned | round | int }}/{{ c.total }}</b></div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  {% macro row(c) %}
+    <li class="ats-check ats-check--{{ c.status }}">
+      <span class="ats-check__icon" aria-hidden="true">{{ {"ok": "✓", "warn": "!", "fail": "✕"}[c.status] }}</span>
+      <div>
+        <b>{{ c.title }}</b> <span class="ats-check__detail">{{ c.detail }}</span>
+        {% if c.fix %}<p class="ats-check__fix"><strong>Fix:</strong> {{ c.fix }}</p>{% endif %}
+      </div>
+    </li>
+  {% endmacro %}
+  {% set open = r.checks | rejectattr("status", "equalto", "ok") | list %}
+  {% set passed = r.checks | selectattr("status", "equalto", "ok") | list %}
+  {% if open %}
+  <ul class="ats-checks">{% for c in open %}{{ row(c) }}{% endfor %}</ul>
+  {% endif %}
+  {% if passed %}
+  <details class="ats-passed" {% if not open %}open{% endif %}>
+    <summary>{{ passed | length }} check{{ "s" if passed | length != 1 }} passed</summary>
+    <ul class="ats-checks">{% for c in passed %}{{ row(c) }}{% endfor %}</ul>
+  </details>
+  {% endif %}
+
+  {% if r.lines %}
+  <details class="ats-read" {% if r.lines | selectattr("mark") | list %}open{% endif %}>
+    <summary>How a machine reads your CV{% set marked = r.lines | selectattr("mark") | list | length %}{% if marked %} — {{ marked }} line{{ "s" if marked != 1 }} to look at{% endif %}</summary>
+    <div class="ats-lines">
+      {% for line in r.lines %}
+      <p class="ats-line{% if line.mark %} ats-line--{{ line.mark.severity }}{% endif %}{% if line.heading %} ats-line--heading{% endif %}"
+         {% if line.mark %}title="{{ line.mark.why }}"{% endif %}>{{ line.text }}{% if line.mark %}<span class="ats-line__why">{{ line.mark.why }}</span>{% endif %}</p>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+  <p class="field-hint ats-note">Checked with the rules hiring software shares (readable text, one column, standard headings, contact details in the page, dates, measurable results). The same file always gets the same score. It predicts how well your CV is read — not whether you get an interview.</p>
+</section>
+{%- endmacro %}

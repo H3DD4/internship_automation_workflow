@@ -42,7 +42,7 @@ class RunConflict(RuntimeError):
 
 
 def request_run(user_id: int, limit: int | None = None, targets: list | None = None,
-                sources: list | None = None) -> int:
+                sources: list | None = None, countries: list | None = None) -> int:
     """targets: application ids — a re-scan run that only does those.
     sources: the lists to scan ("ntern", list names); None = all of them."""
     with database.tx() as conn:
@@ -54,7 +54,16 @@ def request_run(user_id: int, limit: int | None = None, targets: list | None = N
             user_id=int(user_id), status="requested", limit_n=limit, created_at=_now(), log="",
             targets=json.dumps(sorted(int(i) for i in targets)) if targets else None,
             sources=json.dumps(list(sources)) if sources is not None else None,
+            countries=json.dumps(list(countries)) if countries else None,
         ).returning(prep_runs.c.id)).scalar_one()
+
+
+def countries_of(run: dict) -> list | None:
+    try:
+        value = json.loads(run.get("countries") or "null")
+    except (TypeError, ValueError):
+        return None
+    return [str(c) for c in value] if isinstance(value, list) and value else None
 
 
 def sources_of(run: dict) -> list | None:

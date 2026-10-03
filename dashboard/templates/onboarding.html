@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+{% set bare = true %}
+{% from "_brand.html" import logo with context %}
+{% from "_ats.html" import ats_report with context %}
+{% block title %}Set up your account · Ntern{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ asset('onboarding.css') }}">{% endblock %}
+
+{% macro actions(next_label="Continue", form=None, skip=None, disabled=false) %}
+<div class="ob-actions">
+  {% if previous %}<a class="button button--ghost" href="{{ url_for('onboarding.wizard', step=previous) }}">← Back</a>{% endif %}
+  <span class="ob-actions__spacer"></span>
+  {% if skip %}
+  <form method="post" action="{{ url_for('onboarding.skip', step=skip) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button button--ghost" type="submit">Skip for now</button></form>
+  {% endif %}
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{% block bare %}
+<div class="ob">
+  <header class="ob-top">
+    <a href="{{ url_for('onboarding.wizard') }}" aria-label="Ntern">{{ logo(26) }}</a>
+    <div class="ob-top__meter" aria-hidden="true"><i style="width: {{ (100 * done_count / total) | round | int }}%"></i></div>
+    <span class="ob-top__count">{{ done_count }} of {{ total }} done</span>
+    <form method="post" action="{{ url_for('onboarding.finish') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="link-button" type="submit" title="You can finish the setup later from the home page">Skip setup</button></form>
+  </header>
+
+  <div class="ob-body">
+    <nav class="ob-steps" aria-label="Setup steps">
+      <ol>
+        <li class="ob-step is-done"><span class="ob-step__mark">✓</span><span class="ob-step__text"><b>Account</b><small>Created</small></span></li>
+        {% for s in steps %}
+        <li class="ob-step{% if s.done %} is-done{% endif %}{% if s.id == current %} is-current{% endif %}">
+          <a href="{{ url_for('onboarding.wizard', step=s.id) }}"{% if s.id == current %} aria-current="step"{% endif %}>
+            <span class="ob-step__mark">{% if s.done and not s.skipped %}✓{% elif s.skipped %}–{% else %}{{ loop.index + 1 }}{% endif %}</span>
+            <span class="ob-step__text"><b>{{ s.title }}</b><small>{% if s.skipped %}Skipped — you can do it later{% elif s.done %}Done{% elif s.optional %}Optional{% else %}To do{% endif %}</small></span>
+          </a>
+        </li>
+        {% endfor %}
+        <li class="ob-step{% if current == 'finish' %} is-current{% endif %}">
+          <a href="{{ url_for('onboarding.wizard', step='finish') }}"><span class="ob-step__mark">★</span><span class="ob-step__text"><b>First scan</b><small>The goal</small></span></a>
+        </li>
+      </ol>
+    </nav>
+
+    <main class="ob-main">
+      {% include "_flashes.html" %}
+
+      {# ───────────────────────────────────────────────────────── you #}
+      {% if current == "you" %}
+      <span class="ob-kicker">Step 2 of {{ total }}</span>
+      <h1>What are you looking for?</h1>
+      <p class="ob-why">Your name signs every email, and these dates are stated in each application — so companies see at once whether it fits their plans.</p>
+      <form method="post" action="{{ url_for('onboarding.save_you') }}" class="ob-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="form-group form-group--wide"><label for="ob-name">Your full name</label>
+          <input id="ob-name" name="full_name" type="text" maxlength="120" required value="{{ full_name }}" autocomplete="name"></div>
+        <div class="form-group"><label for="ob-kind">I'm looking for</label>
+          <select id="ob-kind" name="kind">
+            {% for key, info in kinds.items() %}<option value="{{ key }}" {% if (dates.get('kind') or 'end_of_study') == key %}selected{% endif %}>{{ info.role_en }}</option>{% endfor %}
+          </select></div>
+        <div class="form-group"><label for="ob-month">Starting</label>
+          <div class="ob-inline">
+            <select id="ob-month" name="start_month" required>
+              {% for m in months %}<option value="{{ loop.index }}" {% if dates.get('month') == loop.index %}selected{% endif %}>{{ m }}</option>{% endfor %}
+            </select>
+            <select name="start_year" required aria-label="Year">
+              {% for y in range(this_year, this_year + 4) %}<option value="{{ y }}" {% if dates.get('year') == y or (not dates.get('year') and y == this_year + 1) %}selected{% endif %}>{{ y }}</option>{% endfor %}
+            </select>
+          </div></div>
+        <div class="form-group"><label for="ob-duration">For how many months <span class="field-hint">(optional)</span></label>
+          <input id="ob-duration" name="duration" type="number" min="1" max="36" value="{{ dates.get('duration') or '' }}" placeholder="e.g. 6"></div>
+        <label class="choice form-group--wide"><input type="checkbox" name="open_to_hire" {% if dates.get('open_to_hire') %}checked{% endif %}>
+          <span><strong>I'd like to stay with the team afterwards</strong><span class="field-hint">Adds a line saying you're open to continuing.</span></span></label>
+        {% call actions() %}<button class="button button--primary" type="submit">Continue</button>{% endcall %}
+      </form>
+
+      {# ────────────────────────────────────────────────────────── cv #}
+      {% elif current == "cv" %}
+      <span class="ob-kicker">Step 3 of {{ total }}</span>
+      <h1>Upload your CV</h1>
+      <p class="ob-why">It's attached to every application, and it is the only source of what your emails say about you. First we check how hiring software (ATS) will read it — instantly, with fixed rules, no AI.</p>
+      <form id="cv-form" class="ob-drop" enctype="multipart/form-data">
+        <input type="file" id="cv-file" name="cv_file" accept=".pdf,.docx">
+        <label for="cv-file" class="ob-drop__label">
+          <strong>{{ "Replace your CV" if report else "Choose your CV" }}</strong>
+          <span>PDF or Word (.docx), up to 5 MB — or drop it here</span>
+        </label>
+        <span class="field-hint validation-result" id="cv-result" aria-live="polite"></span>
+      </form>
+      <div id="ats-holder">{% if report %}{{ ats_report(report) }}{% endif %}</div>
+      {% call actions() %}
+        <a class="button button--primary{% if not report or report.blocking %} is-disabled{% endif %}" id="cv-continue"
+           href="{{ url_for('onboarding.wizard', step='places') }}" {% if not report or report.blocking %}aria-disabled="true" tabindex="-1"{% endif %}>Continue</a>
+      {% endcall %}
+
+      {# ────────────────────────────────────────────────────── places #}
+      {% elif current == "places" %}
+      <span class="ob-kicker">Step 4 of {{ total }} · optional</span>
+      <h1>Where would you like to work?</h1>
+      <p class="ob-why">Pick one or more places. Companies there are scanned first and marked <span class="loc-tag loc-tag--fit">In your target</span> in your list, so you spot the best fits at a glance.</p>
+      <form method="post" action="{{ url_for('onboarding.save_places') }}" id="places-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <fieldset class="ob-chips">
+          <legend class="visually-hidden">Countries</legend>
+          {% for c in countries %}
+          <label class="ob-chip{% if c not in popular %} ob-chip--more{% endif %}"{% if c not in popular and c not in chosen %} hidden{% endif %}>
+            <input type="checkbox" name="country" value="{{ c }}" {% if c in chosen %}checked{% endif %}><span>{{ c }}</span></label>
+          {% endfor %}
+        </fieldset>
+        <button class="link-button" type="button" id="more-countries">Show more countries</button>
+        <p class="field-hint" id="places-count" aria-live="polite"></p>
+        {% call actions(skip="places") %}<button class="button button--primary" type="submit">Continue</button>{% endcall %}
+      </form>
+
+      {# ────────────────────────────────────────────────────────── ai #}
+      {% elif current == "ai" %}
+      <span class="ob-kicker">Step 5 of {{ total }}</span>
+      <h1>Connect a free AI key</h1>
+      <p class="ob-why">Ntern uses AI to read each company's website and match it to your CV. You connect <strong>your own free key</strong>, so your usage never competes with anyone else's. It takes about a minute.</p>
+      {% if connected %}
+      <div class="notice notice--ok">✓ Connected: {{ connected | map(attribute='label') | join(", ") }}. Adding a second provider keeps your scans going when one runs out of free quota.</div>
+      {% endif %}
+      <div class="ob-providers">
+        {% for p in cards %}
+        <article class="provider-card{% if p.connected %} is-connected{% endif %}" data-provider="{{ p.id }}">
+          <header class="provider-card__head">
+            <div class="provider-card__title"><h3>{{ p.label }}</h3><span class="provider-badge{% if p.free %} provider-badge--free{% endif %}">{{ p.badge }}</span></div>
+            <span class="provider-state">{% if p.connected %}<span class="dot dot--ok"></span>Connected{% else %}Not connected{% endif %}</span>
+          </header>
+          {% if not p.connected %}
+          <ol class="provider-steps">{% for step in p.steps %}<li>{{ step }}</li>{% endfor %}</ol>
+          <div class="provider-connect__row">
+            {% if p.portal %}<a class="button button--primary" href="{{ p.portal }}" target="_blank" rel="noopener noreferrer">Get a free key ↗</a>{% endif %}
+            <input type="text" class="key-input" data-key placeholder="Paste your {{ p.label }} key here" autocomplete="off" spellcheck="false" maxlength="500" aria-label="{{ p.label }} API key">
+            <button class="button" type="button" data-connect-btn>Connect</button>
+          </div>
+          <p class="field-hint validation-result" data-result aria-live="polite"></p>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      <p class="field-hint">More providers and the choice of models are in Settings → AI models.</p>
+      {% call actions() %}
+        <a class="button button--primary{% if not connected %} is-disabled{% endif %}" href="{{ url_for('onboarding.wizard', step='profile') }}" {% if not connected %}aria-disabled="true" tabindex="-1"{% endif %}>Continue</a>
+      {% endcall %}
+
+      {# ───────────────────────────────────────────────────── profile #}
+      {% elif current == "profile" %}
+      <span class="ob-kicker">Step 6 of {{ total }}</span>
+      <h1>{% if facts %}Here's what we found in your CV{% else %}Let's read your CV{% endif %}</h1>
+      {% if not facts %}
+      <p class="ob-why">The AI turns your CV into the building blocks of your emails: who you are, your fields, your best results. It uses only what your CV says — every number is checked against it.</p>
+      <form method="post" action="{{ url_for('profile.analyze') }}" id="analyze-form" class="ob-analyze">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="welcome">
+        <input type="hidden" name="full_name" value="{{ full_name }}">
+        <input type="hidden" name="kind" value="{{ dates.get('kind') or 'internship' }}">
+        <input type="hidden" name="start_month" value="{{ dates.get('month') or 1 }}">
+        <input type="hidden" name="start_year" value="{{ dates.get('year') or this_year + 1 }}">
+        <input type="hidden" name="duration" value="{{ dates.get('duration') or '' }}">
+        {% if dates.get('open_to_hire') %}<input type="hidden" name="open_to_hire" value="on">{% endif %}
+        <button class="button button--primary button--lg" type="submit" id="analyze-btn">Analyse my CV</button>
+        <span class="field-hint" id="analyze-note">Takes 20–60 seconds.</span>
+      </form>
+      {% call actions() %}<span></span>{% endcall %}
+      {% else %}
+      <p class="ob-why">These are the facts your emails are built from. You can change every sentence later on the Profile page.</p>
+      <div class="ob-found">
+        <div class="ob-found__card"><span class="eyebrow">You</span><p>{{ facts.identity.en if facts.identity is mapping else facts.identity }}</p></div>
+        <div class="ob-found__card"><span class="eyebrow">Your fields — matched against each company</span>
+          <ul class="ob-tags">{% for a in facts.areas %}<li>{{ a.label.en if a.label is mapping else a.label }}</li>{% endfor %}</ul></div>
+        <div class="ob-found__card"><span class="eyebrow">Your highlights</span>
+          <ul class="ob-list">{% for s in facts.strengths[:4] %}<li>{{ s.text.en if s.text is mapping else s.text }}</li>{% endfor %}</ul></div>
+      </div>
+      {% if flags %}
+      <div class="notice notice--warn"><strong>{{ flags | length }} point{{ "s" if flags | length != 1 }} to double-check.</strong>
+        The AI wrote something your CV doesn't clearly back up. <a href="{{ url_for('profile.page') }}#editor" target="_blank" rel="noopener">Review them on the Profile page</a> (opens in a new tab) — you can continue meanwhile.</div>
+      {% endif %}
+      {% call actions() %}<a class="button button--primary" href="{{ url_for('onboarding.wizard', step='style') }}">Looks right — continue</a>{% endcall %}
+      {% endif %}
+
+      {# ─────────────────────────────────────────────────────── style #}
+      {% elif current == "style" %}
+      <span class="ob-kicker">Step 7 of {{ total }}</span>
+      <h1>Pick how your emails sound</h1>
+      <p class="ob-why">Each style is built on what studies of real emails show works. You can change it any time, switch a single email to another style, or write your own template later.</p>
+      <div class="ob-styles" role="radiogroup" aria-label="Email style">
+        {% for t in templates %}
+        <label class="template-card{% if template_id == t.id %} template-card--active{% endif %}">
+          <input type="radio" name="template_id" value="{{ t.id }}" {% if template_id == t.id %}checked{% endif %}>
+          <strong>{{ t.name }}{% if t.id == 'specialist' %} <span class="chip chip--accent">Recommended</span>{% endif %}</strong>
+          <span class="field-hint">{{ t.description }}</span>
+          {% if t.best_for %}<span class="template-card__best"><b>Best for:</b> {{ t.best_for }}</span>{% endif %}
+          {% for e in t.evidence[:1] %}<span class="template-card__proof">{{ e.text }} <em>— {{ e.source }}</em></span>{% endfor %}
+        </label>
+        {% endfor %}
+      </div>
+      <div class="form-group ob-lang"><label for="language-mode">Language of your emails</label>
+        <select id="language-mode">
+          <option value="auto" {% if language_mode == 'auto' %}selected{% endif %}>Automatic — French for French companies, English otherwise (recommended)</option>
+          <option value="en" {% if language_mode == 'en' %}selected{% endif %}>Always English</option>
+          <option value="fr" {% if language_mode == 'fr' %}selected{% endif %}>Always French</option>
+        </select></div>
+      <div class="preview-pair" id="style-preview" hidden></div>
+      <span class="field-hint validation-result" id="style-result" aria-live="polite"></span>
+      {% call actions() %}
+        <button class="button button--ghost" type="button" id="style-preview-btn">Preview an email</button>
+        <button class="button button--primary" type="button" id="style-save" data-next="{{ url_for('onboarding.wizard', step='mail') }}">Continue</button>
+      {% endcall %}
+
+      {# ──────────────────────────────────────────────────────── mail #}
+      {% elif current == "mail" %}
+      <span class="ob-kicker">Step 8 of {{ total }} · optional for now</span>
+      <h1>Which mailbox will you send from?</h1>
+      <p class="ob-why">Applications go out from <strong>your own address</strong>, one at a time — that's what keeps them out of spam. You only need this when you send; preparing drafts works without it.</p>
+      {% if setup.has_gmail %}
+      <div class="notice notice--ok">✓ Connected — you'll send as <strong>{{ setup.from_address }}</strong> ({{ setup.mail_label }}).</div>
+      {% else %}
+      <div class="ob-mail">
+        {% if setup.oauth_configured %}<a class="button button--lg ob-mail__btn" href="{{ url_for('oauth_start') }}">Connect Gmail</a>{% endif %}
+        {% if setup.ms_configured %}<a class="button button--lg ob-mail__btn" href="{{ url_for('microsoft.connect') }}">Connect Outlook / Microsoft 365</a>{% endif %}
+        <a class="button button--lg ob-mail__btn" href="{{ url_for('settings_page') }}#s-gmail">School or other mailbox (SMTP)…</a>
+      </div>
+      <p class="field-hint">Ntern only sends the emails you choose. It never sends on its own.</p>
+      {% endif %}
+      {% call actions(skip=None if setup.has_gmail else "mail") %}
+        <a class="button button--primary{% if not setup.has_gmail %} is-disabled{% endif %}" href="{{ url_for('onboarding.wizard', step='finish') }}" {% if not setup.has_gmail %}aria-disabled="true" tabindex="-1"{% endif %}>Continue</a>
+      {% endcall %}
+
+      {# ────────────────────────────────────────────────────── finish #}
+      {% else %}
+      <span class="ob-kicker">{{ "All set" if ready else "Almost there" }}</span>
+      <h1>{% if ready %}You're ready for your first scan{% else %}A few steps are still open{% endif %}</h1>
+      {% if ready %}
+      <p class="ob-why">Ntern will research 50 companies{% if chosen %} — starting with those in {{ chosen | join(", ") }}{% endif %} — and prepare a draft for each. Nothing is sent: you review everything first.</p>
+      <ul class="ob-summary">
+        {% for s in steps %}<li class="{{ 'is-done' if s.done and not s.skipped else 'is-open' }}"><span>{{ "✓" if s.done and not s.skipped else "–" }}</span>{{ s.title }}{% if s.skipped %} <small>skipped — you can do it later</small>{% endif %}</li>{% endfor %}
+        <li class="is-done"><span>✓</span>{{ "{:,}".format(ntern_rows) }} companies ready in the Ntern list</li>
+      </ul>
+      <form method="post" action="{{ url_for('onboarding.finish') }}" class="ob-actions">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="start" value="1">
+        {% if previous %}<a class="button button--ghost" href="{{ url_for('onboarding.wizard', step='mail') }}">← Back</a>{% endif %}
+        <span class="ob-actions__spacer"></span>
+        <button class="button button--primary button--lg" type="submit">Go to my applications</button>
+      </form>
+      {% else %}
+      <p class="ob-why">Finish these to prepare your first applications:</p>
+      <ul class="ob-summary">
+        {% for s in steps if not s.done and not s.optional %}<li class="is-open"><span>•</span><a href="{{ url_for('onboarding.wizard', step=s.id) }}">{{ s.title }}</a></li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% endif %}
+    </main>
+  </div>
+</div>
+<script src="{{ asset('onboarding.js') }}" defer></script>
+{% endblock %}

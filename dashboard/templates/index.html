@@ -255,6 +255,11 @@
       {% endfor %}
     </fieldset>
     {% endif %}
+    {% if target_countries %}
+    <label class="run-source run-targets" title="Companies known to be elsewhere are left out; those whose country isn't known from their web address are kept.">
+      <input type="checkbox" name="targets_only" checked>
+      <span>Only my target places</span><span class="field-hint">{{ target_countries | join(", ") }}</span></label>
+    {% endif %}
     <label class="batch-limit-label">Batch size
       <input type="number" name="batch_limit" class="batch-limit-input" min="1" value="50" placeholder="All" title="How many companies this run prepares — empty prepares every company that still needs work">
     </label>

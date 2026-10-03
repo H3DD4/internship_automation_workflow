@@ -15,7 +15,7 @@
     {% endif %}
   </td>
   <td class="cell-mono">{{ a.id }}</td>
-  <td class="cell-company">{{ a.company_name }}<span class="src-tag{% if a.source_is_ntern %} src-tag--ntern{% endif %}" title="From {{ a.source_label }}">{{ a.source_label }}</span>{% if a.location %}<span class="loc-tag loc-tag--phone">{{ a.location }}</span>{% endif %}</td>
+  <td class="cell-company">{{ a.company_name }}<span class="src-tag{% if a.source_is_ntern %} src-tag--ntern{% endif %}" title="From {{ a.source_label }}">{{ a.source_label }}</span>{% if a.location %}<span class="loc-tag loc-tag--phone{% if a.in_target %} loc-tag--fit{% endif %}">{{ a.location }}{% if a.in_target %} · your target{% endif %}</span>{% endif %}</td>
   <td class="cell-mono col-email" title="{{ a.email }}">{{ a.email }}</td>
   <td>
     <span class="status-pill status-{{ a.status }}">{{ a.status_label }}</span>
@@ -33,7 +33,7 @@
     {% elif not a.location %}
       <span class="cell-empty">—</span>
     {% endif %}
-    {% if a.location %}<span class="loc-tag" title="Where the company is">{{ a.location }}</span>{% endif %}
+    {% if a.location %}<span class="loc-tag{% if a.in_target %} loc-tag--fit{% endif %}" title="{{ 'In one of your target places' if a.in_target else 'Where the company is' }}">{{ a.location }}{% if a.in_target %}<b class="fit-badge">Your target</b>{% endif %}</span>{% endif %}
   </td>
   <td class="cell-subject" title="{{ a.subject or '' }}">{% if a.language %}<span class="lang-chip lang-chip--{{ a.language }}">{{ a.language | upper }}</span> {% endif %}{{ a.subject or "—" }}</td>
   <td class="cell-mono cell-time col-updated">{{ a.updated_short }}</td>

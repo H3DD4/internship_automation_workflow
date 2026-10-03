@@ -755,3 +755,21 @@ mark.style-changed { background: var(--amber-soft); box-shadow: inset 0 -2px 0 #
 .admin-table .cell-limit { min-width: 160px; white-space: normal; }
 
 .run-paused { display: grid; gap: 4px; margin-bottom: 14px; }
+
+/* ── Target places, and the Profile page guide ─────────────────────────── */
+.loc-tag--fit { color: var(--st-sent); font-weight: 600; }
+.loc-tag--fit::before { filter: hue-rotate(260deg) saturate(3); }
+.fit-badge { margin-left: 5px; padding: 1px 6px; border-radius: 999px; background: #E3F6E8; color: #12602F; font: 600 10px/1.5 var(--font-ui); white-space: nowrap; }
+.run-targets { margin: 0 0 10px; }
+.run-targets > span:first-of-type { font-weight: 600; }
+.page-guide { position: sticky; top: 64px; z-index: 15; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 18px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); }
+.page-guide__label { margin-right: 4px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
+.page-guide a { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; font-size: 13px; font-weight: 500; color: var(--text-2); text-decoration: none; }
+.page-guide a:hover { background: var(--accent-soft); color: var(--accent); text-decoration: none; }
+.page-guide b { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface-3); font-size: 11px; color: var(--text-2); }
+.places-more { flex-basis: 100%; }
+.places-more summary { list-style: none; cursor: pointer; }
+.places-more .ob-chips { margin-top: 10px; }
+html { scroll-padding-top: 130px; }
+@media (max-width: 720px) { .page-guide { position: static; } .page-guide__label { flex-basis: 100%; } }

@@ -46,6 +46,10 @@ SETTING_DEFAULTS = {
     "SMTP_SECURITY": "ssl",       # ssl | starttls
     "SMTP_USERNAME": "",
     "IMAP_HOST": "",
+    # Where the student wants to work: country names separated by "|".
+    "TARGET_COUNTRIES": "",
+    # First-time setup progress (JSON): answers, skipped steps, finished.
+    "ONBOARDING": "",
 }
 for _pid in PROVIDERS:
     SETTING_DEFAULTS[f"{_pid.upper()}_BASE_URL"] = ""

@@ -47,6 +47,8 @@ def _canonical_host():
 
 
 def _to_mail_settings():
+    if session.get("in_setup"):           # connecting a mailbox from the first-time setup
+        return redirect(url_for("onboarding.wizard", step="mail"))
     return redirect(url_for("settings_page") + "#s-gmail")
 
 
@@ -190,7 +192,7 @@ def _finish_login(token: dict, who: dict, granted: set):
     accounts.audit("login_microsoft", actor=user["id"], ip=security.client_ip())
     if session.pop("welcome", False):
         flash("Welcome to Ntern — your account is ready and your Outlook mailbox is connected. "
-              "Follow the four steps below.", "success")
+              "Let's set up the rest together; it takes about five minutes.", "success")
     elif not sending:
         flash("Signed in. To send from this mailbox, connect it in Settings → Email account.", "success")
     response = redirect(session.pop("ms_next", None) or url_for("index"))

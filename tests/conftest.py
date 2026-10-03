@@ -111,9 +111,15 @@ def make_app(data):
     return _make
 
 
-def _login(test_client, uid):
+def _login(test_client, uid, setup_done=True):
     import accounts
     from dashboard import security
+    if setup_done:
+        # Most tests are about the app itself, not the first-time setup.
+        from user_config import UserConfig
+        user = accounts.get_user(uid)
+        if user["role"] != "admin":
+            UserConfig(uid, user["role"]).set_many({"ONBOARDING": '{"finished": true}'})
     token, session_id = accounts.create_session(uid, "127.0.0.1", "pytest")
     test_client.set_cookie(security.COOKIE_NAME, token, domain="localhost")
     from sqlalchemy import select
@@ -152,6 +158,12 @@ def client(app_module, user_id):
 def login(app_module):
     """login(user_id) -> a new client signed in as that user."""
     return lambda uid: _login(app_module.app.test_client(), uid)
+
+
+@pytest.fixture
+def new_client(app_module, user_id):
+    """Signed in as a brand-new account that hasn't done the first-time setup."""
+    return _login(app_module.app.test_client(), user_id, setup_done=False)
 
 
 @pytest.fixture

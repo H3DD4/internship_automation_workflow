@@ -1,5 +1,7 @@
 {% extends "base.html" %}
+{% from "_ats.html" import ats_report with context %}
 {% block title %}Profile · Ntern{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ asset('onboarding.css') }}">{% endblock %}
 {% block content %}
 
 <header class="topbar">
@@ -20,7 +22,50 @@
 <div class="notice notice--warn">The CV analysis runs on your own AI key — <a href="{{ url_for('settings_page') }}#s-ai">add one in Settings</a> first (Groq's is free).</div>
 {% endif %}
 
+<nav class="page-guide" aria-label="On this page">
+  <span class="page-guide__label">On this page</span>
+  {% if facts %}<a href="#dates"><b>1</b> Dates</a>{% endif %}
+  <a href="#cv-check"><b>{{ 2 if facts else 1 }}</b> CV check</a>
+  <a href="#places"><b>{{ 3 if facts else 2 }}</b> Target places</a>
+  <a href="#step-cv"><b>{{ 4 if facts else 3 }}</b> CV analysis</a>
+  <a href="#step-style"><b>{{ 5 if facts else 4 }}</b> Email style</a>
+  <a href="#own-template"><b>{{ 6 if facts else 5 }}</b> Your own template</a>
+  {% if facts %}<a href="#editor"><b>7</b> Edit your facts</a>{% endif %}
+</nav>
+
 <div class="profile-steps">
+  <section class="settings-card profile-step" id="cv-check">
+    <div class="profile-step__summary profile-step__summary--static">
+      <span class="profile-step__num">✓</span>
+      <span><strong>CV check — how hiring software reads your CV</strong>
+        <span class="field-hint">Fixed rules, no AI: the same file always gets the same score. Upload a new version in Settings → CV &amp; companies to check it again.</span></span>
+    </div>
+    {% if cv_report %}{{ ats_report(cv_report) }}{% else %}<p class="field-hint">Upload your CV first (Settings → CV &amp; companies, or step “CV analysis” below).</p>{% endif %}
+  </section>
+
+  <section class="settings-card profile-step" id="places">
+    <div class="profile-step__summary profile-step__summary--static">
+      <span class="profile-step__num">⌖</span>
+      <span><strong>Target places</strong>
+        <span class="field-hint">Companies in these countries are scanned first and marked “Your target” in your list.</span></span>
+    </div>
+    <form method="post" action="{{ url_for('onboarding.save_places') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="return" value="settings">
+      <fieldset class="ob-chips">
+        <legend class="visually-hidden">Countries</legend>
+        {% for c in all_countries %}{% if c in popular_countries or c in target_countries %}
+        <label class="ob-chip"><input type="checkbox" name="country" value="{{ c }}" {% if c in target_countries %}checked{% endif %}><span>{{ c }}</span></label>
+        {% endif %}{% endfor %}
+        <details class="places-more"><summary class="link-button">More countries</summary>
+          <div class="ob-chips">{% for c in all_countries %}{% if c not in popular_countries and c not in target_countries %}
+          <label class="ob-chip"><input type="checkbox" name="country" value="{{ c }}"><span>{{ c }}</span></label>
+          {% endif %}{% endfor %}</div></details>
+      </fieldset>
+      <div class="form-actions"><button class="button button--primary" type="submit">Save target places</button></div>
+    </form>
+  </section>
+
   {% if facts %}
   {% set intern = facts.get('internship') or {} %}
   <section class="settings-card dates-card" id="dates">

@@ -15,8 +15,6 @@ RESUME RULES (by email, stable application id in DB):
 """
 
 import json
-
-from utils import location_text
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -27,7 +25,7 @@ import drafting
 import logsink
 from agents.research_agent import ModelsExhausted, get_company_context
 from model_router import RoutingCancelled
-from utils import location_text
+from utils import country_from_domain, location_text
 
 
 def _load_draft(user_id: int, email: str, app: dict | None) -> dict | None:
@@ -410,12 +408,30 @@ def source_rows(user_id: int, sources: list | None = None) -> list:
     return rows
 
 
+def in_target_places(rows: list, countries: list) -> list:
+    """Rows for the student's target countries: those whose web address says
+    they are there come first, then those whose country isn't known (.com…).
+    Companies known to be elsewhere are left out."""
+    wanted = set(countries)
+    there, unknown = [], []
+    for row in rows:
+        country = country_from_domain(row[2], row[1])
+        if country in wanted:
+            there.append(row)
+        elif not country:
+            unknown.append(row)
+    return there + unknown
+
+
 def select_rows(user_id: int, *, limit: int | None = None, include_all: bool = False,
-                sources: list | None = None) -> tuple[list, int]:
-    """The rows of the chosen sources that still need work, in list order.
+                sources: list | None = None, countries: list | None = None) -> tuple[list, int]:
+    """The rows of the chosen sources that still need work, in list order —
+    kept to `countries` when the student asked for their target places only.
     Returns (rows, skipped_as_done)."""
     data = db.for_user(user_id)
     all_rows = source_rows(user_id, sources)
+    if countries:
+        all_rows = in_target_places(all_rows, countries)
     if include_all:
         rows, skipped = all_rows, 0
     else:
