@@ -27,7 +27,16 @@ from bs4 import BeautifulSoup
 from retry import with_retry
 from ai_client import extract_json_object, build_model_fallback_list
 from agents.draft_guard import BANNED_PHRASES, find_banned_phrase
-from model_router import RoutingCancelled
+from model_router import AllModelsUnavailable, RoutingCancelled
+
+
+class ModelsExhausted(RuntimeError):
+    """Every model that could research a company is out of quota or failing.
+
+    Raised instead of quietly falling back to standard wording: a draft
+    written without any research is a weaker email, and the next company
+    would wait just as long for the same answer. The pipeline puts the
+    company back in the queue and pauses the run."""
 from language import detect_language
 import safe_http
 
@@ -124,7 +133,12 @@ def ask_json(client, model: str, *, task: str, system: str, user: str, max_token
                                          max_wait=max_wait)
             except RoutingCancelled:
                 raise  # a stop is not "no model": the pipeline puts the company back
-            except Exception as exc:  # AllModelsUnavailable: nothing left to try
+            except AllModelsUnavailable as exc:
+                print(f"    [research] {task} for {label}: {exc}")
+                if task == "research":
+                    raise ModelsExhausted(str(exc)) from exc
+                return {}, None     # translation has a safe fallback (the verified original)
+            except Exception as exc:
                 print(f"    [research] {task} for {label}: {exc}")
                 return {}, None
             try:

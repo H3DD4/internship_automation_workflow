@@ -288,8 +288,14 @@ def _setup_state() -> dict:
 def _run_state() -> dict:
     run = runs.latest(g.user["id"])
     running = bool(run and run["status"] in runs.ACTIVE)
-    tail = "\n".join(((run or {}).get("log") or "").splitlines()[-60:])
+    import pipeline
+    lines = ((run or {}).get("log") or "").splitlines()
+    tail = "\n".join(lines[-60:])
+    # A run that paused itself because every AI model was exhausted says so.
+    paused = next((line.strip() for line in reversed(lines[-40:])
+                   if line.strip().startswith(pipeline.PAUSED_PREFIX)), "") if not running else ""
     return {"running": running, "stop_requested": bool(run and run["stop_requested"] and running),
+            "paused": paused,
             "status": (run or {}).get("status"), "log_tail": tail,
             "queued": bool(run and run["status"] == "requested")}
 

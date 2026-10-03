@@ -218,6 +218,12 @@
   </div>
 </div>
 
+{% if run_state.paused %}
+<div class="notice notice--warn run-paused" role="status">
+  <strong>Preparation paused: your AI models are out of quota.</strong>
+  <span>Nothing was lost — finished drafts are saved and the rest is back in the queue. Free plans refill after a while (often 15–60 minutes, sometimes the next day): start again later, or <a href="{{ url_for('settings_page') }}#s-ai">connect another provider</a> so the run can keep going.</span>
+</div>
+{% endif %}
 <section class="run-section">
   <div>
     <span class="eyebrow">Background</span>

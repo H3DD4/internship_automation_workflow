@@ -156,3 +156,52 @@ def test_select_rows_skips_finished_companies_in_list_order(with_profile, make_a
     assert skipped == 2
     limited, _ = pipeline_module.select_rows(user_id, limit=2)
     assert len(limited) == 2
+
+
+def test_when_every_ai_model_is_exhausted_the_run_pauses_without_weak_drafts(with_profile, data, user_id, capsys):
+    """Seen live: all providers rate-limited, each company waited 15 minutes
+    and was then drafted with standard wording — 14 hours for 4 weak emails."""
+    from agents.research_agent import ModelsExhausted
+    calls = []
+
+    def exhausted(client, model, name, website, areas, translation_model=None):
+        calls.append(name)
+        raise ModelsExhausted("No model available for research. groq/x: rate-limited (771s left)")
+
+    rows = [(f"Co{i}", f"hr@co{i}.com", f"https://co{i}.com", "") for i in range(6)]
+    pipeline = _pipeline(user_id)
+    with patch.object(pipeline_module, "get_company_context", exhausted):
+        results = pipeline.run(rows)
+    assert len(calls) == 1                                   # the others never wait for the same answer
+    assert results.get("ready", 0) == 0 and "rate-limited" in results["paused"]
+    first = data.get_application_by_email("hr@co0.com")
+    assert first["status"] == "pending" and not first["body"]   # back in the queue, no draft
+    assert pipeline_module.PAUSED_PREFIX in capsys.readouterr().out
+
+
+def test_an_exhausted_research_call_is_not_swallowed(monkeypatch):
+    from agents import research_agent as ra
+    from model_router import AllModelsUnavailable
+
+    class Router:
+        is_router = True
+
+        def complete(self, **kwargs):
+            raise AllModelsUnavailable("No model available for research.")
+
+    import pytest
+    with pytest.raises(ra.ModelsExhausted):
+        ra.ask_json(Router(), "m", task="research", system="s", user="u", max_tokens=10)
+    # Translation keeps its safe fallback: the verified original phrase.
+    assert ra.ask_json(Router(), "m", task="translation", system="s", user="u", max_tokens=10) == ({}, None)
+
+
+def test_the_home_page_says_why_a_run_paused(client, user_id):
+    import runs
+    run_id = runs.request_run(user_id)
+    import database
+    from sqlalchemy import update
+    with database.tx() as conn:
+        conn.execute(update(database.prep_runs).where(database.prep_runs.c.id == run_id).values(
+            status="stopped", log=pipeline_module.PAUSED_PREFIX + " every AI model you connected is out of quota.\n"))
+    assert "Preparation paused: your AI models are out of quota" in client.get("/").data.decode()

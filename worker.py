@@ -180,7 +180,7 @@ class Worker:
                     sources=runs.sources_of(run),
                     stop_check=lambda: self.stop_event.is_set() or runs.stop_requested(run_id))
                 user_stopped = runs.stop_requested(run_id)
-                if user_stopped or self.stop_event.is_set():
+                if user_stopped or self.stop_event.is_set() or (summary or {}).get("paused"):
                     status = "stopped"
             except drafting.NotReady as exc:
                 print(f"Can't start: {exc}")

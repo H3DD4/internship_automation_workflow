@@ -25,7 +25,7 @@ import cache_store
 import db
 import drafting
 import logsink
-from agents.research_agent import get_company_context
+from agents.research_agent import ModelsExhausted, get_company_context
 from model_router import RoutingCancelled
 from utils import location_text
 
@@ -93,6 +93,7 @@ class Pipeline:
         self._stop_requested = threading.Event()
         # Answers "did the user press Stop?" (the worker reads it from the DB).
         self._stop_check = stop_check
+        self._paused_reason = None     # set when every AI model is exhausted
         # A router waiting for a model must hear "Stop" too, or a worker can
         # sit in a long wait while the stop request goes unread.
         if getattr(client, "is_router", False):
@@ -242,6 +243,27 @@ class Pipeline:
                                      app_id, company_name, email, website,
                                      contact_name, context)
 
+        except ModelsExhausted as exc:
+            # No AI model could take the call. No draft without research: the
+            # company goes back as it was, and the run pauses — every other
+            # company would only wait as long for the same answer.
+            try:
+                app_id = self.data.get_or_create_application(company_name, email, website, contact_name)
+                previous = (existing or {}).get("status") or "pending"
+                self.data.update_application(
+                    app_id, status="pending" if previous == "researching" else previous)
+            except Exception:
+                pass
+            with self._lock:
+                first = self._paused_reason is None
+                if first:
+                    self._paused_reason = str(exc)
+            if first:
+                print(f"  [pause] {company_name} — no AI model available; pausing the run.")
+            self._stop_requested.set()
+            self._shutdown.set()
+            self._record("skipped")
+
         except RoutingCancelled:
             # Stopped while waiting for a model. Put the company back exactly as
             # it was — never a draft built from half a research — so the next
@@ -357,10 +379,21 @@ class Pipeline:
                 if unaccounted > 0:
                     self.results["skipped"] = self.results.get("skipped", 0) + unaccounted
                     self.terminal_count += unaccounted
-            print("Stopped on request — finished drafts are saved. Companies that were in progress go back "
-                  "to the queue (research already done is kept); your next run continues with them.")
+            if self._paused_reason:
+                self.results["paused"] = self._paused_reason
+                print(PAUSED_PREFIX + " every AI model you connected is out of quota or unavailable right now. "
+                      "Nothing was lost: finished drafts are saved and the other companies are back in the "
+                      "queue. Start again later, or add another provider in Settings → AI models.")
+                print("  Details: " + self._paused_reason[:600])
+            else:
+                print("Stopped on request — finished drafts are saved. Companies that were in progress go back "
+                      "to the queue (research already done is kept); your next run continues with them.")
 
         return self.results
+
+
+# How a run's log says it paused itself — the dashboard looks for this line.
+PAUSED_PREFIX = "Paused —"
 
 
 def source_rows(user_id: int, sources: list | None = None) -> list:

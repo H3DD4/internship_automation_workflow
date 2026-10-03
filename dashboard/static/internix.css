@@ -753,3 +753,5 @@ mark.style-changed { background: var(--amber-soft); box-shadow: inset 0 -2px 0 #
 .admin-grid > .panel:first-child .table-scroll { overflow-x: auto; }
 .limit-form { display: grid; grid-template-columns: 78px auto; align-items: center; gap: 6px; }
 .admin-table .cell-limit { min-width: 160px; white-space: normal; }
+
+.run-paused { display: grid; gap: 4px; margin-bottom: 14px; }
